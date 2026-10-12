@@ -10,7 +10,11 @@ The chat image/video actions and the conversation file list open the same file p
 - Text and code use UTF-16 character offsets, the selected quotation, and line numbers. Markdown and HTML show their original source in text annotation mode.
 - CSV and Excel previews use the sheet name and a range of one-based rows and columns. Anchors are limited to the preview's supported rows/columns.
 
-Comments can be added, edited, and removed before sending. Each visual comment owns its own screenshot pair; comments from different PDF pages or video times must not reuse a screenshot. A failed submit retains the unsent comments for retry. Captured geometry and images become stale when the underlying preview changes. An explicit text-only option is available when the browser cannot read the media; text and cell selections send their quotation and location without claiming screenshot evidence.
+Comments can be added, edited, and removed before sending. Every supported file type captures its own screenshot pair by default. Text/code (including Markdown and HTML source) and CSV/Excel cells capture the **currently visible preview** plus the selected region and nearby content; they retain their existing UTF-16 or cell-range anchors. This is not a screenshot of an entire long file or workbook. Images, PDF pages, and paused video frames continue to use their actual media pixels.
+
+Each comment owns its own screenshot pair; comments from different PDF pages, video times, text selections or cell ranges must not reuse a screenshot. Media pixels are copied at selection time, before the source-binding network request completes, and accepted only after source validation. Entering whole-page PDF mode waits for the first complete canvas render. Clipped rectangle calculations stay inside the strict normalized-coordinate contract even when floating-point division rounds at page edges.
+
+A failed submit retains the unsent comments for retry. Captured geometry and images become stale when the underlying preview changes, including text edits, sheet switches, scroll, resize, PDF page/zoom and video seek changes. The comment popover distinguishes source validation failures from capture failures and lets the user retry the same selection while keeping their comment. An explicit text-only option is available for every file type; opting out sends the quotation/location without screenshot evidence.
 
 ## Source and version
 
@@ -44,4 +48,4 @@ Each annotation has `id`, `kind`, `body`, and `target`:
 
 Rectangles are finite normalized values in the actual media/page bounds. Text offsets are UTF-16 code units, matching browser string and DOM selection semantics, including Chinese text and emoji.
 
-Screenshot evidence consists of two JPEG images, `full` and `crop`, derived from one captured bitmap, with a visible red selection border. Each is at most 2048 pixels per dimension and 2 MiB. Upload receipts establish ownership and verify file bytes and dimensions before message attachment. No screen-sharing permission or arbitrary server-side URL fetch is used.
+Screenshot evidence consists of two JPEG images, `full` and `crop`, derived from one captured bitmap, with a visible red selection border. Each is at most 2048 pixels per dimension and 2 MiB. DOM previews lazily load the existing self-hosted html2canvas-pro 1.6.7 resource at `/catsco-runtime/html2canvas-pro-1.6.7.min.js`, verify SRI, preserve any existing renderer global, and enforce a capture timeout. Modern CSS colors are supported without a CDN or Gateway deployment. Upload receipts establish ownership and verify file bytes and dimensions before message attachment. No screen-sharing permission or arbitrary server-side URL fetch is used.

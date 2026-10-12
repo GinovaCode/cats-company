@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../api', () => ({ resolveMediaURL: value => value }));
 vi.mock('./avatar', () => ({ default: () => <span /> }));
 vi.mock('./mobile-pdf-preview', () => ({ default: () => <canvas /> }));
+vi.mock('../utils/file-preview-dom-screenshots', () => ({
+  captureFilePreviewDOM: vi.fn(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800; canvas.height = 600;
+    return { canvas, box: { x: 0, y: 0, width: 800, height: 600 },
+      selected: { x: 100, y: 100, width: 100, height: 40 } };
+  }),
+}));
 import ChatMessage, { FilePreviewPanel } from './chat-message';
 
 // Exercise the real message -> preview -> editor chain. In particular, do not
@@ -24,6 +32,8 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), strokeRect: vi.fn() });
+  vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/jpeg;base64,/9j/2Q==');
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -52,7 +62,10 @@ async function openFile({ name, mime, text, legacy = false }) {
     openFileAnnotationBinding: vi.fn(async () => ({ open_ref: 'fob_test', source })),
     revokeFileAnnotationBinding: vi.fn(async () => ({})),
     sendFileAnnotations: vi.fn(async () => ({ seq_id: 43 })),
-    uploadImage: vi.fn(),
+    uploadImage: vi.fn(async file => {
+      const file_key = `capture-${crypto.randomUUID()}.jpg`;
+      return { file_key, url: `/uploads/images/${file_key}`, size: file.size, mime_type: 'image/jpeg' };
+    }),
   };
   const message = { id: 42, topic_id: 'p2p_7_9', from_uid: 9, created_at: '2026-10-10T00:00:00Z',
     ...(legacy
@@ -92,7 +105,8 @@ describe('file annotation production component flow', () => {
       file_annotations: { source, annotations: [{ kind: 'text', body: 'Change this greeting',
         target: { start: 0, end: 4, quote: '你好😀' } }] },
     });
-    expect(api.uploadImage).not.toHaveBeenCalled();
+    expect(api.uploadImage).toHaveBeenCalledTimes(2);
+    expect(api.sendFileAnnotations.mock.calls[0][0].content_blocks.filter(block => block.type === 'image')).toHaveLength(2);
   });
 
   it('shows and sends a cell-range comment from the real CSV preview', async () => {
@@ -112,6 +126,7 @@ describe('file annotation production component flow', () => {
       file_annotations: { source, annotations: [{ kind: 'cells', body: 'Recheck these rows',
         target: { sheet: 'CSV', row_start: 2, row_end: 3, column_start: 1, column_end: 2 } }] },
     });
-    expect(api.uploadImage).not.toHaveBeenCalled();
+    expect(api.uploadImage).toHaveBeenCalledTimes(2);
+    expect(api.sendFileAnnotations.mock.calls[0][0].content_blocks.filter(block => block.type === 'image')).toHaveLength(2);
   });
 });
