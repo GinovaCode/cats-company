@@ -9,6 +9,7 @@
 // the Go server comparison. Do NOT convert to code points or bytes.
 
 import { screenshotFile, ownedScreenshotBlock } from './gateway-annotation-screenshots';
+import { captureFilePreviewDOM } from './file-preview-dom-screenshots';
 
 export const FILE_ANNOTATIONS_CONTRACT = 'catsco.file-annotations.v1';
 export const FILE_OPEN_BINDING_CONTRACT = 'catsco.file-open-binding.v1';
@@ -102,6 +103,33 @@ function validResourceURL(url) {
   } catch {
     return false;
   }
+}
+
+// Match the persisted-attachment descriptor used by the file list and binding
+// handler. Chat payloads can omit a name or use historical field aliases.
+export function fileAnnotationPreviewFile(payload, attachmentType) {
+  const firstString = keys => keys.map(key => payload?.[key])
+    .find(value => typeof value === 'string' && value.trim())?.trim() || '';
+  const url = firstString(['url', 'download_url', 'file_url', 'image_url']);
+  const fileKey = firstString(['file_key', 'fileKey']);
+  let name = firstString(['name', 'file_name', 'filename', 'title']);
+  if (!name && url) {
+    try {
+      const path = decodeURIComponent(new URL(url, 'https://app.catsco.cc').pathname);
+      name = path.replace(/\/+$/, '').split('/').at(-1).trim();
+    } catch { /* Invalid URLs remain subject to binding validation. */ }
+  }
+  const rawSize = payload?.size ?? payload?.file_size ?? payload?.fileSize;
+  const size = typeof rawSize === 'string' && !/^[+-]?\d+$/.test(rawSize.trim()) ? 0 : Number(rawSize || 0);
+  return {
+    ...payload,
+    type: attachmentType === 'image' ? 'image' : 'file',
+    name: name || fileKey || '文件',
+    url,
+    file_key: fileKey,
+    mime_type: firstString(['mime_type', 'mimeType', 'content_type', 'contentType']),
+    size: Number.isFinite(size) ? Math.trunc(size) : 0,
+  };
 }
 
 // Canonical source descriptor minted by the server binding. The UI never
@@ -280,10 +308,10 @@ export function fileAnnotationTargetRect(kind, target) {
   return target?.rect || null;
 }
 
-// Text and cells annotations carry no visual evidence; the UI must say so
-// instead of pretending a screenshot exists.
+// Every supported preview can supply screenshot evidence; opting out is an
+// explicit per-draft decision rather than an implicit format restriction.
 export function fileAnnotationHasScreenshot(kind) {
-  return kind === 'image' || kind === 'video' || kind === 'pdf';
+  return FILE_ANNOTATION_KINDS.includes(kind);
 }
 
 export function fileAnnotationTargetSummary(kind, target) {
@@ -447,11 +475,14 @@ export function normalizedRectFromBox(rect, box) {
   const right = Math.min(rect.x + rect.width, box.x + box.width);
   const bottom = Math.min(rect.y + rect.height, box.y + box.height);
   if (right <= left || bottom <= top) return null;
+  const x = (left - box.x) / box.width;
+  const y = (top - box.y) / box.height;
+  // Independent divisions can round a clipped right/bottom edge to slightly
+  // above 1. Keep generated geometry valid without relaxing contract checks.
   return {
-    x: (left - box.x) / box.width,
-    y: (top - box.y) / box.height,
-    width: (right - left) / box.width,
-    height: (bottom - top) / box.height,
+    x, y,
+    width: Math.min((right - left) / box.width, 1 - x),
+    height: Math.min((bottom - top) / box.height, 1 - y),
   };
 }
 
@@ -523,8 +554,12 @@ function seekVideoFrame(element, timeSeconds, signal, timeoutMs = 5000) {
 export function captureFileAnnotationScreenshots(element, target, options = {}) {
   const signal = options.signal;
   if (signal && signal.aborted) throw fail('aborted', 'capture aborted');
-  const box = mediaContentBox(element);
+  const box = options.contentBox || mediaContentBox(element);
   if (!box) throw fail('unavailable', 'media is not loaded or has no content');
+  if (element?.dataset?.fileAnnotationSurface === 'pdf') {
+    if (element.dataset.fileAnnotationReady !== 'true') throw fail('unavailable', '当前 PDF 页面尚未渲染完成，请稍候再试');
+    if (Number(element.dataset.fileAnnotationPage) !== target?.page) throw fail('stale', 'PDF 页码已变化，请重新选择');
+  }
   if (!mediaReady(element)) throw fail('unavailable', 'media is not ready to capture');
   if (!normalizeFileAnnotationRect(target && target.rect)) throw fail('bad-geometry', 'target rect is invalid');
 
@@ -611,6 +646,19 @@ export function captureFileAnnotationScreenshots(element, target, options = {}) 
     ],
     warnings: [],
   };
+}
+
+// Media pixels are copied synchronously at selection time. Text and cells
+// render only the visible preview, with the same bounded JPEG/crop encoder.
+export async function captureFilePreviewScreenshots(element, kind, target, options = {}) {
+  if (kind !== 'text' && kind !== 'cells') return captureFileAnnotationScreenshots(element, target, options);
+  const { canvas, box, selected } = await captureFilePreviewDOM(element, kind, target, options);
+  const rect = normalizedRectFromBox(selected, box);
+  if (!rect) throw fail('unavailable', '选区已离开可见预览，请滚动到选区后重试');
+  const result = captureFileAnnotationScreenshots(canvas, { rect }, {
+    ...options, contentBox: { ...box, bitmapWidth: canvas.width, bitmapHeight: canvas.height },
+  });
+  return { ...result, visiblePreview: true };
 }
 
 // Capture from an already-rendered source canvas (the annotatable PDF page /

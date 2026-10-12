@@ -4,6 +4,15 @@ import { Simulate } from 'react-dom/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FileAnnotationEditor from './file-annotation-editor';
 
+vi.mock('../utils/file-preview-dom-screenshots', () => ({
+  captureFilePreviewDOM: vi.fn(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800; canvas.height = 600;
+    return { canvas, box: { x: 100, y: 100, width: 800, height: 600 },
+      selected: { x: 200, y: 150, width: 100, height: 40 } };
+  }),
+}));
+
 const SOURCE = { topic_id: 'p2p_7_9', message_id: 123, attachment_index: 0 };
 const BOUND_SOURCE = {
   topic_id: 'p2p_7_9', message_id: 123, attachment_index: 0,
@@ -321,6 +330,10 @@ describe('FileAnnotationEditor', () => {
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     await act(async () => { resolve({ open_ref: 'fob_late', source: BOUND_SOURCE }); await Promise.resolve(); });
     expect(container.querySelector('.file-annotation-current')).toBeNull();
+    // The loading popover is now visible immediately. Escape cancels its
+    // selection; a second Escape exits selection mode.
+    expect(container.querySelector('.file-annotation-mode.is-active')).not.toBeNull();
+    await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(container.querySelector('.file-annotation-mode.is-active')).toBeNull();
   });
 
@@ -357,7 +370,8 @@ describe('FileAnnotationEditor', () => {
     await act(async () => { await Promise.resolve(); });
     expect(api.revokeFileAnnotationBinding).toHaveBeenCalledWith('fob_1');
     expect(container.querySelector('.file-annotation-screenshots')).toBeNull();
-    expect(container.querySelector('.file-annotation-hint')?.textContent).toContain('来源已变化');
+    expect(container.querySelector('.file-annotation-popover-error')?.textContent).toContain('文件来源验证失败');
+    expect(container.querySelector('.file-annotation-popover-error')?.textContent).toContain('来源已变化');
   });
 
   it('revokes the binding on unmount and on source change', async () => {
@@ -449,7 +463,8 @@ describe('FileAnnotationEditor', () => {
     const payload = api.sendFileAnnotations.mock.calls[0][0];
     // 4 UTF-16 code units = 你(1) 好(1) 😀(2)
     expect(payload.file_annotations.annotations[0].target).toMatchObject({ start: 0, end: 4, quote: '你好😀' });
-    expect(payload.content_blocks).toBeUndefined();
+    expect(payload.content_blocks.filter(block => block.type === 'image')).toHaveLength(2);
+    expect(api.uploadImage).toHaveBeenCalledTimes(2);
   });
 
   it('supports cells targeting with one-based row/column and sheet name', async () => {
@@ -471,15 +486,84 @@ describe('FileAnnotationEditor', () => {
     expect(payload.file_annotations.annotations[0].target).toMatchObject({
       sheet: 'Sheet1', row_start: 1, row_end: 1, column_start: 2, column_end: 2,
     });
+    expect(payload.content_blocks.filter(block => block.type === 'image')).toHaveLength(2);
+    expect(api.uploadImage).toHaveBeenCalledTimes(2);
   });
 
-  it('refuses to select a PDF page that is not rendered yet', async () => {
+  it('waits for the first PDF canvas render after choosing whole-page mode', async () => {
     const api = makeApi();
     mount({ kind: 'pdf', api });
     mountSurface('<div><canvas data-file-annotation-surface data-file-annotation-page="2" data-file-annotation-ready="false"></canvas></div>', 'pdf');
     await act(async () => button('整页/整段').click());
     expect(container.querySelector('textarea')).toBeNull();
-    expect(container.querySelector('.file-annotation-hint')?.textContent).toContain('尚未渲染完成');
+    expect(container.querySelector('.file-annotation-hint')?.textContent).toContain('正在加载');
+    await act(async () => {
+      contentRef.current.querySelector('canvas').dataset.fileAnnotationReady = 'true';
+      await new Promise(resolve => setTimeout(resolve, 120));
+    });
+    expect(container.querySelectorAll('.file-annotation-screenshots img')).toHaveLength(2);
+    expect(api.openFileAnnotationBinding).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.file-annotation-popover-target').textContent).toContain('第 2 页');
+  });
+
+  it('recaptures the active whole-page mode without resetting the PDF page', async () => {
+    const api = makeApi(); mount({ kind: 'pdf', api });
+    const wrapper = mountSurface('<canvas data-file-annotation-surface="pdf" data-file-annotation-page="1" data-file-annotation-ready="true"></canvas>', 'pdf');
+    await act(async () => button('整页/整段').click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)); });
+    await act(async () => typeInto(container.querySelector('textarea'), 'Page one'));
+    await act(async () => button('添加批注').click());
+    await act(async () => { wrapper.querySelector('canvas').dataset.fileAnnotationPage = '2'; await Promise.resolve(); });
+    await act(async () => button('整页/整段').click());
+    expect(container.querySelector('.file-annotation-editor').dataset.mode).toBe('whole');
+    expect(container.querySelector('.file-annotation-popover-target').textContent).toContain('第 2 页');
+    await act(async () => typeInto(container.querySelector('textarea'), 'Page two'));
+    await act(async () => button('添加批注').click());
+    await act(async () => button('发送 2 条批注').click());
+    const payloads = api.sendFileAnnotations.mock.calls.map(([payload]) => payload);
+    expect(payloads.map(payload => payload.file_annotations.annotations[0].target.page)).toEqual([1, 2]);
+    expect(api.uploadImage).toHaveBeenCalledTimes(4);
+  });
+
+  it('copies the PDF bitmap before waiting for a slow source binding', async () => {
+    let resolveBinding;
+    const api = makeApi({ openFileAnnotationBinding: vi.fn(() => new Promise(resolve => { resolveBinding = resolve; })) });
+    mount({ kind: 'pdf', api });
+    const create = document.createElement.getMockImplementation();
+    let encodedPixels = JPEG;
+    vi.spyOn(document, 'createElement').mockImplementation(tag => {
+      const node = create(tag);
+      if (tag === 'canvas') node.toDataURL = () => encodedPixels;
+      return node;
+    });
+    mountSurface('<canvas width="1200" height="900" data-file-annotation-surface="pdf" data-file-annotation-page="1" data-file-annotation-ready="true"></canvas>', 'pdf');
+    await act(async () => button('框选区域').click());
+    dragRegion();
+    expect(container.querySelector('textarea')).not.toBeNull();
+    await act(async () => typeInto(container.querySelector('textarea'), 'Writing while capture verifies'));
+    encodedPixels = 'data:image/jpeg;base64,/9j/2Q==';
+    await act(async () => { resolveBinding({ open_ref: 'fob_slow', source: BOUND_SOURCE }); });
+    expect(container.querySelector('.file-annotation-screenshots img').src).toBe(JPEG);
+    expect(container.querySelector('textarea').value).toBe('Writing while capture verifies');
+    await act(async () => button('添加批注').click());
+    await act(async () => button('发送 1 条批注').click());
+    const images = api.sendFileAnnotations.mock.calls[0][0].content_blocks.filter(block => block.type === 'image');
+    expect(images[0].payload).toMatchObject({ width: 1200, height: 900 });
+  });
+
+  it('retries source verification without losing the selection or typed comment', async () => {
+    const api = makeApi();
+    api.openFileAnnotationBinding.mockRejectedValueOnce(new Error('网络不可用'));
+    mount({ api }); imageSurface();
+    await act(async () => button('框选区域').click());
+    dragRegion(); await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('.file-annotation-popover-error').textContent).toContain('文件来源验证失败：网络不可用');
+    await act(async () => typeInto(container.querySelector('textarea'), 'Keep my comment'));
+    await act(async () => button('重试当前选区').click());
+    expect(container.querySelector('.file-annotation-popover-error')).toBeNull();
+    expect(container.querySelector('textarea').value).toBe('Keep my comment');
+    expect(container.querySelectorAll('.file-annotation-screenshots img')).toHaveLength(2);
+    expect(api.openFileAnnotationBinding).toHaveBeenCalledTimes(2);
   });
 
   it('pauses a playing video without moving the playhead when entering a mode', async () => {

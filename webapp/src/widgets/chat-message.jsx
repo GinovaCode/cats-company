@@ -18,6 +18,7 @@ import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet
 import MobilePdfPreview from './mobile-pdf-preview';
 import FileAnnotationEditor from './file-annotation-editor';
 import FileAnnotationCard from './file-annotation-card';
+import { fileAnnotationPreviewFile } from '../utils/file-annotations';
 import '../styles/file-annotations.css';
 import {
   HTML_PREVIEW_SANDBOX,
@@ -1065,7 +1066,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
     // The kind belongs to the enclosing content block (including legacy rich
     // content), not its payload. Preserve it without weakening source checks.
-    onPreviewFileCallback?.({ ...payload, type: attachmentType,
+    onPreviewFileCallback?.({ ...fileAnnotationPreviewFile(payload, attachmentType),
       annotation_source: fileAnnotationSourceForPreview(message, payload, annotationTopicId) });
   }, [annotationTopicId, message, onPreviewFileCallback]);
   const onPreviewFile = onPreviewFileCallback ? previewMessageFile : undefined;

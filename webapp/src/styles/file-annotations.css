@@ -134,6 +134,19 @@
 }
 
 .file-annotation-popover-error { color: var(--cc-danger-text, #b42318); }
+.file-annotation-popover-error p { margin: 8px 0; }
+.file-annotation-retry {
+  min-height: 36px;
+  padding: 5px 10px;
+  border: 1px solid var(--cc-border, #ececef);
+  border-radius: 7px;
+  background: var(--cc-panel, #fff);
+  color: var(--cc-text, #1f1f1f);
+  font: inherit;
+  cursor: pointer;
+}
+.file-annotation-retry:focus-visible { outline: 2px solid var(--cc-accent, #29bc95); outline-offset: 2px; }
+.file-annotation-retry:disabled { opacity: 0.55; cursor: default; }
 
 .file-annotation-popover-actions {
   display: flex;
