@@ -10,6 +10,7 @@ import {
   fileAnnotationDraftKey,
   fileAnnotationHasScreenshot,
   fileAnnotationOwnedBlocks,
+  fileAnnotationPreviewFile,
   fileAnnotationScreenshotFiles,
   fileAnnotationSourceMatches,
   fileAnnotationSourceMatchesFile,
@@ -51,6 +52,19 @@ function docFixture(overrides = {}) {
 }
 
 describe('file annotation source', () => {
+  it('uses the file-list filename fallback and trims historical metadata aliases', () => {
+    expect(fileAnnotationPreviewFile({ url: '/uploads/images/generated%20%E5%9B%BE.png?download=1' }, 'image'))
+      .toMatchObject({ name: 'generated 图.png', type: 'image', size: 0 });
+    expect(fileAnnotationPreviewFile({ url: '/uploads/images/key.png', filename: ' image.png ',
+      fileSize: '123', contentType: ' image/png ', fileKey: ' key.png ' }, 'image'))
+      .toMatchObject({ name: 'image.png', size: 123, mime_type: 'image/png', file_key: 'key.png' });
+  });
+  it('keeps explicit descriptor differences subject to binding validation', () => {
+    const file = fileAnnotationPreviewFile({ ...SOURCE, name: 'other.png' }, 'image');
+    expect(fileAnnotationSourceMatchesFile(SOURCE, file)).toBe(false);
+    expect(fileAnnotationSourceMatchesFile(SOURCE, fileAnnotationPreviewFile({ ...SOURCE, size: 124 }, 'image'))).toBe(false);
+    expect(fileAnnotationPreviewFile({ ...SOURCE, type: 'image' }, 'file').type).toBe('file');
+  });
   it('accepts optional file_key/mime_type and absolute CDN urls', () => {
     const minimal = normalizeFileAnnotationSource({ ...SOURCE, file_key: '', mime_type: '' });
     expect(minimal).not.toBeNull();

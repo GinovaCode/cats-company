@@ -105,6 +105,33 @@ function validResourceURL(url) {
   }
 }
 
+// Match the persisted-attachment descriptor used by the file list and binding
+// handler. Chat payloads can omit a name or use historical field aliases.
+export function fileAnnotationPreviewFile(payload, attachmentType) {
+  const firstString = keys => keys.map(key => payload?.[key])
+    .find(value => typeof value === 'string' && value.trim())?.trim() || '';
+  const url = firstString(['url', 'download_url', 'file_url', 'image_url']);
+  const fileKey = firstString(['file_key', 'fileKey']);
+  let name = firstString(['name', 'file_name', 'filename', 'title']);
+  if (!name && url) {
+    try {
+      const path = decodeURIComponent(new URL(url, 'https://app.catsco.cc').pathname);
+      name = path.replace(/\/+$/, '').split('/').at(-1).trim();
+    } catch { /* Invalid URLs remain subject to binding validation. */ }
+  }
+  const rawSize = payload?.size ?? payload?.file_size ?? payload?.fileSize;
+  const size = typeof rawSize === 'string' && !/^[+-]?\d+$/.test(rawSize.trim()) ? 0 : Number(rawSize || 0);
+  return {
+    ...payload,
+    type: attachmentType === 'image' ? 'image' : 'file',
+    name: name || fileKey || '文件',
+    url,
+    file_key: fileKey,
+    mime_type: firstString(['mime_type', 'mimeType', 'content_type', 'contentType']),
+    size: Number.isFinite(size) ? Math.trunc(size) : 0,
+  };
+}
+
 // Canonical source descriptor minted by the server binding. The UI never
 // invents these fields; it only compares them for exact equality. file_key and
 // mime_type are optional on real historical attachments and normalize to ''.

@@ -88,6 +88,42 @@ async function submitComment(text) {
 }
 
 describe('file annotation production component flow', () => {
+  it.each([false, true])('captures a chat image whose stored payload omits its name (legacy=%s)', async legacy => {
+    const payload = { url: '/uploads/images/generated.png', width: 800, height: 600 };
+    const source = { topic_id: 'p2p_7_9', message_id: 42, attachment_index: 0,
+      url: payload.url, name: 'generated.png', type: 'image', size: 0, file_key: 'generated.png', mime_type: '', version: 'a'.repeat(64) };
+    const api = {
+      openFileAnnotationBinding: vi.fn(async () => ({ open_ref: 'fob_image', source })),
+      revokeFileAnnotationBinding: vi.fn(async () => ({})),
+      sendFileAnnotations: vi.fn(async () => ({ seq_id: 43 })),
+      uploadImage: vi.fn(async file => {
+        const file_key = `image-${crypto.randomUUID()}.jpg`;
+        return { file_key, url: `/uploads/images/${file_key}`, size: file.size, mime_type: 'image/jpeg' };
+      }),
+    };
+    const message = { id: 42, topic_id: 'p2p_7_9', from_uid: 9, created_at: '2026-10-12T00:00:00Z',
+      ...(legacy ? { msg_type: 'image', content: JSON.stringify({ type: 'image', payload }) }
+        : { content: '', content_blocks: [{ type: 'image', payload }] }) };
+    await act(async () => root.render(<FileAnnotationFlow message={message} api={api} />));
+    await act(async () => container.querySelector('button[aria-label="批注图片"]').click());
+    const img = container.querySelector('img[data-file-annotation-surface]');
+    Object.defineProperties(img, { complete: { configurable: true, value: true },
+      naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 600 } });
+    img.getBoundingClientRect = () => ({ x: 100, y: 100, left: 100, top: 100, right: 900, bottom: 700, width: 800, height: 600 });
+    await act(async () => button('框选区域').click());
+    await act(async () => {
+      img.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 200, clientY: 200 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: 500, clientY: 400 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: 500, clientY: 400 }));
+    });
+    expect(container.querySelector('.file-annotation-popover-error')).toBeNull();
+    expect(container.querySelectorAll('.file-annotation-screenshots img')).toHaveLength(2);
+    await submitComment('Change this part of the image');
+    expect(api.revokeFileAnnotationBinding).not.toHaveBeenCalled();
+    expect(api.sendFileAnnotations.mock.calls[0][0].file_annotations.source).toEqual(source);
+    expect(api.uploadImage).toHaveBeenCalledTimes(2);
+  });
+
   it.each([false, true])('sends a chat-opened source file without an inner payload type (legacy=%s)', async legacy => {
     const text = '你好😀 world\nsecond line';
     const { api, source } = await openFile({ name: 'note.ts', mime: 'text/plain', text, legacy });

@@ -2,7 +2,7 @@
 
 File previews use the file's original conversation and persisted attachment reference. They do not need a Gateway application or an application registry entry. Gateway application annotations continue to use their existing contract.
 
-The chat image/video actions and the conversation file list open the same file preview panel. In annotation mode:
+The chat image/video actions and the conversation file list open the same file preview panel. Chat payloads use the persisted-attachment filename fallback and historical name/size/MIME aliases before comparison with the server descriptor. This allows nameless chat images to match the same canonical file-list entry without relaxing source validation. In annotation mode:
 
 - Images use regions normalized to the actual image pixels, so scaling and letterboxing do not change the anchor.
 - Videos pause on the selected frame and save its time in seconds with a normalized region.
