@@ -13,6 +13,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
+import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
@@ -7999,11 +8000,11 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       >
         <Download size={24} aria-hidden="true" />
       </PwaDownloadLink>
-      <img
+      <ImageViewport
         src={imageURL}
         alt={item.payload?.name ? `${item.payload.name} preview` : 'image preview'}
-        className="oc-rich-image-preview-media"
-        onClick={(event) => event.stopPropagation()}
+        wheelZoom
+        imageClassName="oc-rich-image-preview-media"
       />
       <button
         type="button"

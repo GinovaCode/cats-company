@@ -139,10 +139,12 @@ export default function FileAnnotationEditor({
       invalidateCapture('页面或缩放已变化，请重新框选');
     };
     const onSeek = () => invalidateCapture('播放位置已变化，请重新框选');
+    const onViewChange = () => invalidateCapture('图片视图已变化，请重新框选');
     window.addEventListener('resize', onViewport);
     window.addEventListener('scroll', onViewport, true);
     root?.addEventListener('seeked', onSeek, true);
     root?.addEventListener('loadedmetadata', onSeek, true);
+    root?.addEventListener('file-annotation-viewchange', onViewChange, true);
     let observer = null;
     if (typeof ResizeObserver === 'function' && root) {
       const sizes = new Map([root, surface].filter(Boolean).map((node) => {
@@ -179,6 +181,7 @@ export default function FileAnnotationEditor({
       window.removeEventListener('scroll', onViewport, true);
       root?.removeEventListener('seeked', onSeek, true);
       root?.removeEventListener('loadedmetadata', onSeek, true);
+      root?.removeEventListener('file-annotation-viewchange', onViewChange, true);
       observer?.disconnect();
       pageObserver?.disconnect();
     };

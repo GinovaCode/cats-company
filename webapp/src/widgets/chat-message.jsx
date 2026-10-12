@@ -17,6 +17,7 @@ import {
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
 import FileAnnotationEditor from './file-annotation-editor';
+import ImageViewport from './image-viewport';
 import FileAnnotationCard from './file-annotation-card';
 import { fileAnnotationPreviewFile } from '../utils/file-annotations';
 import '../styles/file-annotations.css';
@@ -3411,10 +3412,11 @@ export function FilePreviewPanel({
               </div>
             ) : (
               <div className="v3-file-preview-image">
-                <img
+                <ImageViewport
                   src={fetchableMediaURL(url)}
-                  data-file-annotation-surface="image"
                   alt={file.name || '图片预览'}
+                  annotation={fileAnnotationMode}
+                  wheelZoom
                   onError={() => setImageError(true)}
                 />
               </div>
