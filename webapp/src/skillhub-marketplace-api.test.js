@@ -13,6 +13,15 @@ it('uses only the human Bearer and exact target, never cookies or query JWT', as
   expect(fetch.mock.calls[0][1]).toMatchObject({ credentials: 'omit', cache: 'no-store', redirect: 'error', headers: { Authorization: 'Bearer human-jwt' } });
 });
 
+it('loads share targets through the authenticated marketplace proxy', async () => {
+  fetch.mockResolvedValue({ ok: true, json: async () => ({ users: [{ uid: '951', username: 'john', displayName: 'John' }] }) });
+  await marketplaceApi.shareTargetFriends();
+  await marketplaceApi.searchShareTargets('john');
+  expect(fetch.mock.calls[0][0]).toBe('/api/skillhub/marketplace/share-targets/friends');
+  expect(fetch.mock.calls[1][0]).toBe('/api/skillhub/marketplace/share-targets/search?q=john');
+  expect(fetch.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer human-jwt' });
+});
+
 it('rejects a successful body delivered after account switching', async () => {
   fetch.mockResolvedValue({ ok: true, json: async () => { setToken('other-human'); return { presentation: {} }; } });
   await expect(marketplaceApi.presentation(target)).rejects.toMatchObject({ name: 'AbortError' });

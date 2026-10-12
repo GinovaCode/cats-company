@@ -70,6 +70,8 @@ type marketplaceRoute struct {
 	upstream     string
 	methods      string
 	private      bool
+	visibility   bool
+	catsCoToken  bool
 	image        bool
 	upload       bool
 	queries      []string
@@ -97,6 +99,10 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 		return marketplaceRoute{upstream: "/api/skill-presentations/assets", methods: "GET, POST", private: true, upload: true, queries: []string{"skillId", "version"}}, true
 	case "/visibility":
 		return marketplaceRoute{methods: "GET, PATCH", private: true, skillIDQuery: true, queries: []string{"skillId"}}, true
+	case "/share-targets/friends":
+		return marketplaceRoute{upstream: "/api/catsco/share-targets/friends", methods: "GET", visibility: true, catsCoToken: true}, true
+	case "/share-targets/search":
+		return marketplaceRoute{upstream: "/api/catsco/share-targets/search", methods: "GET", visibility: true, catsCoToken: true, queries: []string{"q"}}, true
 	}
 	if match := marketplaceAssetPath.FindStringSubmatch(path); match != nil {
 		methods := "GET, DELETE"
@@ -154,7 +160,7 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 	}
 	write := r.Method != http.MethodGet
 	featureEnabled, featureWritesEnabled := h.enabled, h.writesEnabled
-	if route.skillIDQuery {
+	if route.skillIDQuery || route.visibility {
 		featureEnabled, featureWritesEnabled = h.visibilityEnabled, h.visibilityWritesEnabled
 	}
 	if !featureEnabled || (write && !featureWritesEnabled) {
@@ -230,7 +236,11 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	response, err := h.do(ctx, &client, r.Method, route.upstream, query, payload, cookie)
+	accessToken := ""
+	if route.catsCoToken {
+		accessToken = token
+	}
+	response, err := h.doWithCatsCoToken(ctx, &client, r.Method, route.upstream, query, payload, cookie, accessToken)
 	if err != nil {
 		marketplaceError(w, http.StatusBadGateway, "marketplace.upstream_unavailable")
 		return
@@ -272,6 +282,10 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *SkillHubMarketplaceHandler) do(ctx context.Context, client *http.Client, method, path string, query url.Values, payload []byte, cookie *http.Cookie) (*http.Response, error) {
+	return h.doWithCatsCoToken(ctx, client, method, path, query, payload, cookie, "")
+}
+
+func (h *SkillHubMarketplaceHandler) doWithCatsCoToken(ctx context.Context, client *http.Client, method, path string, query url.Values, payload []byte, cookie *http.Cookie, catsCoAccessToken string) (*http.Response, error) {
 	target := *h.proxy.baseURL
 	target.Path = strings.TrimRight(target.Path, "/") + path
 	target.RawPath = ""
@@ -287,6 +301,9 @@ func (h *SkillHubMarketplaceHandler) do(ctx context.Context, client *http.Client
 	}
 	if cookie != nil {
 		req.AddCookie(cookie)
+	}
+	if catsCoAccessToken != "" {
+		req.Header.Set("X-CatsCo-Access-Token", catsCoAccessToken)
 	}
 	return client.Do(req)
 }

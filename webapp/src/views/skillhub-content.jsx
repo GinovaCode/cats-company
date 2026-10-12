@@ -559,10 +559,34 @@ function normalizeSharedUIDs(value) {
   return [...new Set(String(value || '').split(/[\s,，、;；]+/).map((item) => item.trim()).filter((item) => /^[1-9]\d*$/.test(item)))];
 }
 
+function normalizeShareTargetUser(value) {
+  const uid = String(value?.uid ?? value?.id ?? '').trim();
+  if (!/^[1-9]\d*$/.test(uid)) return null;
+  const username = String(value?.username || '').trim();
+  const displayName = String(value?.displayName || value?.display_name || '').trim();
+  if (!username && !displayName) return null;
+  return { uid, username, displayName };
+}
+
+function mergeShareTargetUsers(...lists) {
+  const users = new Map();
+  lists.flat().forEach((value) => {
+    const user = normalizeShareTargetUser(value);
+    if (!user) return;
+    users.set(user.uid, { ...users.get(user.uid), ...user });
+  });
+  return [...users.values()];
+}
+
 export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
   const [state, setState] = useState({ loading: Boolean(enabled), available: false, error: '' });
   const [scope, setScope] = useState('public');
-  const [uids, setUIDs] = useState('');
+  const [selectedUIDs, setSelectedUIDs] = useState([]);
+  const [targetUsers, setTargetUsers] = useState([]);
+  const [targetResults, setTargetResults] = useState([]);
+  const [targetQuery, setTargetQuery] = useState('');
+  const [targetLoading, setTargetLoading] = useState(false);
+  const [targetError, setTargetError] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
 
@@ -578,7 +602,9 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
       const visibility = result?.visibility;
       if (!visibility || !VISIBILITY_LABELS[visibility.visibilityScope] || !Number.isSafeInteger(Number(visibility.visibilityRevision))) throw new Error('可见范围数据格式暂不支持');
       setScope(visibility.visibilityScope);
-      setUIDs(Array.isArray(visibility.sharedUserUids) ? visibility.sharedUserUids.join(', ') : '');
+      const sharedUserUids = normalizeSharedUIDs(Array.isArray(visibility.sharedUserUids) ? visibility.sharedUserUids.join(',') : '');
+      setSelectedUIDs(sharedUserUids);
+      setTargetUsers((current) => mergeShareTargetUsers(current, sharedUserUids.map((uid) => ({ uid, displayName: `UID ${uid}` }))));
       setState({ loading: false, available: true, visibility, error: '' });
     }).catch((error) => {
       if (controller.signal.aborted) return;
@@ -593,12 +619,59 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
     return () => controller.abort();
   }, [enabled, skillId]);
 
+  useEffect(() => {
+    if (!writesEnabled || !state.available || scope !== 'shared') return undefined;
+    const controller = new AbortController();
+    setTargetLoading(true);
+    setTargetError('');
+    marketplaceApi.shareTargetFriends(controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      const users = mergeShareTargetUsers(result?.users || []);
+      setTargetResults(users);
+      setTargetUsers((current) => mergeShareTargetUsers(current, users));
+    }).catch((error) => {
+      if (controller.signal.aborted) return;
+      setTargetError(error?.status === 401 ? '当前登录状态已失效，请重新登录。' : '暂时无法读取好友列表，请稍后重试。');
+    }).finally(() => {
+      if (!controller.signal.aborted) setTargetLoading(false);
+    });
+    return () => controller.abort();
+  }, [scope, state.available, writesEnabled]);
+
   if (!enabled || state.loading || !state.available) return state.error ? <p className='cc-skillhub-visibility-error' role='status'>{state.error}</p> : null;
 
+  const searchTargets = async (event) => {
+    event.preventDefault();
+    const query = targetQuery.trim();
+    if (query.length < 2) {
+      setTargetError('请输入至少 2 个字符的 CatsCo 用户名。');
+      return;
+    }
+    const controller = new AbortController();
+    setTargetLoading(true);
+    setTargetError('');
+    try {
+      const result = await marketplaceApi.searchShareTargets(query, controller.signal);
+      const users = mergeShareTargetUsers(result?.users || []);
+      setTargetResults(users);
+      setTargetUsers((current) => mergeShareTargetUsers(current, users));
+      if (users.length === 0) setTargetError('没有找到匹配的 CatsCo 用户。');
+    } catch (error) {
+      if (error?.name !== 'AbortError') setTargetError(error?.status === 401 ? '当前登录状态已失效，请重新登录。' : '搜索失败，请稍后重试。');
+    } finally {
+      setTargetLoading(false);
+    }
+  };
+
+  const toggleTarget = (uid) => {
+    setSelectedUIDs((current) => current.includes(uid) ? current.filter((item) => item !== uid) : [...current, uid]);
+    setNotice('');
+  };
+
   const save = async () => {
-    const sharedUserUids = normalizeSharedUIDs(uids);
+    const sharedUserUids = normalizeSharedUIDs(selectedUIDs.join(','));
     if (scope === 'shared' && sharedUserUids.length === 0) {
-      setNotice('指定共享至少需要填写一个正整数 CatsCo UID。');
+      setNotice('指定共享至少需要选择一个 CatsCo 用户。');
       return;
     }
     setBusy(true);
@@ -612,7 +685,7 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
       });
       if (result?.visibility) {
         setState((current) => ({ ...current, visibility: result.visibility }));
-        setUIDs(Array.isArray(result.visibility.sharedUserUids) ? result.visibility.sharedUserUids.join(', ') : '');
+        setSelectedUIDs(normalizeSharedUIDs(Array.isArray(result.visibility.sharedUserUids) ? result.visibility.sharedUserUids.join(',') : ''));
         setNotice('可见范围已保存。新版本会自动继承此设置。');
       }
     } catch (error) {
@@ -636,10 +709,40 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
         <div className='cc-skillhub-visibility-form'>
           <label><span>范围</span><select value={scope} disabled={busy} onChange={(event) => setScope(event.target.value)}>
             <option value='public'>公开：所有 SkillHub 用户可见</option>
-            <option value='shared'>指定共享：仅指定 CatsCo UID 可见</option>
+            <option value='shared'>指定共享：仅指定 CatsCo 用户可见</option>
             <option value='private'>私有：仅 Owner 和管理员可见</option>
           </select></label>
-          {scope === 'shared' && <label><span><Users size={13} aria-hidden='true' /> CatsCo UID</span><input value={uids} disabled={busy} onChange={(event) => setUIDs(event.target.value)} placeholder='例如 951, 42001' inputMode='numeric' /></label>}
+          {scope === 'shared' && <div className='cc-skillhub-share-targets'>
+            <div className='cc-skillhub-share-targets-heading'>
+              <span><Users size={13} aria-hidden='true' /> 选择可见用户</span>
+              <small>底层仍使用 UID 授权，但这里无需手动填写 UID。</small>
+            </div>
+            {selectedUIDs.length > 0 && <div className='cc-skillhub-share-targets-selected' aria-label='已选择的共享用户'>
+              {selectedUIDs.map((uid) => {
+                const user = targetUsers.find((item) => item.uid === uid);
+                const label = user?.displayName || user?.username || `UID ${uid}`;
+                return <span className='cc-skillhub-share-target-chip' key={uid}>
+                  <span>{label}{user?.username && user.displayName ? ` · @${user.username}` : ''}</span>
+                  <button type='button' aria-label={`移除 ${label}`} disabled={busy} onClick={() => toggleTarget(uid)}><X size={12} aria-hidden='true' /></button>
+                </span>;
+              })}
+            </div>}
+            <form className='cc-skillhub-share-target-search' role='search' onSubmit={searchTargets}>
+              <Search size={14} aria-hidden='true' />
+              <input value={targetQuery} disabled={busy || targetLoading} onChange={(event) => setTargetQuery(event.target.value)} placeholder='搜索 CatsCo 用户名…' autoComplete='off' />
+              <button type='submit' disabled={busy || targetLoading}>{targetLoading ? '搜索中…' : '搜索'}</button>
+            </form>
+            {targetError && <p className='cc-skillhub-share-target-error' role='status'>{targetError}</p>}
+            <div className='cc-skillhub-share-target-results' aria-label='好友和搜索结果'>
+              {targetResults.length === 0 && !targetLoading ? <p className='cc-skillhub-share-target-empty'>暂无好友结果；可以直接搜索 CatsCo 用户名。</p> : targetResults.map((user) => {
+                const checked = selectedUIDs.includes(user.uid);
+                return <label className={`cc-skillhub-share-target-option${checked ? ' is-selected' : ''}`} key={user.uid}>
+                  <input type='checkbox' checked={checked} disabled={busy} onChange={() => toggleTarget(user.uid)} />
+                  <span><strong>{user.displayName || user.username}</strong><small>{user.username ? `@${user.username}` : ''} · UID {user.uid}</small></span>
+                </label>;
+              })}
+            </div>
+          </div>}
           <button type='button' className='primary' disabled={busy} onClick={save}><Save size={14} aria-hidden='true' /> {busy ? '保存中…' : '保存可见范围'}</button>
         </div>
       ) : <p className='cc-skillhub-visibility-readonly'><Lock size={13} aria-hidden='true' /> 当前环境只开放查看，修改入口尚未启用。</p>}
