@@ -582,6 +582,7 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
   const [state, setState] = useState({ loading: Boolean(enabled), available: false, error: '' });
   const [scope, setScope] = useState('public');
   const [selectedUIDs, setSelectedUIDs] = useState([]);
+  const [friendUsers, setFriendUsers] = useState([]);
   const [targetUsers, setTargetUsers] = useState([]);
   const [targetResults, setTargetResults] = useState([]);
   const [targetQuery, setTargetQuery] = useState('');
@@ -627,6 +628,7 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
     marketplaceApi.shareTargetFriends(controller.signal).then((result) => {
       if (controller.signal.aborted) return;
       const users = mergeShareTargetUsers(result?.users || []);
+      setFriendUsers(users);
       setTargetResults(users);
       setTargetUsers((current) => mergeShareTargetUsers(current, users));
     }).catch((error) => {
@@ -638,6 +640,10 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
     return () => controller.abort();
   }, [scope, state.available, writesEnabled]);
 
+  useEffect(() => {
+    if (!targetQuery.trim()) setTargetResults(friendUsers);
+  }, [friendUsers, targetQuery]);
+
   if (!enabled || state.loading || !state.available) return state.error ? <p className='cc-skillhub-visibility-error' role='status'>{state.error}</p> : null;
 
   const searchTargets = async (event) => {
@@ -645,6 +651,10 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
     const query = targetQuery.trim();
     if (query.length < 2) {
       setTargetError('请输入至少 2 个字符的 CatsCo 用户名。');
+      return;
+    }
+    if (query.length > 64) {
+      setTargetError('CatsCo 用户名搜索最多支持 64 个字符。');
       return;
     }
     const controller = new AbortController();
@@ -729,7 +739,7 @@ export function SkillVisibilityControl({ skillId, enabled, writesEnabled }) {
             </div>}
             <form className='cc-skillhub-share-target-search' role='search' onSubmit={searchTargets}>
               <Search size={14} aria-hidden='true' />
-              <input value={targetQuery} disabled={busy || targetLoading} onChange={(event) => setTargetQuery(event.target.value)} placeholder='搜索 CatsCo 用户名…' autoComplete='off' />
+              <input value={targetQuery} maxLength={64} disabled={busy || targetLoading} onChange={(event) => setTargetQuery(event.target.value)} placeholder='搜索 CatsCo 用户名…' autoComplete='off' />
               <button type='submit' disabled={busy || targetLoading}>{targetLoading ? '搜索中…' : '搜索'}</button>
             </form>
             {targetError && <p className='cc-skillhub-share-target-error' role='status'>{targetError}</p>}

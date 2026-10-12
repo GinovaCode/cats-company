@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const marketplacePrefix = "/api/skillhub/marketplace"
@@ -75,6 +76,7 @@ type marketplaceRoute struct {
 	image        bool
 	upload       bool
 	queries      []string
+	queryMaxLen  map[string]int
 	skillIDQuery bool
 }
 
@@ -100,9 +102,9 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 	case "/visibility":
 		return marketplaceRoute{methods: "GET, PATCH", private: true, skillIDQuery: true, queries: []string{"skillId"}}, true
 	case "/share-targets/friends":
-		return marketplaceRoute{upstream: "/api/catsco/share-targets/friends", methods: "GET", visibility: true, catsCoToken: true}, true
+		return marketplaceRoute{upstream: "/api/catsco/share-targets/friends", methods: "GET", private: true, visibility: true, catsCoToken: true}, true
 	case "/share-targets/search":
-		return marketplaceRoute{upstream: "/api/catsco/share-targets/search", methods: "GET", visibility: true, catsCoToken: true, queries: []string{"q"}}, true
+		return marketplaceRoute{upstream: "/api/catsco/share-targets/search", methods: "GET", private: true, visibility: true, catsCoToken: true, queries: []string{"q"}, queryMaxLen: map[string]int{"q": 64}}, true
 	}
 	if match := marketplaceAssetPath.FindStringSubmatch(path); match != nil {
 		methods := "GET, DELETE"
@@ -179,6 +181,10 @@ func (h *SkillHubMarketplaceHandler) Handle(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if len(values) == 1 {
+			if maxLen, ok := route.queryMaxLen[key]; ok && utf8.RuneCountInString(values[0]) > maxLen {
+				marketplaceError(w, http.StatusBadRequest, "marketplace.query_invalid")
+				return
+			}
 			query.Set(key, values[0])
 		}
 	}
