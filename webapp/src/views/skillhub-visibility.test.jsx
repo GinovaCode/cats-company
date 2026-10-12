@@ -45,6 +45,7 @@ it('loads owner visibility and saves shared CatsCo UIDs with the revision', asyn
     users: [
       { uid: '951', username: 'john', displayName: 'John' },
       { uid: '42001', username: 'friend-two', displayName: 'Friend Two' },
+      { uid: '44', username: 'agent', displayName: 'Agent', account_type: 'bot' },
     ],
   });
   await render(<SkillVisibilityControl skillId='author/read' enabled writesEnabled />);
@@ -52,6 +53,7 @@ it('loads owner visibility and saves shared CatsCo UIDs with the revision', asyn
   await act(async () => Simulate.change(container.querySelector('select'), { target: { value: 'shared' } }));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
   const targetCheckboxes = container.querySelectorAll('.cc-skillhub-share-target-option input');
+  expect(targetCheckboxes).toHaveLength(2);
   await act(async () => Simulate.change(targetCheckboxes[0], { target: { checked: true } }));
   await act(async () => Simulate.change(targetCheckboxes[1], { target: { checked: true } }));
   const save = [...container.querySelectorAll('button')].find((button) => button.textContent.includes('保存可见范围'));
