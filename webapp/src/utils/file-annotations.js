@@ -602,23 +602,32 @@ export function captureFileAnnotationScreenshots(element, target, options = {}) 
 
   if (signal && signal.aborted) throw fail('aborted', 'capture aborted');
 
-  // Crop: outward floor/ceil with 16 CSS px padding, clamped to the bitmap.
-  // Same per-axis multiply-then-sum order as the gateway SDK host math.
-  const padX = FILE_ANNOTATION_CROP_PADDING * outWidth / box.width;
-  const padY = FILE_ANNOTATION_CROP_PADDING * outHeight / box.height;
-  const cropLeft = Math.max(0, Math.floor(rx - padX));
-  const cropTop = Math.max(0, Math.floor(ry - padY));
-  const cropRight = Math.min(outWidth, Math.ceil(rect.x * outWidth + rect.width * outWidth + padX));
-  const cropBottom = Math.min(outHeight, Math.ceil(rect.y * outHeight + rect.height * outHeight + padY));
-  const cropWidth = Math.max(1, cropRight - cropLeft);
-  const cropHeight = Math.max(1, cropBottom - cropTop);
+  // Crop from the original bitmap before applying the independent crop bound.
+  // This keeps a small selection sharp even when the complete image is large.
+  const sourcePadX = FILE_ANNOTATION_CROP_PADDING * box.bitmapWidth / box.width;
+  const sourcePadY = FILE_ANNOTATION_CROP_PADDING * box.bitmapHeight / box.height;
+  const sourceLeft = Math.max(0, Math.floor(rect.x * box.bitmapWidth - sourcePadX));
+  const sourceTop = Math.max(0, Math.floor(rect.y * box.bitmapHeight - sourcePadY));
+  const sourceRight = Math.min(box.bitmapWidth, Math.ceil((rect.x + rect.width) * box.bitmapWidth + sourcePadX));
+  const sourceBottom = Math.min(box.bitmapHeight, Math.ceil((rect.y + rect.height) * box.bitmapHeight + sourcePadY));
+  const sourceCropWidth = Math.max(1, sourceRight - sourceLeft);
+  const sourceCropHeight = Math.max(1, sourceBottom - sourceTop);
+  const cropScale = Math.min(1, FILE_ANNOTATION_MAX_DIMENSION / Math.max(sourceCropWidth, sourceCropHeight));
+  const cropWidth = Math.max(1, Math.round(sourceCropWidth * cropScale));
+  const cropHeight = Math.max(1, Math.round(sourceCropHeight * cropScale));
 
   const crop = document.createElement('canvas');
   crop.width = cropWidth;
   crop.height = cropHeight;
   const cropContext = crop.getContext && crop.getContext('2d');
   if (!cropContext) throw fail('unavailable', 'canvas is unavailable');
-  cropContext.drawImage(full, cropLeft, cropTop, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+  try {
+    cropContext.drawImage(element, sourceLeft, sourceTop, sourceCropWidth, sourceCropHeight,
+      0, 0, cropWidth, cropHeight);
+  } catch (error) {
+    if (isTaintError(error)) throw fail('tainted', 'media is cross-origin and cannot be captured');
+    throw fail('unavailable', 'media cannot be drawn');
+  }
 
   const encoded = [encodeJPEG(full, FILE_ANNOTATION_JPEG_QUALITY), encodeJPEG(crop, FILE_ANNOTATION_JPEG_QUALITY)];
   if (encoded.some((entry) => entry && entry.taint)) throw fail('tainted', 'media is cross-origin and cannot be captured');
@@ -700,14 +709,17 @@ export function captureFileAnnotationScreenshot({
     return { error: isTaintError(error) ? 'tainted' : 'canvas-unavailable' };
   }
 
-  const padX = padding * scale;
-  const padY = padding * scale;
-  const cropLeft = Math.max(0, Math.floor(rect.x * outWidth - padX));
-  const cropTop = Math.max(0, Math.floor(rect.y * outHeight - padY));
-  const cropRight = Math.min(outWidth, Math.ceil(rect.x * outWidth + rect.width * outWidth + padX));
-  const cropBottom = Math.min(outHeight, Math.ceil(rect.y * outHeight + rect.height * outHeight + padY));
-  const cropWidth = Math.max(1, cropRight - cropLeft);
-  const cropHeight = Math.max(1, cropBottom - cropTop);
+  const sourcePadX = padding;
+  const sourcePadY = padding;
+  const sourceLeft = Math.max(0, Math.floor(rect.x * sourceWidth - sourcePadX));
+  const sourceTop = Math.max(0, Math.floor(rect.y * sourceHeight - sourcePadY));
+  const sourceRight = Math.min(sourceWidth, Math.ceil((rect.x + rect.width) * sourceWidth + sourcePadX));
+  const sourceBottom = Math.min(sourceHeight, Math.ceil((rect.y + rect.height) * sourceHeight + sourcePadY));
+  const sourceCropWidth = Math.max(1, sourceRight - sourceLeft);
+  const sourceCropHeight = Math.max(1, sourceBottom - sourceTop);
+  const cropScale = Math.min(1, maxDimension / Math.max(sourceCropWidth, sourceCropHeight));
+  const cropWidth = Math.max(1, Math.round(sourceCropWidth * cropScale));
+  const cropHeight = Math.max(1, Math.round(sourceCropHeight * cropScale));
 
   let crop;
   try {
@@ -716,7 +728,8 @@ export function captureFileAnnotationScreenshot({
     crop.height = cropHeight;
     const context = crop.getContext('2d');
     if (!context) return { error: 'canvas-unavailable' };
-    context.drawImage(full, cropLeft, cropTop, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    context.drawImage(canvas, sourceLeft, sourceTop, sourceCropWidth, sourceCropHeight,
+      0, 0, cropWidth, cropHeight);
   } catch (error) {
     return { error: isTaintError(error) ? 'tainted' : 'canvas-unavailable' };
   }
