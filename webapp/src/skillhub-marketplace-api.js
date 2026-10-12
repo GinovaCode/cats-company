@@ -49,6 +49,8 @@ export const marketplaceApi = {
   upload: (body, signal) => json('POST', '/assets', body, signal),
   skillVisibility: (skillId, signal) => json('GET', `/visibility?skillId=${encodeURIComponent(skillId)}`, undefined, signal),
   updateSkillVisibility: ({ skillId, ...body }, signal) => json('PATCH', `/visibility?skillId=${encodeURIComponent(skillId)}`, body, signal),
+  shareTargetFriends: (signal) => json('GET', '/share-targets/friends', undefined, signal),
+  searchShareTargets: (query, signal) => json('GET', `/share-targets/search?q=${encodeURIComponent(String(query || '').trim())}`, undefined, signal),
 };
 
 export async function marketplaceImage(assetId, { preview = false, signal } = {}) {
