@@ -100,7 +100,10 @@ func resolveMarketplaceRoute(path string) (marketplaceRoute, bool) {
 	case "/assets":
 		return marketplaceRoute{upstream: "/api/skill-presentations/assets", methods: "GET, POST", private: true, upload: true, queries: []string{"skillId", "version"}}, true
 	case "/visibility":
-		return marketplaceRoute{methods: "GET, PATCH", private: true, skillIDQuery: true, queries: []string{"skillId"}}, true
+		// Visibility mutations validate shared targets against the current
+		// CatsCo account, so forward the exchange token as well as the
+		// temporary SkillHub session cookie.
+		return marketplaceRoute{methods: "GET, PATCH", private: true, skillIDQuery: true, catsCoToken: true, queries: []string{"skillId"}}, true
 	case "/share-targets/friends":
 		return marketplaceRoute{upstream: "/api/catsco/share-targets/friends", methods: "GET", private: true, visibility: true, catsCoToken: true}, true
 	case "/share-targets/search":

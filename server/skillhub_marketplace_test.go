@@ -260,6 +260,9 @@ func TestSkillHubMarketplaceVisibilityUsesTemporaryOwnerSession(t *testing.T) {
 		if r.URL.Path != "/api/skills/author/read/visibility" || r.Header.Get("Authorization") != "" {
 			t.Errorf("unexpected visibility request path=%s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
+		if got := r.Header.Get("X-CatsCo-Access-Token"); got != "user-7" {
+			t.Errorf("CatsCo access token=%q, want user-7", got)
+		}
 		if r.Method == http.MethodPatch {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
