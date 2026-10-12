@@ -562,6 +562,10 @@ function normalizeSharedUIDs(value) {
 function normalizeShareTargetUser(value) {
   const uid = String(value?.uid ?? value?.id ?? '').trim();
   if (!/^[1-9]\d*$/.test(uid)) return null;
+  const accountType = String(value?.accountType ?? value?.account_type ?? '').trim().toLowerCase();
+  // The server is authoritative and already filters share targets. Keep this
+  // guard so a stale/older proxy response can never put a Bot into the picker.
+  if (accountType && accountType !== 'human') return null;
   const username = String(value?.username || '').trim();
   const displayName = String(value?.displayName || value?.display_name || '').trim();
   if (!username && !displayName) return null;

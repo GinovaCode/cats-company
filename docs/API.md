@@ -175,6 +175,9 @@ Authorization: ApiKey <api_key>
 
 搜索用户（最少 2 字符）。无需鉴权。
 
+返回的每个用户包含 `account_type`（`human` 或 `bot`）。SkillHub 的指定共享
+只允许选择 `human` 账号；该字段用于区分账号与 Bot，不代表额外的授权。
+
 #### GET /api/users/online
 
 获取好友在线状态。需要鉴权。返回 `{ "online_uids": [2, 5, 8] }`
