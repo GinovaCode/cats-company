@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   FILE_ANNOTATIONS_CONTRACT,
-  captureFileAnnotationScreenshots,
+  captureFilePreviewScreenshots,
   fileAnnotationHasScreenshot,
   fileAnnotationOwnedBlocks,
   fileAnnotationScreenshotFiles,
@@ -18,12 +18,19 @@ import {
 const MODE_LABELS = { region: '框选区域', text: '文本选区', cells: '表格选区', whole: '整页/整段' };
 const REGION_KINDS = { image: true, video: true, pdf: true };
 const SURFACE_SELECTOR = '[data-file-annotation-surface]';
+const CAPTURE_ERRORS = {
+  tainted: '浏览器无法读取当前内容的图片数据。请重新打开文件后重试。',
+  unavailable: '当前内容尚未就绪或不可见，请等待加载完成后重试。',
+  'bad-geometry': '所选区域无效，请重新选择。',
+  'encode-failed': '截图图片生成失败，请重试当前选区。',
+  'image-too-large': '截图超过大小限制，请缩小选区后重试。',
+};
 
 // B's capturer returns { screenshots, warnings }; the upload helpers consume
 // { images, warnings }. Normalize once, here, so the editor owns the shape.
 function captureImages(result) {
   const images = result?.images || result?.screenshots || [];
-  return { images, warnings: result?.warnings || [] };
+  return { images, warnings: result?.warnings || [], visiblePreview: Boolean(result?.visiblePreview) };
 }
 
 // File preview annotations. Owns its own mode + draft list; the parent file
@@ -132,10 +139,12 @@ export default function FileAnnotationEditor({
       invalidateCapture('页面或缩放已变化，请重新框选');
     };
     const onSeek = () => invalidateCapture('播放位置已变化，请重新框选');
+    const onViewChange = () => invalidateCapture('图片视图已变化，请重新框选');
     window.addEventListener('resize', onViewport);
     window.addEventListener('scroll', onViewport, true);
     root?.addEventListener('seeked', onSeek, true);
     root?.addEventListener('loadedmetadata', onSeek, true);
+    root?.addEventListener('file-annotation-viewchange', onViewChange, true);
     let observer = null;
     if (typeof ResizeObserver === 'function' && root) {
       const sizes = new Map([root, surface].filter(Boolean).map((node) => {
@@ -158,15 +167,21 @@ export default function FileAnnotationEditor({
       if (surface) observer.observe(surface);
     }
     let pageObserver = null;
-    if (kind === 'pdf' && root && typeof MutationObserver === 'function') {
+    if (root && typeof MutationObserver === 'function') {
       pageObserver = new MutationObserver(onViewport);
-      pageObserver.observe(root, { subtree: true, attributes: true, attributeFilter: ['width', 'height', 'data-file-annotation-page', 'data-file-annotation-ready'] });
+      if (kind === 'pdf') {
+        pageObserver.observe(root, { subtree: true, attributes: true, attributeFilter: ['width', 'height', 'data-file-annotation-page', 'data-file-annotation-ready'] });
+      } else if (kind === 'text' || kind === 'cells') {
+        pageObserver.observe(root, { subtree: true, childList: true, characterData: true,
+          attributes: true, attributeFilter: ['data-file-annotation-sheet'] });
+      }
     }
     return () => {
       window.removeEventListener('resize', onViewport);
       window.removeEventListener('scroll', onViewport, true);
       root?.removeEventListener('seeked', onSeek, true);
       root?.removeEventListener('loadedmetadata', onSeek, true);
+      root?.removeEventListener('file-annotation-viewchange', onViewChange, true);
       observer?.disconnect();
       pageObserver?.disconnect();
     };
@@ -202,41 +217,59 @@ export default function FileAnnotationEditor({
     finally { if (bindingPromiseRef.current === pending) bindingPromiseRef.current = null; }
   }, [api, file, source]);
 
-  // Capture happens at SELECTION time, for that one target only.
+  // Copy the selected frame before waiting for the binding request. Evidence
+  // is accepted only after the original file's binding has been validated.
   const captureTarget = useCallback(async (target, epoch) => {
     setCapturing(true);
     setError('');
+    setNotice('');
     setScreenshots(null);
+    let stage = 'binding';
     try {
+      const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
+      const pending = captureFilePreviewScreenshots(surface, kind, target)
+        .then(result => ({ result }), failure => ({ failure }));
       await openBinding();
       if (!mountedRef.current || epoch !== epochRef.current) return null;
-      if (!needsScreenshot) return null;
-      const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
-      const result = captureImages(await captureFileAnnotationScreenshots(surface, target));
+      stage = 'capture';
+      const captured = await pending;
+      if (captured.failure) throw captured.failure;
+      const result = captureImages(captured.result);
       if (!mountedRef.current || epoch !== epochRef.current) return null;
-      if (result.images.length !== 2) throw new Error('当前内容无法截图，请重新框选或选择仅发送文字与定位');
+      if (result.images.length !== 2) throw new Error('当前内容无法截图，请重试');
       setScreenshots(result);
-      setCapturing(false);
-      return result;
+      return { capture: result };
     } catch (failure) {
       if (mountedRef.current && epoch === epochRef.current) {
-        setCapturing(false);
-        setNotice(failure?.code === 'unavailable'
-          ? '当前内容无法截图，可选择仅发送文字与定位'
-          : (failure?.message || '截图失败，请重试或选择仅发送文字'));
+        const message = stage === 'binding'
+          ? `文件来源验证失败：${failure?.message || '请重新打开原文件'}`
+          : CAPTURE_ERRORS[failure?.code]
+            || (['stale', 'renderer-unavailable', 'capture-timeout'].includes(failure?.code)
+              ? failure.message : '截图未能完成，请重试当前选区。');
+        return { failure: { stage, message } };
       }
       return null;
+    } finally {
+      if (mountedRef.current && epoch === epochRef.current) setCapturing(false);
     }
-  }, [contentRef, needsScreenshot, openBinding]);
+  }, [contentRef, kind, openBinding]);
 
   const acceptTarget = useCallback(async (target, anchor = null) => {
     const epoch = ++epochRef.current;
-    const capture = needsScreenshot ? await captureTarget(target, epoch) : null;
-    if (!mountedRef.current || epochRef.current !== epoch) return;
-    setCurrent({ target, anchor, capture, captureFailed: needsScreenshot && !capture });
+    setCurrent({ target, anchor, capture: null });
+    setScreenshots(null);
+    const result = needsScreenshot ? await captureTarget(target, epoch) : null;
+    if (!mountedRef.current || epochRef.current !== epoch) return false;
+    setCurrent({ target, anchor, capture: result?.capture || null, failure: result?.failure });
     setRegion(null);
-    inputRef.current?.focus();
+    return true;
   }, [captureTarget, needsScreenshot]);
+
+  useLayoutEffect(() => {
+    // Opening the mobile keyboard during DOM rendering changes the visible
+    // preview bounds. Focus once its evidence (or error) is available.
+    if (current && !capturing) inputRef.current?.focus({ preventScroll: true });
+  }, [current?.target, capturing]);
 
   const addDraft = useCallback(() => {
     const trimmed = body.trim();
@@ -286,6 +319,7 @@ export default function FileAnnotationEditor({
       epochRef.current += 1;
       setCurrent(null);
       setScreenshots(null);
+      setCapturing(false);
       setRegion(null);
       setTextOnly(false);
     }
@@ -306,6 +340,7 @@ export default function FileAnnotationEditor({
       setRegion(null);
       setCurrent(null);
       setScreenshots(null);
+      setCapturing(false);
       setNotice('');
       if (!current) setMode('off');
     };
@@ -535,14 +570,14 @@ export default function FileAnnotationEditor({
         setNotice('当前页尚未渲染完成，请稍候');
         return;
       }
-      void acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 }, page });
+      return acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 }, page });
     } else if (kind === 'video') {
       const video = contentRef?.current?.querySelector(SURFACE_SELECTOR);
       if (!video) return;
       video.pause?.();
-      void acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 }, time_seconds: Number(video.currentTime || 0) });
+      return acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 }, time_seconds: Number(video.currentTime || 0) });
     } else if (kind === 'image') {
-      void acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 } });
+      return acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 } });
     }
   }, [acceptTarget, cellFromPoint, contentRef, kind]);
 
@@ -569,8 +604,28 @@ export default function FileAnnotationEditor({
   }, [contentRef, mode, onPointerDown, selectCells, selectText]);
 
   useEffect(() => {
-    if (mode === 'whole') void selectWhole();
-  }, [mode, selectWhole]);
+    if (mode !== 'whole') return undefined;
+    if (kind !== 'pdf') { void selectWhole(); return undefined; }
+    const root = contentRef?.current;
+    let active = true, timer;
+    setNotice('正在加载当前 PDF 页面…');
+    const tryReadyPage = () => {
+      clearTimeout(timer);
+      if (root?.querySelector(SURFACE_SELECTOR)?.dataset.fileAnnotationReady !== 'true') return;
+      // Initial fit-width measurement can immediately restart a first render.
+      // Wait for layout to settle, and keep watching if that capture goes stale.
+      timer = setTimeout(async () => {
+        if (!active) return;
+        const accepted = await selectWhole();
+        if (accepted && active) { observer.disconnect(); setNotice(''); }
+      }, 80);
+    };
+    const observer = new MutationObserver(tryReadyPage);
+    if (root) observer.observe(root, { subtree: true, childList: true, attributes: true,
+      attributeFilter: ['width', 'height', 'data-file-annotation-ready'] });
+    tryReadyPage();
+    return () => { active = false; clearTimeout(timer); observer.disconnect(); };
+  }, [contentRef, kind, mode, selectWhole]);
 
   const availableModes = kind === 'text' ? ['text'] : kind === 'cells' ? ['cells'] : ['region', 'whole'];
 
@@ -624,7 +679,12 @@ export default function FileAnnotationEditor({
               type="button"
               className={`file-annotation-mode${mode === item ? ' is-active' : ''}`}
               aria-pressed={mode === item}
-              onClick={() => changeMode(mode === item ? 'off' : item)}
+              onClick={() => {
+                if (item === 'whole' && mode === 'whole') {
+                  if (!current) void selectWhole();
+                  else setNotice('请先完成或取消当前选区');
+                } else changeMode(mode === item ? 'off' : item);
+              }}
             >
               {MODE_LABELS[item]}
             </button>
@@ -656,19 +716,22 @@ export default function FileAnnotationEditor({
             <div className="file-annotation-screenshots" aria-label="批注截图预览">
               {screenshots.images.map((image) => (
                 <figure key={image.role}>
-                  <img src={image.data_url} alt={image.role === 'full' ? '完整内容截图' : '选区截图'} />
-                  <figcaption>{image.role === 'full' ? '完整内容' : '选区及周边'}</figcaption>
+                  <img src={image.data_url} alt={image.role === 'full' ? (screenshots.visiblePreview ? '当前可见内容截图' : '完整内容截图') : '选区截图'} />
+                  <figcaption>{image.role === 'full' ? (screenshots.visiblePreview ? '当前可见内容' : '完整内容') : '选区及周边'}</figcaption>
                 </figure>
               ))}
               {screenshots.warnings?.length > 0 && <p role="status">部分视觉证据：{screenshots.warnings.join('；')}</p>}
             </div>
           )}
           {visualKind && !needsScreenshot && <p className="file-annotation-popover-note">将仅发送文字与定位，不含截图。</p>}
-          {current.captureFailed && !textOnly && <p role="status">截图失败；请重新框选，或勾选仅发送文字与定位。</p>}
+          {current.failure && !textOnly && <div role="alert" className="file-annotation-popover-error">
+            <p>{current.failure.message}</p>
+            <button type="button" className="file-annotation-retry" disabled={capturing} onClick={() => void acceptTarget(current.target, current.anchor)}>重试当前选区</button>
+          </div>}
           <textarea ref={inputRef} aria-label="批注内容" maxLength={2000} placeholder="写下要传达给 Agent 的批注内容…"
             value={body} onChange={(event) => setBody(event.currentTarget.value)} />
           <div className="file-annotation-popover-actions">
-            <button type="button" onClick={() => { setCurrent(null); setScreenshots(null); setNotice(''); }}>取消选区</button>
+            <button type="button" onClick={() => { epochRef.current += 1; setCapturing(false); setCurrent(null); setScreenshots(null); setNotice(''); }}>取消选区</button>
             <button type="button" disabled={!body.trim() || capturing || (needsScreenshot && !current.capture)} onClick={addDraft}>添加批注</button>
           </div>
         </div>

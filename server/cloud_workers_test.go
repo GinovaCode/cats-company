@@ -93,6 +93,7 @@ type cloudWorkerTestStore struct {
 	creatorUser       *types.User
 	botAPIKeys        map[int64]string
 	botBodyIDs        map[int64]string
+	officialBodyIDs   map[int64]string
 	botDefinitions    map[int64]*types.BotDefinitionRecord
 	adminRecords      []types.CloudWorkerAdminRecord
 	importedBinding   *types.CloudWorkerBindingRecord
@@ -120,7 +121,10 @@ func (quotaCreditStub) ListCloudWorkerLifecycleDue(time.Time, int) ([]CloudWorke
 }
 func (quotaCreditStub) MarkCloudWorkerLifecyclePending(int64, time.Time) error { return nil }
 func (quotaCreditStub) ClaimCloudWorkerLifecycleDeletion(int64) (bool, error)  { return false, nil }
-func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error    { return nil }
+func (quotaCreditStub) MarkCloudWorkerLifecycleAwaitingRecycle(int64, string) error {
+	return nil
+}
+func (quotaCreditStub) MarkCloudWorkerLifecycleDeleted(int64, string) error { return nil }
 
 // platformLifecycleStub adds the owner-wide lifecycle listing used by the
 // renewal report and the bound-worker counter.
@@ -287,6 +291,21 @@ func (s *cloudWorkerTestStore) GetBotBodyID(botUID int64) (string, error) {
 	return s.botBodyIDs[botUID], nil
 }
 
+func (s *cloudWorkerTestStore) GetCloudWorkerOfficialBodyID(botUID int64) (string, error) {
+	if s.officialBodyIDs == nil {
+		return "", nil
+	}
+	return s.officialBodyIDs[botUID], nil
+}
+
+func (s *cloudWorkerTestStore) SetCloudWorkerOfficialBodyID(botUID int64, bodyID string) error {
+	if s.officialBodyIDs == nil {
+		s.officialBodyIDs = map[int64]string{}
+	}
+	s.officialBodyIDs[botUID] = bodyID
+	return nil
+}
+
 func (s *cloudWorkerTestStore) GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error) {
 	if definition := s.botDefinitions[botUID]; definition != nil {
 		return definition, nil
@@ -386,6 +405,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			body = "@echo off\r\necho ok\r\n"
 		case "fail":
 			body = "@echo off\r\nexit /b 1\r\n"
+		case "fail-detail":
+			body = "@echo off\r\necho provider refused the destroy\r\nexit /b 1\r\n"
+		case "awaiting-recycle":
+			body = "@echo off\r\necho {\"status\":\"awaiting-provider-recycle\",\"instance_id\":\"i-1\"}\r\nexit /b 3\r\n"
 		case "record":
 			body = "@echo off\r\necho %*\r\n"
 		case "tsv":
@@ -405,7 +428,8 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			body = "@echo off\r\nping 127.0.0.1 -n 2 >nul\r\necho ok\r\n"
 		case "require-identity":
 			// Credentials must arrive through the restricted file, never argv.
-			body = "@echo off\r\nif not \"%3\"==\"--credential-file\" exit /b 1\r\nif not exist \"%4\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
+			// Positional slots: 1=--name 2=<tenant> 3=--body-id 4=<uuid> 5=--credential-file 6=<path>.
+			body = "@echo off\r\nif not \"%3\"==\"--body-id\" exit /b 1\r\nif not \"%5\"==\"--credential-file\" exit /b 1\r\nif not exist \"%6\" exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
 		default:
 			t.Fatalf("unknown behavior %q", behavior)
 		}
@@ -424,6 +448,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		body = "#!/bin/sh\necho ok\n"
 	case "fail":
 		body = "#!/bin/sh\nexit 1\n"
+	case "fail-detail":
+		body = "#!/bin/sh\necho 'provider refused the destroy'\nexit 1\n"
+	case "awaiting-recycle":
+		body = "#!/bin/sh\necho '{\"status\":\"awaiting-provider-recycle\",\"instance_id\":\"i-1\"}'\nexit 3\n"
 	case "record":
 		body = "#!/bin/sh\necho \"$@\"\n"
 	case "tsv":
@@ -440,8 +468,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		body = "#!/bin/sh\nsleep 0.2\necho ok\n"
 	case "require-identity":
 		// Credentials are read from the 0600 file; identity metadata remains argv.
-		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
-		body = "#!/bin/sh\nlogin=\"\"; key=\"\"; cred=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --credential-file) cred=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; esac; prev=\"$a\"; done; [ -f \"$cred\" ] && login=\"$(sed -n '1p' \"$cred\")\" && key=\"$(sed -n '2p' \"$cred\")\"; [ -n \"$login\" ] && [ -n \"$key\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] || { echo \"missing identity\" >&2; exit 1; }; echo ok\n"
+		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail；
+		// platform-minted body 也必须随 argv 下发（官定 body 执法依赖它）。
+		body = "#!/bin/sh\nlogin=\"\"; key=\"\"; cred=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; cwbody=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --credential-file) cred=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; --body-id) cwbody=\"$a\";; esac; prev=\"$a\"; done; [ -f \"$cred\" ] && login=\"$(sed -n '1p' \"$cred\")\" && key=\"$(sed -n '2p' \"$cred\")\"; [ -n \"$login\" ] && [ -n \"$key\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] && [ -n \"$cwbody\" ] || { echo \"missing identity\" >&2; exit 1; }; echo ok\n"
 	default:
 		t.Fatalf("unknown behavior %q", behavior)
 	}
@@ -1192,6 +1221,16 @@ func TestCloudWorkerHandleCreatePassesIdentity(t *testing.T) {
 	h.HandleCreate(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	// The platform-minted official body must be durably recorded: the
+	// WebSocket handler enforces it from the worker's first connect.
+	if len(ts.officialBodyIDs) != 1 {
+		t.Fatalf("official bodies persisted=%d want 1 (%v)", len(ts.officialBodyIDs), ts.officialBodyIDs)
+	}
+	for uid, body := range ts.officialBodyIDs {
+		if strings.TrimSpace(body) == "" {
+			t.Fatalf("official body for uid=%d is empty", uid)
+		}
 	}
 }
 

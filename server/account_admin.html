@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CatsCo Account Admin</title>
+  <title>CatsCo 账号管理</title>
   <style>
     :root {
       color-scheme: dark;
@@ -33,7 +33,7 @@
     }
 
     main {
-      width: min(980px, calc(100vw - 40px));
+      width: min(1240px, calc(100vw - 40px));
       margin: 0 auto;
       padding: 48px 0;
     }
@@ -75,7 +75,7 @@
       top: 0;
       z-index: 10;
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
       margin: 0 0 18px;
       padding: 10px;
@@ -366,7 +366,10 @@
     }
 
     .user-list.visible {
-      display: block;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 10px;
     }
 
     .user-toolbar {
@@ -377,6 +380,38 @@
       margin-top: 12px;
       color: var(--muted);
       font-size: 13px;
+    }
+
+    .user-list-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .user-list-controls .user-toolbar {
+      margin-top: 0;
+    }
+
+    .page-size-field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .page-size-field select {
+      width: auto;
+      height: 34px;
+      font-size: 13px;
+    }
+
+    .detail-heading {
+      margin: 24px 0 0;
+      font-size: 16px;
     }
 
     .user-pager {
@@ -400,11 +435,12 @@
       gap: 14px;
       align-items: center;
       padding: 14px;
-      border-top: 1px solid var(--border);
+      border: 1px solid var(--border);
+      border-radius: 8px;
     }
 
-    .user-item:first-child {
-      border-top: 0;
+    .user-item:only-child {
+      grid-column: 1 / -1;
     }
 
     .user-meta {
@@ -412,6 +448,28 @@
       font-size: 13px;
       margin-top: 4px;
       overflow-wrap: anywhere;
+    }
+
+    /* The old meta line crammed every fact into one long sentence; a wrapping
+       label/value list scans far better while keeping the same information. */
+    .user-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 14px;
+      margin-top: 6px;
+      font-size: 13px;
+    }
+
+    .user-facts span {
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
+    .user-facts b {
+      color: var(--muted);
+      font-weight: 600;
+      margin-right: 5px;
+      font-size: 12px;
     }
 
     .secondary-button {
@@ -480,9 +538,15 @@
       overflow-x: auto;
     }
 
+    @media (max-width: 1000px) {
+      .user-list.visible {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @media (max-width: 640px) {
       main {
-        width: min(100vw - 24px, 980px);
+        width: min(100vw - 24px, 1240px);
         padding: 28px 0;
       }
 
@@ -555,15 +619,15 @@
   <main>
     <header>
       <div>
-        <h1>CatsCo Account Admin</h1>
+        <h1>CatsCo 账号管理</h1>
         <p>本页面只用于 SSH 隧道后的本机管理，不走公网入口。</p>
       </div>
-      <div class="badge">Tunnel only</div>
+      <div class="badge">仅限本机隧道</div>
     </header>
 
     <nav class="admin-nav" aria-label="后台模块">
       <button type="button" class="active" data-admin-tab="accounts" aria-pressed="true">账号管理</button>
-      <button type="button" data-admin-tab="services" aria-pressed="false">Service Token</button>
+      <button type="button" data-admin-tab="services" aria-pressed="false">服务令牌</button>
       <button type="button" data-admin-tab="access" aria-pressed="false">访问方式</button>
     </nav>
 
@@ -581,28 +645,33 @@
       </form>
       <div class="hint">默认按 UID 倒序分页展示。禁用账号后，用户 JWT introspect 会变为不可用，登录链路会拒绝该账号。</div>
       <div id="search-error" class="error"></div>
-      <div id="user-toolbar" class="user-toolbar"></div>
+      <div class="user-list-controls">
+        <div id="user-toolbar" class="user-toolbar"></div>
+        <label class="page-size-field" for="user-page-size">每页
+          <select id="user-page-size" aria-label="每页账号数">
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+            <option value="100">100 条</option>
+          </select>
+        </label>
+      </div>
       <div id="search-result" class="user-list" aria-live="polite"></div>
       <div id="user-pager" class="user-pager"></div>
 
-      <h2 style="margin-top: 24px;">按 UID 精确查询</h2>
-      <form id="lookup-form">
-        <input id="uid" name="uid" inputmode="numeric" autocomplete="off" placeholder="输入用户 UID，例如 2" />
-        <button id="lookup-button" type="submit">查询</button>
-      </form>
-      <div class="hint">精确查询用于快速确认单个账号信息和状态；资料字段仍保持只读，避免误操作。</div>
+      <h3 class="detail-heading">账号详情</h3>
+      <div class="hint">在搜索结果里点「查看」即可显示单个账号的完整资料与状态操作；搜索框输入纯数字 UID 时按精确匹配。</div>
       <div id="error" class="error"></div>
       <div id="result" class="result" aria-live="polite"></div>
     </section>
 
     <section class="admin-view" data-admin-view="services">
-      <h2>Service Token</h2>
+      <h2>服务令牌</h2>
       <form id="service-form">
         <input id="service-slug" name="slug" autocomplete="off" placeholder="服务标识，例如 internal-tool" />
         <input id="service-name" name="name" autocomplete="off" placeholder="显示名称，例如 内部工具" />
         <button id="service-button" type="submit">创建/轮换</button>
         <div class="scope-panel">
-          <div class="scope-title">Service Token 是内部服务访问账号中心的凭证，不属于某个用户；不确定权限时可以先不选。同一服务标识再次提交会轮换 token，并让旧 token 失效。</div>
+          <div class="scope-title">服务令牌是内部服务访问账号中心的凭证，不属于某个用户；不确定权限时可以先不选。同一服务标识再次提交会轮换 token，并让旧 token 失效。</div>
           <div class="scope-options">
             <label class="scope-option">
               <input type="checkbox" data-scope="account.introspect" />
@@ -639,7 +708,6 @@ http://127.0.0.1:26061/local/account-admin</code>
   </main>
 
   <script>
-    const form = document.querySelector('#lookup-form');
     const searchForm = document.querySelector('#search-form');
     const userQueryInput = document.querySelector('#user-query');
     const searchButton = document.querySelector('#search-button');
@@ -649,8 +717,7 @@ http://127.0.0.1:26061/local/account-admin</code>
     const searchError = document.querySelector('#search-error');
     const userToolbar = document.querySelector('#user-toolbar');
     const userPager = document.querySelector('#user-pager');
-    const uidInput = document.querySelector('#uid');
-    const button = document.querySelector('#lookup-button');
+    const userPageSizeSelect = document.querySelector('#user-page-size');
     const result = document.querySelector('#result');
     const error = document.querySelector('#error');
     const serviceForm = document.querySelector('#service-form');
@@ -664,7 +731,16 @@ http://127.0.0.1:26061/local/account-admin</code>
     let currentUserPage = 1;
     let currentUserQuery = '';
     let currentAccountType = 'all';
-    const userPageSize = 20;
+    let currentLookupUID = '';
+    let lookupPending = false;
+    function storedUserPageSize() {
+      // "1,556 accounts over 78 pages" is why the default is no longer fixed
+      // at 20: the selector offers 50/100 for scanning, and the choice sticks.
+      const saved = Number(localStorage.getItem('catsco-account-admin-page-size'));
+      return [20, 50, 100].includes(saved) ? saved : 20;
+    }
+    let userPageSize = storedUserPageSize();
+    userPageSizeSelect.value = String(userPageSize);
     const pendingUserStateUIDs = new Set();
 
     function showError(message) {
@@ -789,6 +865,7 @@ http://127.0.0.1:26061/local/account-admin</code>
 
     function render(payload) {
       const user = payload.user || {};
+      currentLookupUID = String(user.uid || '');
       result.innerHTML = [
         row('UID', user.uid),
         row('用户名', user.username),
@@ -807,18 +884,20 @@ http://127.0.0.1:26061/local/account-admin</code>
 
     function renderUserItem(user) {
       const title = `${user.display_name || user.username || '未命名用户'} · UID ${user.uid}`;
-      const meta = [
-        `用户名=${user.username || '-'}`,
-        `邮箱=${user.email || '-'}`,
-        `类型=${user.account_type || '-'}`,
-        user.account_type === 'bot' ? `归属=${botOwnerLabel(user)}` : '',
-        `状态=${stateLabel(user.state)}`,
-        `创建=${user.created_at || '-'}`,
-      ].filter(Boolean).join(' · ');
+      const facts = [
+        ['用户名', user.username || '-'],
+        ['邮箱', user.email || '-'],
+        ['类型', user.account_type || '-'],
+        ...(user.account_type === 'bot' ? [['归属', botOwnerLabel(user)]] : []),
+        ['状态', stateLabel(user.state)],
+        ['创建', user.created_at || '-'],
+      ];
       return `<div class="user-item">
         <div>
           <strong>${escapeHTML(title)}</strong>
-          <div class="user-meta">${escapeHTML(meta)}</div>
+          <div class="user-facts">${facts.map(([label, value]) => (
+            `<span><b>${escapeHTML(label)}</b>${escapeHTML(value)}</span>`
+          )).join('')}</div>
         </div>
         <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
           <button class="secondary-button user-action" data-lookup-uid="${escapeHTML(user.uid)}">查看</button>
@@ -906,8 +985,8 @@ http://127.0.0.1:26061/local/account-admin</code>
           return;
         }
         await loadUsersList(currentUserPage, currentUserQuery, currentAccountType);
-        if (uidInput.value.trim() === String(uid)) {
-          form.requestSubmit();
+        if (currentLookupUID === String(uid)) {
+          await lookupUser(uid);
         }
       } catch (err) {
         const message = err && err.message ? err.message : `${action}失败。`;
@@ -943,12 +1022,18 @@ http://127.0.0.1:26061/local/account-admin</code>
       await loadUsersList(Number(target.dataset.page), currentUserQuery, currentAccountType);
     });
 
+    userPageSizeSelect.addEventListener('change', async () => {
+      const next = Number(userPageSizeSelect.value);
+      userPageSize = [20, 50, 100].includes(next) ? next : 20;
+      localStorage.setItem('catsco-account-admin-page-size', String(userPageSize));
+      await loadUsersList(1, currentUserQuery, currentAccountType);
+    });
+
     searchResult.addEventListener('click', (event) => {
       const target = event.target.closest('[data-lookup-uid], [data-state-uid]');
       if (!target || !searchResult.contains(target)) return;
       if (target.dataset.lookupUid) {
-        uidInput.value = target.dataset.lookupUid;
-        form.requestSubmit();
+        lookupUser(target.dataset.lookupUid);
       }
       if (target.dataset.stateUid) {
         updateUserState(target.dataset.stateUid, target.dataset.stateValue, 'list');
@@ -961,17 +1046,15 @@ http://127.0.0.1:26061/local/account-admin</code>
       updateUserState(target.dataset.stateUid, target.dataset.stateValue, 'lookup');
     });
 
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const uid = uidInput.value.trim();
-      if (!uid) {
-        showError('请输入 UID。');
-        return;
-      }
-
-      button.disabled = true;
+    async function lookupUser(uid) {
+      // The former standalone lookup form was redundant with the search box
+      // (a numeric query already matches the uid exactly server-side), so it
+      // is gone: the list's 查看 button and this function are the only path.
+      const target = String(uid || '').trim();
+      if (!target || lookupPending) return;
+      lookupPending = true;
       try {
-        const resp = await fetch(`/local/account-admin/users?uid=${encodeURIComponent(uid)}`, {
+        const resp = await fetch(`/local/account-admin/users?uid=${encodeURIComponent(target)}`, {
           headers: { Accept: 'application/json' },
         });
         const payload = await resp.json().catch(() => ({}));
@@ -980,12 +1063,13 @@ http://127.0.0.1:26061/local/account-admin</code>
           return;
         }
         render(payload);
+        result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       } catch (err) {
         showError(err && err.message ? err.message : '查询失败。');
       } finally {
-        button.disabled = false;
+        lookupPending = false;
       }
-    });
+    }
 
     function showServiceError(message) {
       serviceError.textContent = message;

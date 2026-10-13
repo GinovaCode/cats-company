@@ -84,6 +84,69 @@ func TestSkillHubMarketplacePublicRoutesStripCredentialsAndAllowlistQuery(t *tes
 	}
 }
 
+func TestSkillHubMarketplaceShareTargetsForwardOnlyCurrentCatsCoToken(t *testing.T) {
+	var actions []string
+	base := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		if exchangeForTest(w, r, t) {
+			actions = append(actions, "exchange")
+			return
+		}
+		cookie, err := r.Cookie("catsco_session")
+		if err != nil || cookie.Value != "session-7" {
+			t.Errorf("temporary session cookie=%v", err)
+		}
+		if r.URL.Path == "/api/auth/logout" {
+			actions = append(actions, "logout")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		actions = append(actions, r.URL.Path+"?"+r.URL.RawQuery)
+		if r.URL.Path == "/api/catsco/share-targets/friends" {
+			if got := r.Header.Get("X-CatsCo-Access-Token"); got != "user-7" {
+				t.Errorf("CatsCo token=%q", got)
+			}
+			for _, key := range []string{"Authorization", "Origin", "X-CatsCo-Bot-Id"} {
+				if r.Header.Get(key) != "" {
+					t.Errorf("forwarded %s", key)
+				}
+			}
+			_, _ = w.Write([]byte(`{"users":[{"uid":"951","username":"john","displayName":"John"}]}`))
+			return
+		}
+		if r.URL.Path != "/api/catsco/share-targets/search" || r.URL.Query().Get("q") != "john" {
+			t.Errorf("unexpected search request %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"users":[]}`))
+	})
+	base.visibilityEnabled = true
+	for _, path := range []string{"/share-targets/friends", "/share-targets/search?q=john&token=ignored"} {
+		w := httptest.NewRecorder()
+		r := marketplaceRequest(http.MethodGet, path, "", 7)
+		r.Header.Set("Cookie", "catsco_session=caller-account")
+		base.Handle(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("path=%s status=%d body=%s", path, w.Code, w.Body.String())
+		}
+	}
+	if got, want := strings.Join(actions, ","), "exchange,/api/catsco/share-targets/friends?,logout,exchange,/api/catsco/share-targets/search?q=john,logout"; got != want {
+		t.Fatalf("actions=%q want %q", got, want)
+	}
+}
+
+func TestSkillHubMarketplaceShareTargetSearchRejectsLongQuery(t *testing.T) {
+	var calls int
+	h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+	})
+	h.visibilityEnabled = true
+	w := httptest.NewRecorder()
+	longQuery := strings.Repeat("a", 65)
+	h.Handle(w, marketplaceRequest(http.MethodGet, "/share-targets/search?q="+longQuery, "", 7))
+	if w.Code != http.StatusBadRequest || calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+}
+
 func TestSkillHubMarketplaceVisibilityReadsUseTemporarySession(t *testing.T) {
 	var actions []string
 	h := marketplaceTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +259,9 @@ func TestSkillHubMarketplaceVisibilityUsesTemporaryOwnerSession(t *testing.T) {
 		}
 		if r.URL.Path != "/api/skills/author/read/visibility" || r.Header.Get("Authorization") != "" {
 			t.Errorf("unexpected visibility request path=%s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		if got := r.Header.Get("X-CatsCo-Access-Token"); got != "user-7" {
+			t.Errorf("CatsCo access token=%q, want user-7", got)
 		}
 		if r.Method == http.MethodPatch {
 			var payload map[string]any

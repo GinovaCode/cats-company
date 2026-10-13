@@ -109,14 +109,24 @@ vi.mock('../widgets/chat-message', () => ({
           </button>
         )}
         {props.onOpenArtifactApp && (
-          <button
-            type="button"
-            className="mock-open-artifact-app"
-            data-message-id={props.message?.id}
-            onClick={() => props.onOpenArtifactApp((props.knownArtifacts || [])[0])}
-          >
-            open-artifact-app
-          </button>
+          <>
+            <button
+              type="button"
+              className="mock-open-artifact-app"
+              data-message-id={props.message?.id}
+              onClick={() => props.onOpenArtifactApp((props.knownArtifacts || [])[0])}
+            >
+              open-artifact-app
+            </button>
+            <button
+              type="button"
+              className="mock-open-artifact-app-new-page"
+              data-message-id={props.message?.id}
+              onClick={() => props.onOpenArtifactApp((props.knownArtifacts || [])[0], { newPage: true })}
+            >
+              open-artifact-app-new-page
+            </button>
+          </>
         )}
         {fileBlock && (
           <button
@@ -9646,6 +9656,66 @@ describe('MessagesView composer draft isolation', () => {
       expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
     });
 
+    it('opens the application in a new page, carrying this conversation', async () => {
+      // The handoff has to name the conversation and the owning bot, or the tab
+      // it opens lands as a guest on the wrong session.
+      api.getMessages.mockResolvedValue({
+        messages: [{
+          id: 723,
+          from_uid: 440,
+          content: `已发布：${gatewayApp.url}`,
+          created_at: '2026-10-08T00:00:00Z',
+        }],
+      });
+      api.getFriends.mockResolvedValue({ friends: [] });
+      api.getAgents.mockResolvedValue({
+        agents: [{
+          uid: 440,
+          topic_id: 'p2p_1_440',
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          account_type: 'bot',
+          cloud_artifacts_enabled: true,
+        }],
+      });
+      api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+      api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
+
+      const opened = [];
+      const openSpy = vi.spyOn(window, 'open').mockImplementation((url) => {
+        opened.push(String(url));
+        return null;
+      });
+
+      try {
+        await mountTopic(root, 'p2p_1_440');
+        await act(async () => {
+          await flushPromises();
+        });
+
+        const newPageButton = container.querySelector('.mock-open-artifact-app-new-page');
+        expect(newPageButton).not.toBeNull();
+        await act(async () => {
+          Simulate.click(newPageButton);
+          await flushPromises();
+        });
+      } finally {
+        openSpy.mockRestore();
+      }
+
+      expect(opened).toHaveLength(1);
+      const viewerURL = new URL(opened[0]);
+      expect(viewerURL.pathname).toBe('/artifact-viewer');
+      expect(viewerURL.searchParams.get('mode')).toBe('gateway');
+      expect(viewerURL.searchParams.get('topic')).toBe('p2p_1_440');
+      expect(viewerURL.searchParams.get('agent')).toBe('440');
+      expect(viewerURL.searchParams.get('artifact')).toBe('mario-test');
+      // The sidebar must not be opened as a side effect of the handoff.
+      expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    });
+
     it('still lists registry artifacts when the gateway list is unavailable', async () => {
       // A gateway outage must cost the gateway's cards, not the registry's.
       api.getMessages.mockResolvedValue({
@@ -10107,6 +10177,42 @@ describe('MessagesView gateway annotation flow', () => {
     }
   }
 
+
+  test('new-task handoff waits for a bound SDK handshake before selecting and sends to the new topic', async () => {
+    const topic = 'grp_901';
+    await mountTopic(root, topic, {
+      isGroup: true, groupId: 901,
+      cloudArtifactsRequest: {
+        requestId: 'new-task-annotation', topicId: topic, agentUid: 7, initialTab: 'gateway',
+        startAnnotation: true,
+        app: { id: 'saturday-demo', title: 'Saturday', url: `${APP_ORIGIN}/saturday-demo/` },
+      },
+    });
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: topic });
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('false');
+    const page = { path: '/board', revision: 'r1' };
+    const connect = await followupReady(frame, page);
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('true');
+    expect(api.sendArtifactAnnotations).not.toHaveBeenCalled();
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.target.v1', contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: connect.session_id, page,
+        selection: { id: 'first', kind: 'element', target: { element_id: 'submit-btn', selector: '#submit-btn',
+          rect: { x: .2, y: .3, width: .1, height: .08 }, coordinate_space: 'viewport',
+          viewport: { width: 800, height: 600, scroll_x: 0, scroll_y: 0 } } },
+      });
+      await flushPromises();
+    });
+    await submitInline('first annotation');
+    expect(api.sendArtifactAnnotations).toHaveBeenCalledTimes(1);
+    const payload = api.sendArtifactAnnotations.mock.calls[0][0];
+    expect(payload.open_ref).toBe(`aob_A`.padEnd(40, 'x'));
+    expect(payload.gateway_annotations).toMatchObject({ app_id: 'saturday-demo', agent_uid: 7 });
+    expect(payload.content_blocks.filter(block => block.type === 'image')).toHaveLength(2);
+  });
 
   test('single header action captures beside iframe and sends comment directly without composer body', async () => {
     const frame = await openGatewayAppInSidebar();

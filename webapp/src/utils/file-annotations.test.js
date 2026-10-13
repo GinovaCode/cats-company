@@ -10,6 +10,7 @@ import {
   fileAnnotationDraftKey,
   fileAnnotationHasScreenshot,
   fileAnnotationOwnedBlocks,
+  fileAnnotationPreviewFile,
   fileAnnotationScreenshotFiles,
   fileAnnotationSourceMatches,
   fileAnnotationSourceMatchesFile,
@@ -51,6 +52,19 @@ function docFixture(overrides = {}) {
 }
 
 describe('file annotation source', () => {
+  it('uses the file-list filename fallback and trims historical metadata aliases', () => {
+    expect(fileAnnotationPreviewFile({ url: '/uploads/images/generated%20%E5%9B%BE.png?download=1' }, 'image'))
+      .toMatchObject({ name: 'generated 图.png', type: 'image', size: 0 });
+    expect(fileAnnotationPreviewFile({ url: '/uploads/images/key.png', filename: ' image.png ',
+      fileSize: '123', contentType: ' image/png ', fileKey: ' key.png ' }, 'image'))
+      .toMatchObject({ name: 'image.png', size: 123, mime_type: 'image/png', file_key: 'key.png' });
+  });
+  it('keeps explicit descriptor differences subject to binding validation', () => {
+    const file = fileAnnotationPreviewFile({ ...SOURCE, name: 'other.png' }, 'image');
+    expect(fileAnnotationSourceMatchesFile(SOURCE, file)).toBe(false);
+    expect(fileAnnotationSourceMatchesFile(SOURCE, fileAnnotationPreviewFile({ ...SOURCE, size: 124 }, 'image'))).toBe(false);
+    expect(fileAnnotationPreviewFile({ ...SOURCE, type: 'image' }, 'file').type).toBe('file');
+  });
   it('accepts optional file_key/mime_type and absolute CDN urls', () => {
     const minimal = normalizeFileAnnotationSource({ ...SOURCE, file_key: '', mime_type: '' });
     expect(minimal).not.toBeNull();
@@ -122,8 +136,9 @@ describe('file annotation validation', () => {
     expect(fileAnnotationTargetSummary('text', { start: 1, end: 2, quote: 'hello world', line_start: 1, line_end: 1 })).toBe('hello world');
     expect(fileAnnotationTargetSummary('cells', { sheet: 'S', row_start: 1, row_end: 2, column_start: 1, column_end: 3 })).toBe('S 1:1–2:3');
     expect(fileAnnotationTargetSummary('video', { rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }, time_seconds: 1.5 })).toContain('@ 1.50s');
-    expect(fileAnnotationHasScreenshot('text')).toBe(false);
-    expect(fileAnnotationHasScreenshot('cells')).toBe(false);
+    expect(fileAnnotationHasScreenshot('text')).toBe(true);
+    expect(fileAnnotationHasScreenshot('cells')).toBe(true);
+    expect(fileAnnotationHasScreenshot('unknown')).toBe(false);
     expect(fileAnnotationHasScreenshot('image')).toBe(true);
   });
 
@@ -346,6 +361,29 @@ describe('direct media capture (image/video/canvas element)', () => {
         rect: { left: 0, top: 0, width: 600, height: 450 } });
       const result = captureFileAnnotationScreenshots(pdf, { rect: { x: 0, y: 0, width: 1, height: 1 } });
       expect(result.screenshots[0]).toMatchObject({ width: 1200, height: 900 });
+    });
+  });
+
+  it('keeps clipped fractional right/bottom edges inside the strict contract', () => {
+    const box = { x: 0.1, y: 0.1, width: 719.6, height: 719.6 };
+    const rect = normalizedRectFromBox({ x: 1.3, y: 1.3, width: 1000, height: 1000 }, box);
+    expect(rect.x + rect.width).toBeLessThanOrEqual(1);
+    expect(rect.y + rect.height).toBeLessThanOrEqual(1);
+    expect(normalizeFileAnnotationTarget('pdf', { rect, page: 1 })).toEqual({ rect, page: 1 });
+    withDocument(() => {
+      const result = captureFileAnnotationScreenshots(element({ tag: 'CANVAS' }), { rect, page: 1 });
+      expect(result.screenshots).toHaveLength(2);
+    });
+  });
+
+  it('rejects an unready PDF or a canvas from another page', () => {
+    withDocument(() => {
+      const pdf = { ...element({ tag: 'CANVAS' }), dataset: { fileAnnotationSurface: 'pdf', fileAnnotationPage: '2', fileAnnotationReady: 'false' } };
+      const target = { rect: { x: 0, y: 0, width: 1, height: 1 }, page: 2 };
+      expect(() => captureFileAnnotationScreenshots(pdf, target)).toThrow(/尚未渲染/);
+      pdf.dataset.fileAnnotationReady = 'true';
+      expect(() => captureFileAnnotationScreenshots(pdf, { ...target, page: 1 })).toThrow(/页码已变化/);
+      expect(captureFileAnnotationScreenshots(pdf, target).screenshots).toHaveLength(2);
     });
   });
 

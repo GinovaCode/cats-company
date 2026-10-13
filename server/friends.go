@@ -288,7 +288,10 @@ func (h *FriendHandler) HandleGetFriends(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"friends": friends})
+	// SkillHub needs to distinguish a human CatsCo account from a Bot when it
+	// builds share targets. Keep the existing User payload intact and add the
+	// non-sensitive account type as an explicit field for this roster API.
+	writeJSON(w, http.StatusOK, map[string]interface{}{"friends": usersWithAccountType(friends)})
 }
 
 // HandleGetPendingRequests handles GET /api/friends/pending
@@ -374,7 +377,47 @@ func (h *FriendHandler) HandleSearchUsers(w http.ResponseWriter, r *http.Request
 		filtered = append(filtered, user)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"users": filtered})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"users": usersWithAccountType(filtered)})
+}
+
+// usersWithAccountType preserves the public User JSON contract while exposing
+// the account classification needed by trusted consumers such as SkillHub.
+// AccountType remains intentionally omitted from the general User type so it
+// is not accidentally disclosed by unrelated APIs.
+func usersWithAccountType(users []*types.User) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(users))
+	for _, user := range users {
+		if user == nil {
+			continue
+		}
+		payload := map[string]interface{}{
+			"id":           user.ID,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"account_type": user.AccountType,
+		}
+		if user.Email != "" {
+			payload["email"] = user.Email
+		}
+		if user.Phone != "" {
+			payload["phone"] = user.Phone
+		}
+		if user.AvatarURL != "" {
+			payload["avatar_url"] = user.AvatarURL
+		}
+		if user.BotDisclose {
+			payload["bot"] = true
+		}
+		payload["state"] = user.State
+		if !user.CreatedAt.IsZero() {
+			payload["created_at"] = user.CreatedAt
+		}
+		if !user.UpdatedAt.IsZero() {
+			payload["updated_at"] = user.UpdatedAt
+		}
+		result = append(result, payload)
+	}
+	return result
 }
 
 func matchesUserUIDQuery(user *types.User, query string) bool {

@@ -8,6 +8,8 @@ vi.mock('../skillhub-marketplace-api', () => ({
   marketplaceApi: {
     skillVisibility: vi.fn(),
     updateSkillVisibility: vi.fn(),
+  shareTargetFriends: vi.fn(),
+  searchShareTargets: vi.fn(),
   },
 }));
 
@@ -39,10 +41,21 @@ it('loads owner visibility and saves shared CatsCo UIDs with the revision', asyn
   marketplaceApi.updateSkillVisibility.mockResolvedValue({
     visibility: { visibilityScope: 'shared', sharedUserUids: ['951', '42001'], visibilityRevision: 4 },
   });
+  marketplaceApi.shareTargetFriends.mockResolvedValue({
+    users: [
+      { uid: '951', username: 'john', displayName: 'John' },
+      { uid: '42001', username: 'friend-two', displayName: 'Friend Two' },
+      { uid: '44', username: 'agent', displayName: 'Agent', account_type: 'bot' },
+    ],
+  });
   await render(<SkillVisibilityControl skillId='author/read' enabled writesEnabled />);
   expect(container.textContent).toContain('公开');
   await act(async () => Simulate.change(container.querySelector('select'), { target: { value: 'shared' } }));
-  await act(async () => Simulate.change(container.querySelector('input'), { target: { value: '951, 42001' } }));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  const targetCheckboxes = container.querySelectorAll('.cc-skillhub-share-target-option input');
+  expect(targetCheckboxes).toHaveLength(2);
+  await act(async () => Simulate.change(targetCheckboxes[0], { target: { checked: true } }));
+  await act(async () => Simulate.change(targetCheckboxes[1], { target: { checked: true } }));
   const save = [...container.querySelectorAll('button')].find((button) => button.textContent.includes('保存可见范围'));
   await act(async () => save.click());
   expect(marketplaceApi.updateSkillVisibility).toHaveBeenCalledWith({
@@ -53,6 +66,34 @@ it('loads owner visibility and saves shared CatsCo UIDs with the revision', asyn
   });
   expect(container.textContent).toContain('指定共享');
   expect(container.textContent).toContain('可见范围已保存');
+});
+
+it('searches CatsCo usernames and submits selected target UIDs', async () => {
+  marketplaceApi.skillVisibility.mockResolvedValue({
+    visibility: { visibilityScope: 'shared', sharedUserUids: [], visibilityRevision: 8 },
+  });
+  marketplaceApi.shareTargetFriends.mockResolvedValue({ users: [] });
+  marketplaceApi.searchShareTargets.mockResolvedValue({
+    users: [{ uid: '42001', username: 'friend-two', displayName: 'Friend Two' }],
+  });
+  marketplaceApi.updateSkillVisibility.mockResolvedValue({
+    visibility: { visibilityScope: 'shared', sharedUserUids: ['42001'], visibilityRevision: 9 },
+  });
+  await render(<SkillVisibilityControl skillId='author/read' enabled writesEnabled />);
+  const search = container.querySelector('.cc-skillhub-share-target-search input');
+  await act(async () => Simulate.change(search, { target: { value: 'friend-two' } }));
+  await act(async () => container.querySelector('.cc-skillhub-share-target-search').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  await act(async () => Simulate.change(container.querySelector('.cc-skillhub-share-target-option input'), { target: { checked: true } }));
+  const save = [...container.querySelectorAll('button')].find((button) => button.textContent.includes('保存可见范围'));
+  await act(async () => save.click());
+  expect(marketplaceApi.searchShareTargets).toHaveBeenCalledWith('friend-two', expect.anything());
+  expect(marketplaceApi.updateSkillVisibility).toHaveBeenCalledWith({
+    skillId: 'author/read',
+    visibilityScope: 'shared',
+    sharedUserUids: ['42001'],
+    expectedRevision: 8,
+  });
 });
 
 it('does not disclose visibility controls for another publisher', async () => {

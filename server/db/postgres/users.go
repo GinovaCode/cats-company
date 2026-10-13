@@ -202,6 +202,7 @@ func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &acctType, &botDisclose); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
+		u.AccountType = types.AccountType(acctType)
 		if botDisclose && acctType == "bot" {
 			u.BotDisclose = true
 		}

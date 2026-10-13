@@ -13,6 +13,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
+import ImageViewport from '../widgets/image-viewport';
 import { useFeedback } from '../components/feedback-system';
 import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
@@ -69,6 +70,7 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
+  createGatewayApplicationViewerURL,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -798,6 +800,7 @@ export default function MessagesView({
   const [composerAnnotationBar, setComposerAnnotationBar] = useState(null);
   const gatewayAnnotationPageChangedRef = useRef(false);
   const gatewayAnnotationBindingRef = useRef(null);
+  const pendingGatewayAnnotationStartRef = useRef(null);
   const gatewayAnnotationContextRef = useRef(null);
   const gatewayAnnotationDraftsRef = useRef([]);
   const gatewayAnnotationPageRef = useRef(null);
@@ -1429,7 +1432,12 @@ export default function MessagesView({
   }, [topic, resetGatewayAnnotationBinding]);
 
   useEffect(() => {
+    if (pendingGatewayAnnotationStartRef.current?.topicId !== topic) pendingGatewayAnnotationStartRef.current = null;
+  }, [topic]);
+
+  useEffect(() => {
     const invalidate = () => {
+      pendingGatewayAnnotationStartRef.current = null;
       gatewayAnnotationBindingRef.current = null;
       gatewayAnnotationContextRef.current = null;
       gatewayAnnotationDraftsRef.current = [];
@@ -1493,6 +1501,7 @@ export default function MessagesView({
     if (!GATEWAY_HOST_MODE_TYPE) return;
     if (!['off', 'select', 'element', 'text', 'region'].includes(mode)) return;
     if (mode === 'off') {
+      pendingGatewayAnnotationStartRef.current = null;
       // The header toggle is an explicit user cancel: drop the pending comment
       // target (the textarea is only closed with the popover, so nothing is
       // silently lost from a stale document).
@@ -1598,7 +1607,8 @@ export default function MessagesView({
         'image-too-large': '截图超过大小限制，请重新捕获或仅发送评论',
         'encode-failed': '截图编码失败，请重试',
         'canvas-unavailable': '无法读取应用画布，请重试或仅发送评论',
-        'capture-failed': '截图失败，部分页面资源可能无法读取，请重试或仅发送评论',
+        'unsupported-style': '截图暂不支持该页面的部分样式，请仅发送评论和定位',
+        'capture-failed': '截图失败，请重试或仅发送评论和定位',
       };
       if (messages[error?.code]) error.message = messages[error.code];
       throw error;
@@ -2047,6 +2057,17 @@ export default function MessagesView({
         setGatewayAnnotationReady(capabilities.slice());
         gatewayAnnotationApplyFramePage(page);
         gatewayAnnotationPanelStateRef.current?.setCapabilityNote('');
+        const pending = pendingGatewayAnnotationStartRef.current;
+        const binding = gatewayAnnotationBindingRef.current;
+        if (pending && pending.topicId === activeTopicRef.current
+          && pending.appId === binding?.appId && pending.agentUid === binding?.agentUid
+          && pending.authRevision === getAuthRevision() && pending.token === getToken()) {
+          pendingGatewayAnnotationStartRef.current = null;
+          if (host.setMode('select')) {
+            setGatewayAnnotationMode('select');
+            gatewayAnnotationPanelStateRef.current?.setMode('select');
+          }
+        }
       },
       onSelection: (selection, page) => {
         const binding = gatewayAnnotationBindingRef.current;
@@ -2148,6 +2169,7 @@ export default function MessagesView({
   }, [setPreviewFileWithFocus]);
 
   const closeSidePanel = useCallback(() => {
+    pendingGatewayAnnotationStartRef.current = null;
     cancelArtifactViewerHandoff();
     setPendingArtifactRefresh(null);
     clearActiveArtifactFocus();
@@ -2254,10 +2276,27 @@ export default function MessagesView({
   // with it. The generic file preview would show the entry point as a stored
   // page and could not hand off to a new tab. "Open in a new page" stays where it
   // already is — in that viewer, which knows the conversation to carry.
-  const openArtifactApp = useCallback((artifact) => {
+  const openArtifactApp = useCallback((artifact, { newPage = false } = {}) => {
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
     if (agentUid <= 0 || !appId) return;
+    // The card offers the handoff directly as well as through the sidebar. It
+    // builds the same viewer URL the sidebar builds, from this conversation's
+    // topic and the application's owner, so the tab it opens joins the same
+    // session instead of starting as a guest.
+    if (newPage) {
+      const viewerURL = createGatewayApplicationViewerURL({
+        topicId: topic,
+        agentUid,
+        artifactId: appId,
+      });
+      if (viewerURL) {
+        window.open(viewerURL, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
+      return;
+    }
     setPendingArtifactRefresh(null);
     setPreviewFile(null);
     clearActiveArtifactFocus();
@@ -2269,7 +2308,7 @@ export default function MessagesView({
     setCloudArtifactsInitialApp({ ...artifact });
     setCloudArtifactsReturnOpen(false);
     setCloudArtifactsListOpen(true);
-  }, [clearActiveArtifactFocus]);
+  }, [clearActiveArtifactFocus, feedback, topic]);
 
   const captureArtifactMessageContext = useCallback(async () => {
     const focus = activeArtifactFocusRef.current;
@@ -2565,6 +2604,10 @@ export default function MessagesView({
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab(cloudArtifactsRequest.initialTab || 'files');
     setCloudArtifactsInitialApp(cloudArtifactsRequest.app || null);
+    pendingGatewayAnnotationStartRef.current = cloudArtifactsRequest.startAnnotation && cloudArtifactsRequest.app?.id
+      ? { topicId: topic, appId: String(cloudArtifactsRequest.app.id), agentUid: agentUID,
+        authRevision: getAuthRevision(), token: getToken() }
+      : null;
     if (cloudArtifactsRequest.file) {
       previewAgentFile(cloudArtifactsRequest.file);
     } else {
@@ -8366,11 +8409,11 @@ export function ImageGalleryPreview({ item, index, items, onClose, onChange, tri
       >
         <Download size={24} aria-hidden="true" />
       </PwaDownloadLink>
-      <img
+      <ImageViewport
         src={imageURL}
         alt={item.payload?.name ? `${item.payload.name} preview` : 'image preview'}
-        className="oc-rich-image-preview-media"
-        onClick={(event) => event.stopPropagation()}
+        wheelZoom
+        imageClassName="oc-rich-image-preview-media"
       />
       <button
         type="button"

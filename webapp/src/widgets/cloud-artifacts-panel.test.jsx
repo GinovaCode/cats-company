@@ -93,6 +93,7 @@ function TestPanel({
   onGatewayFrameChange,
   onGatewayAnnotationMode,
   onGatewayAnnotationState,
+  onStartAnnotation,
   ...workspaceProps
 }) {
   const [tab, setTab] = React.useState(initialTab);
@@ -111,6 +112,7 @@ function TestPanel({
         onGatewayFrameChange={onGatewayFrameChange}
         onGatewayAnnotationMode={onGatewayAnnotationMode}
         onGatewayAnnotationState={onGatewayAnnotationState}
+        onStartAnnotation={onStartAnnotation}
       />
     </FeedbackProvider>
   );
@@ -1044,11 +1046,30 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('成果读取失败');
   });
 
+  test('unbound preview can create an annotation task and retains errors for retry', async () => {
+    const app = { id: 'board', title: '看板', url: 'https://artifact.catsco.cc/board/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    const onStartAnnotation = vi.fn().mockRejectedValueOnce(new Error('创建任务失败')).mockResolvedValue({});
+    await renderPanel({ initialTab: 'gateway', initialApp: app, topicId: '', onStartAnnotation });
+    await flush();
+    const button = container.querySelector('[aria-label="新建任务并标注"]');
+    expect(button.disabled).toBe(false);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'board' });
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(onStartAnnotation).toHaveBeenCalledWith(expect.objectContaining({ id: 'board' }), { signal: expect.any(AbortSignal) });
+    expect(container.textContent).toContain('创建任务失败');
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).not.toBeNull();
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(onStartAnnotation).toHaveBeenCalledTimes(2);
+  });
+
   async function renderPanel({
     initialTab = 'active',
     initialApp,
     topicId = 'p2p_7_440',
     agentUid = 440,
+    onStartAnnotation,
     ...workspaceProps
   } = {}) {
     await act(async () => {
@@ -1064,6 +1085,7 @@ describe('CloudArtifactsPanel', () => {
           onGatewayFrameChange={onGatewayFrameChange}
           onGatewayAnnotationMode={onGatewayAnnotationMode}
           onGatewayAnnotationState={onGatewayAnnotationState}
+          onStartAnnotation={onStartAnnotation}
         />,
       );
       await Promise.resolve();
