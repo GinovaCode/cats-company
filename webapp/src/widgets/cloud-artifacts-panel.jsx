@@ -3,6 +3,8 @@ import './gateway-annotation-popover.css';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
+  Maximize2,
+  Minimize2,
   Check,
   Cloud,
   Copy,
@@ -160,6 +162,9 @@ export default function CloudArtifactsPanel({
   onPreviewArtifact,
   onPreviewFile,
   onGatewayFrameChange,
+  workspaceFullscreen = false,
+  onToggleWorkspaceFullscreen,
+  onWorkspacePreviewChange,
   onGatewayAnnotationMode,
   onGatewayAnnotationState,
   annotationCapture,
@@ -179,6 +184,10 @@ export default function CloudArtifactsPanel({
   const [files, setFiles] = useState([]);
   const [gatewayApps, setGatewayApps] = useState([]);
   const [gatewayPreview, setGatewayPreview] = useState(null);
+  const workspacePreviewActive = tab === 'gateway' && Boolean(gatewayPreview);
+  useEffect(() => {
+    onWorkspacePreviewChange?.(workspacePreviewActive);
+  }, [workspacePreviewActive, onWorkspacePreviewChange]);
   // Annotation mode state lives here, not in the viewer chrome, so the
   // toolbar re-renders without touching the cross-origin iframe subtree.
   const [gatewayAnnotationMode, setGatewayAnnotationMode] = useState('off');
@@ -903,6 +912,14 @@ export default function CloudArtifactsPanel({
             )}
           </div>
           <div className="cloud-artifacts-header-actions">
+            {workspacePreviewActive && onToggleWorkspaceFullscreen && (
+              <button className="cc-workspace-fullscreen-action" type="button"
+                aria-label={workspaceFullscreen ? '还原应用视图' : '全屏查看应用'}
+                title={workspaceFullscreen ? '还原应用视图（Esc）' : '全屏查看应用'}
+                aria-pressed={workspaceFullscreen} onClick={onToggleWorkspaceFullscreen}>
+                {workspaceFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+            )}
             {tab === 'active' && canPublish && (
               <>
                 <button

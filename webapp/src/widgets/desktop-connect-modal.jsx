@@ -507,13 +507,13 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
           <section className="catsco-onboarding-replay" aria-labelledby="catsco-onboarding-replay-title">
             <button
               type="button"
-              className="catsco-onboarding-replay-card"
+              className="catsco-connect-summary catsco-onboarding-replay-card"
               onClick={onOpenOnboardingGuide}
             >
               <BookOpen size={20} aria-hidden="true" />
-              <span className="catsco-onboarding-replay-copy">
-                <span id="catsco-onboarding-replay-title">新手指引</span>
-                <span>重新查看添加助手和激活本地助手的步骤。</span>
+              <span className="catsco-connect-copy">
+                <span className="catsco-connect-title-row"><strong id="catsco-onboarding-replay-title">新手指引</strong></span>
+                <span className="catsco-connect-description">重新查看添加助手和激活本地助手的步骤。</span>
               </span>
               <ChevronRight size={18} aria-hidden="true" />
             </button>

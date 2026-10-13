@@ -66,6 +66,38 @@
   color: var(--cc-text-secondary);
 }
 
+.catsco-download-modal .catsco-onboarding-replay-card {
+  grid-template-columns: 32px minmax(0, 1fr) 18px;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.catsco-download-modal .catsco-onboarding-replay-card:hover {
+  background: var(--cc-secondary-action-bg-hover);
+}
+
+.catsco-download-modal .catsco-onboarding-replay-card:active {
+  background: var(--cc-secondary-action-bg-active);
+}
+
+.catsco-download-modal .catsco-onboarding-replay-card:focus-visible {
+  outline: 1px solid var(--cc-focus-border);
+  outline-offset: 2px;
+}
+
+.catsco-download-modal .catsco-onboarding-replay-card > svg:last-child {
+  width: 18px;
+  height: 18px;
+  color: var(--cc-muted);
+}
+
+.catsco-download-modal .catsco-onboarding-replay-card .catsco-connect-description {
+  display: block;
+}
+
 .catsco-download-modal .catsco-connect-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

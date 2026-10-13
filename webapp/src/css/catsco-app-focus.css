@@ -1,0 +1,192 @@
+/* Expand within the workspace; the sidebar and the mounted app stay in place. */
+@media (min-width: 1025px) {
+  .v3-message-workspace.has-preview.cc-app-focus {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cc-app-focus > .v3-file-preview-shell {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .cc-app-focus .v3-preview-resize-handle { display: none; }
+  .cc-app-focus .v3-file-preview-panel { border-left: 0; box-shadow: none; }
+
+  .cc-app-focus > .v3-chat-column {
+    position: absolute;
+    right: 20px;
+    bottom: 20px;
+    z-index: 25;
+    width: min(520px, calc(100% - 40px));
+    height: auto;
+    background: transparent;
+  }
+  .cc-app-focus > .v3-chat-column[data-composer-position="top-left"] {
+    left: 20px;
+    right: auto;
+    top: var(--cc-app-dock-top, 20px);
+    bottom: auto;
+  }
+  .cc-app-focus > .v3-chat-column[data-composer-position="top-right"] {
+    top: var(--cc-app-dock-top, 20px);
+    bottom: auto;
+  }
+  .cc-app-focus > .v3-chat-column[data-composer-position="bottom-left"] { left: 20px; right: auto; }
+  .cc-app-focus > .v3-chat-column[data-composer-position="bottom-center"] {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+
+  .cc-app-focus > .v3-chat-column > :not(.v3-composer):not(.v3-timeline):not(.v3-phone-upload-backdrop) {
+    display: none;
+  }
+
+  .cc-app-focus .v3-composer {
+    position: relative;
+    padding: 0;
+    cursor: default;
+  }
+  .cc-app-focus .v3-composer-box { width: 100%; }
+  .cc-app-focus.cc-app-composer-active .v3-composer,
+  .cc-app-focus.cc-app-composer-minimized .v3-composer {
+    border: 1px solid var(--cc-border);
+    border-radius: 20px;
+    background: var(--cc-panel);
+    box-shadow: 0 6px 22px rgb(0 0 0 / 16%);
+  }
+  .cc-app-focus.cc-app-composer-active .v3-composer-box { border: 0; border-radius: 0 0 20px 20px; box-shadow: none; }
+  .cc-app-focus .v3-composer-hint:not(.is-error):not(.is-notice):not(.is-warning):not([role="status"]) { display: none; }
+  .cc-app-focus .cc-app-composer-toolbar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--cc-border);
+    border-radius: 20px 20px 0 0;
+    z-index: 2;
+    cursor: default;
+    touch-action: none;
+    user-select: none;
+  }
+  .cc-app-focus.cc-app-composer-active .cc-app-composer-toolbar,
+  .cc-app-focus.cc-app-composer-minimized .cc-app-composer-toolbar { display: flex; }
+  .cc-app-focus .cc-app-composer-toolbar:focus-visible { outline: 1px solid var(--cc-focus-border); outline-offset: 2px; }
+  .cc-app-focus.cc-app-dock-dragging .v3-composer * { cursor: default; user-select: none; }
+  .cc-app-focus.cc-app-dock-dragging > .v3-chat-column {
+    transform: translate3d(var(--cc-app-dock-offset-x, 0px), var(--cc-app-dock-offset-y, 0px), 0) !important;
+    will-change: transform;
+  }
+  .cc-app-focus .cc-app-composer-toolbar button {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--cc-text-secondary);
+    cursor: pointer;
+  }
+  .cc-app-composer-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--cc-text-secondary);
+  }
+  .cc-app-focus .cc-app-composer-toolbar button:focus-visible { outline: 1px solid var(--cc-focus-border); outline-offset: 1px; }
+  .cc-app-focus .cc-app-composer-toolbar button:hover { background: var(--cc-hover); color: var(--cc-text); }
+  .cc-app-focus.cc-app-composer-minimized > .v3-chat-column { width: 42px; }
+  .cc-app-focus.cc-app-composer-minimized .v3-composer { border-radius: 12px; }
+  .cc-app-focus.cc-app-composer-minimized .v3-composer-box { display: none; }
+  .cc-app-focus.cc-app-composer-minimized .v3-composer-hint { display: none; }
+  .cc-app-focus.cc-app-composer-minimized .cc-app-composer-toolbar {
+    height: 40px;
+    gap: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 12px;
+  }
+  .cc-app-focus.cc-app-composer-minimized .cc-app-composer-restore { width: 40px; height: 40px; border-radius: 11px; cursor: default; }
+  .cc-app-focus.cc-app-dock-dragging iframe { pointer-events: none; }
+  .cc-app-focus .v3-composer-mention-picker,
+  .cc-app-focus .v3-composer-command-palette {
+    left: 12px;
+    max-width: calc(100% - 24px);
+    max-height: var(--cc-app-context-max-height, 340px);
+    overflow-y: auto;
+  }
+  .cc-app-focus.cc-app-context-below .v3-composer-mention-picker,
+  .cc-app-focus.cc-app-context-below .v3-composer-command-palette {
+    top: calc(100% + 12px);
+    bottom: auto;
+  }
+  .cc-app-focus.cc-app-context-below .v3-attachment-menu { top: calc(100% + 8px); bottom: auto; }
+
+  .cc-app-focus .v3-timeline { display: none; }
+  .cc-app-focus.cc-app-context-open .v3-timeline {
+    display: block;
+    position: absolute;
+    bottom: calc(100% + 12px);
+    width: 100%;
+    height: min(340px, var(--cc-app-context-max-height, calc(100dvh - 340px)));
+    min-height: 0;
+    padding: 0;
+    border: 1px solid var(--cc-border);
+    border-radius: 14px;
+    background: var(--cc-bg);
+    box-shadow: 0 6px 22px rgb(0 0 0 / 16%);
+    overscroll-behavior: contain;
+  }
+  .cc-app-focus.cc-app-context-below .v3-timeline {
+    top: calc(100% + 12px);
+    bottom: auto;
+  }
+
+  .cc-app-focus .v3-timeline-inner { max-width: none; padding: 16px; }
+  .cc-app-focus .v3-date-divider { display: none; }
+
+  .cc-app-context-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px 8px 18px;
+    border-bottom: 1px solid var(--cc-border);
+    background: var(--cc-bg);
+  }
+
+  .cc-app-context-header > div { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 14px; }
+  .cc-app-context-header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cc-muted); font-size: 12px; }
+  .cc-app-context-header strong { flex-shrink: 0; }
+  .cc-app-context-header button {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--cc-text-secondary);
+    cursor: pointer;
+  }
+  .cc-app-context-header button:hover { background: var(--cc-hover); color: var(--cc-text); }
+  .cc-app-context-header button:focus-visible { outline: 1px solid var(--cc-focus-border); outline-offset: 2px; }
+}
+
+/* Keep the existing sheet and touch interaction on smaller screens. */
+@media (max-width: 1024px) {
+  .cc-workspace-fullscreen-action { display: none; }
+}

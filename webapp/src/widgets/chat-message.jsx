@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -2691,6 +2691,8 @@ export function FilePreviewPanel({
   onRemoteArtifactRefreshReady,
   onRemoteArtifactRefreshFailed,
   onOpenRemoteArtifactFullscreen,
+  workspaceFullscreen = false,
+  onToggleWorkspaceFullscreen,
   annotationApi,
   onFileAnnotationSent,
 }) {
@@ -3287,6 +3289,14 @@ export function FilePreviewPanel({
             </div>
           </div>
           <div className="v3-file-preview-actions">
+            {(isHtml || isRemoteArtifact) && onToggleWorkspaceFullscreen && (
+              <button className="cc-workspace-fullscreen-action" type="button"
+                aria-label={workspaceFullscreen ? '还原应用视图' : '全屏查看应用'}
+                title={workspaceFullscreen ? '还原应用视图（Esc）' : '全屏查看应用'}
+                aria-pressed={workspaceFullscreen} onClick={onToggleWorkspaceFullscreen}>
+                {workspaceFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+            )}
             {(isPdf || isHtml || isMarkdown) && (
               <button
                 className={`v3-file-preview-share-action${shareState === 'copied' ? ' is-success' : ''}${shareState === 'error' ? ' is-error' : ''}`}
