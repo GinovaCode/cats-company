@@ -3426,6 +3426,9 @@ export function FilePreviewPanel({
                   src={fetchableMediaURL(url)}
                   alt={file.name || '图片预览'}
                   annotation={fileAnnotationMode}
+                  // Mark the image as annotatable regardless of the current mode: the
+                  // editor and the chat-image capture flow look it up by this marker.
+                  annotationSurface="image"
                   wheelZoom
                   onError={() => setImageError(true)}
                 />
