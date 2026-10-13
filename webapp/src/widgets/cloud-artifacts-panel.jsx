@@ -770,7 +770,7 @@ export default function CloudArtifactsPanel({
   const visibleCount = tab === 'files'
     ? files.length
     : tab === 'gateway'
-      ? gatewayApps.length
+      ? gatewayPreview ? 1 : gatewayApps.length
       : visibleArtifacts.length;
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
   const isOwner = viewerRelation === 'owner';
