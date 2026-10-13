@@ -60,6 +60,7 @@ vi.mock('../widgets/chat-message', () => ({
         data-working-message-ids={(props.workingMessages || []).map((message) => message.id).join(',')}
         data-artifacts-first={String(Boolean(props.artifactsFirst))}
         data-content-block-count={String(props.message?.content_blocks?.length || 0)}
+        data-source-message-ids={(props.message?._display_source_messages || []).map(message => message.id).join(',')}
         data-text-block-roles={textBlocks.map((block) => block.presentation_role || 'body').join(',')}
         data-text-block-texts={textBlocks.map((block) => block.text || '').join('|')}
         data-sender-name={props.senderName || ''}
@@ -2838,6 +2839,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(mergedOutput?.dataset.artifactsFirst).toBe('true');
     expect(mergedOutput?.dataset.textBlockRoles).toBe('result');
     expect(mergedOutput?.dataset.messageContent).toBe('图文简报已发。');
+    expect(mergedOutput?.dataset.sourceMessageIds).toBe('136,137');
     expect(mergedOutput?.dataset.senderName).toBe('自迭代测试');
   });
 

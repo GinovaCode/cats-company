@@ -1024,6 +1024,25 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
 
 // Match the server's filtered attachment order, which omits text/tool blocks.
 export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
+  // A displayed assistant reply can contain files delivered by earlier
+  // messages. Resolve against persisted originals, never the merged reply ID
+  // or the reordered attachment positions used only for presentation.
+  const originals = message?._display_source_messages;
+  if (Array.isArray(originals) && originals.length > 0) {
+    const candidates = originals.filter(original => original !== message);
+    const exact = candidates.filter(original => (
+      original?.content_blocks?.some(block => ['file', 'image'].includes(block?.type) && block.payload === payload)
+      || original?.content?.payload === payload
+    ));
+    const matches = (exact.length > 0 ? exact : candidates)
+      .map(original => fileAnnotationSourceForPreview(original, payload, topicId))
+      .filter(Boolean);
+    const unique = new Map(matches.map(source => [
+      JSON.stringify([source.topic_id, source.message_id, source.attachment_index]), source,
+    ]));
+    // A cloned payload shared by several records cannot establish one source.
+    return unique.size === 1 ? unique.values().next().value : null;
+  }
   const messageId = Number(message?.seq_id || message?.id || 0);
   const topic = String(message?.topic_id || topicId || '');
   if (!Number.isSafeInteger(messageId) || messageId <= 0 || !topic
