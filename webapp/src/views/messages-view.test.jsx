@@ -150,6 +150,8 @@ vi.mock('../widgets/chat-message', () => ({
     onRemoteArtifactRefreshReady,
     onRemoteArtifactRefreshFailed,
     onOpenRemoteArtifactFullscreen,
+    workspaceFullscreen,
+    onToggleWorkspaceFullscreen,
   }) {
     onRemoteArtifactFrameChange?.(file?.artifact_frame_binding || null);
     React.useEffect(() => {
@@ -163,6 +165,11 @@ vi.mock('../widgets/chat-message', () => ({
         data-background-class={backgroundRef?.current?.className || ''}
       >
         {file?.name || 'preview'}
+        {onToggleWorkspaceFullscreen && (
+          <button className="cc-workspace-fullscreen-action" type="button"
+            aria-label={workspaceFullscreen ? '还原应用视图' : '全屏查看应用'}
+            onClick={onToggleWorkspaceFullscreen}>expand workspace</button>
+        )}
         {onBack && (
           <button type="button" aria-label="返回云文件" onClick={onBack}>
             back
@@ -4123,6 +4130,76 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(textarea.value).toBe('前@Saturday 后');
+  });
+
+  it('keeps the mounted preview and live composer when expanding and sends from the context view', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
+    api.getMessages.mockResolvedValueOnce({ messages: [{
+      id: 30, from_uid: 2, content: 'report.html',
+      content_blocks: [{ type: 'file', payload: { name: 'report.html', url: '/uploads/files/report.html', mime_type: 'text/html' } }],
+      created_at: '2026-06-12T00:00:00Z',
+    }] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => Simulate.click(container.querySelector('.mock-open-preview')));
+    const preview = container.querySelector('.mock-file-preview');
+    const textarea = container.querySelector('textarea');
+    const timeline = container.querySelector('.v3-timeline');
+    timeline.scrollTop = 123;
+    await act(async () => {
+      typeDraft(textarea, '继续分析这份报告');
+      Simulate.click(container.querySelector('[aria-label="全屏查看应用"]'));
+    });
+    const workspace = container.querySelector('.v3-message-workspace');
+    expect(workspace.className).toContain('cc-app-focus');
+    expect(container.querySelector('textarea')).toBe(textarea);
+    expect(textarea.value).toBe('继续分析这份报告');
+    expect(container.querySelector('.mock-file-preview')).toBe(preview);
+    await act(async () => Simulate.click(container.querySelector('[aria-label="最小化输入栏"]')));
+    expect(workspace.className).toContain('cc-app-composer-minimized');
+    expect(container.querySelector('textarea')).toBe(textarea);
+    expect(textarea.value).toBe('继续分析这份报告');
+    await act(async () => Simulate.click(container.querySelector('[aria-label="展开输入栏"]')));
+    expect(workspace.className).not.toContain('cc-app-composer-minimized');
+    expect(container.querySelector('textarea')).toBe(textarea);
+    expect(textarea.value).toBe('继续分析这份报告');
+    await act(async () => Simulate.doubleClick(textarea));
+    expect(workspace.className).toContain('cc-app-context-open');
+    expect(container.querySelector('[aria-label="对话上下文"]')).toBe(timeline);
+    expect(timeline.querySelector('[data-message-id="30"]').getAttribute('data-message-content')).toBe('report.html');
+    await act(async () => Simulate.click(container.querySelector('.v3-send')));
+    await vi.waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '继续分析这份报告', undefined));
+    expect(textarea.value).toBe('');
+    expect(workspace.className).toContain('cc-app-focus');
+    expect(container.querySelector('.mock-file-preview')).toBe(preview);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(workspace.className).not.toContain('cc-app-context-open');
+    expect(workspace.className).toContain('cc-app-focus');
+    await act(async () => Simulate.keyDown(textarea, { key: 'ArrowUp', altKey: true }));
+    expect(workspace.className).toContain('cc-app-context-open');
+    await act(async () => Simulate.click(container.querySelector('[aria-label="还原应用视图"]')));
+    expect(workspace.className).not.toContain('cc-app-focus');
+    expect(timeline.scrollTop).toBe(123);
+    expect(container.querySelector('.mock-file-preview')).toBe(preview);
+  });
+
+  it('clears workspace expansion when the preview closes or the topic changes', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
+    api.getMessages.mockResolvedValue({ messages: [{
+      id: 30, from_uid: 2, content: 'report.html',
+      content_blocks: [{ type: 'file', payload: { name: 'report.html', url: '/uploads/files/report.html' } }],
+      created_at: '2026-06-12T00:00:00Z',
+    }] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => Simulate.click(container.querySelector('.mock-open-preview')));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="全屏查看应用"]')));
+    await act(async () => Simulate.click(container.querySelector('.mock-close-preview')));
+    expect(container.querySelector('.v3-message-workspace').className).not.toContain('cc-app-focus');
+    await act(async () => Simulate.click(container.querySelector('.mock-open-preview')));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="全屏查看应用"]')));
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('.v3-message-workspace').className).not.toContain('cc-app-focus');
   });
 
   it('lets the file preview panel width be adjusted and persisted', async () => {

@@ -84,7 +84,7 @@ export default function SkillHubContent(props) {
             <h1>Agent 能力</h1>
             <p>为 Agent 添加和管理可用能力。</p>
           </div>
-          {visibleSection !== 'catalogue' && <AgentContext {...guardedProps} />}
+          <AgentContext {...guardedProps} />
         </header>
         {definitionError && <div className='cc-skillhub-alert error' role='alert'>{definitionError}</div>}
         {runtimeRouteError && <div className='cc-skillhub-alert error' role='alert'>{runtimeRouteError}</div>}

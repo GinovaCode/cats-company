@@ -1430,7 +1430,8 @@ describe('SkillHubView', () => {
     expect(container.querySelector('button[aria-label="从当前 Agent 移除 tools/review"]')).toBeFalsy();
 
     await openCatalogue();
-    expect(container.querySelector('.cc-skillhub-agent-context')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-agent-context')).toBeTruthy();
+    expect(container.querySelector('.cc-skillhub-bot-picker select').value).toBe('42');
     await openAdded();
     expect(container.querySelector('.cc-skillhub-agent-context')).toBeTruthy();
 

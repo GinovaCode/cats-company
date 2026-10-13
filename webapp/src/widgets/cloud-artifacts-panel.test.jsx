@@ -94,11 +94,13 @@ function TestPanel({
   onGatewayAnnotationMode,
   onGatewayAnnotationState,
   onStartAnnotation,
+  ...workspaceProps
 }) {
   const [tab, setTab] = React.useState(initialTab);
   return (
     <FeedbackProvider>
       <CloudArtifactsPanel
+        {...workspaceProps}
         agentUid={agentUid}
         topicId={topicId}
         tab={tab}
@@ -692,6 +694,31 @@ describe('CloudArtifactsPanel', () => {
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === '重试')).toBe(true);
   });
 
+  test('offers workspace expansion only for an open app and retains its iframe when restored', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    // An app launched directly stays visible even if the catalogue is empty.
+    api.listArtifactApps.mockResolvedValue({ apps: [] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    const onWorkspacePreviewChange = vi.fn();
+    const onToggleWorkspaceFullscreen = vi.fn();
+    const props = { initialTab: 'gateway', initialApp: app, onWorkspacePreviewChange, onToggleWorkspaceFullscreen };
+    await renderPanel(props);
+    await flush();
+    const frame = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(frame).not.toBeNull();
+    expect(container.textContent).not.toContain('应用清单暂时是空的');
+    expect(onWorkspacePreviewChange).toHaveBeenLastCalledWith(true);
+    await act(async () => container.querySelector('[aria-label="全屏查看应用"]').click());
+    expect(onToggleWorkspaceFullscreen).toHaveBeenCalledTimes(1);
+    await renderPanel({ ...props, workspaceFullscreen: true });
+    expect(container.querySelector('[aria-label="还原应用视图"]')).not.toBeNull();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBe(frame);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    await act(async () => container.querySelector('[aria-label="返回应用列表"]').click());
+    expect(onWorkspacePreviewChange).toHaveBeenLastCalledWith(false);
+    expect(container.querySelector('.cc-workspace-fullscreen-action')).toBeNull();
+  });
+
   test('consumes a quick application selection once across tab changes and reopening the list', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     api.listArtifactApps.mockReset().mockResolvedValue({ apps: [app] });
@@ -1045,10 +1072,12 @@ describe('CloudArtifactsPanel', () => {
     topicId = 'p2p_7_440',
     agentUid = 440,
     onStartAnnotation,
+    ...workspaceProps
   } = {}) {
     await act(async () => {
       root.render(
         <TestPanel
+          {...workspaceProps}
           initialTab={initialTab}
           initialApp={initialApp}
           topicId={topicId}

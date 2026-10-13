@@ -10502,38 +10502,6 @@ html[data-theme="liquid"] .cc-agent-prompt-editor-dialog {
   overflow: auto;
 }
 
-.catsco-onboarding-replay-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px;
-  border: 1px solid var(--cc-border);
-  border-radius: 8px;
-  background: var(--cc-panel-raised, var(--cc-panel));
-  color: var(--cc-text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 160ms ease, background-color 160ms ease;
-}
-
-.catsco-onboarding-replay-card:hover {
-  border-color: var(--cc-accent-text);
-  background: var(--cc-secondary-action-bg-hover);
-}
-
-.catsco-onboarding-replay-card:focus-visible {
-  outline: 2px solid var(--cc-focus-ring);
-  outline-offset: 2px;
-}
-
-.catsco-onboarding-replay-card > svg { flex: 0 0 auto; color: var(--cc-accent-text); }
-.catsco-onboarding-replay-card > svg:last-child { margin-left: auto; color: var(--cc-muted); }
-.catsco-onboarding-replay-copy { display: grid; gap: 3px; min-width: 0; }
-.catsco-onboarding-replay-copy > span:first-child { font-size: 14px; font-weight: var(--cc-font-weight-semibold); }
-.catsco-onboarding-replay-copy > span:last-child { color: var(--cc-text-secondary); font-size: 12px; line-height: 1.5; }
-
 .catsco-connect-summary {
   display: flex;
   align-items: flex-start;

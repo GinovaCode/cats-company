@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
@@ -90,6 +90,7 @@ const QUESTION_INDEX_MAX_SCANNED_PER_LOAD = 2000;
 const QUESTION_INDEX_MAX_ITEMS = 250;
 const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
+const PREVIEW_COMPOSER_TEXT_DRAG_HOLD_MS = 140;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
@@ -761,6 +762,22 @@ export default function MessagesView({
   const [commandActiveIndex, setCommandActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+  const [previewContextOpen, setPreviewContextOpen] = useState(false);
+  const [previewComposerMinimized, setPreviewComposerMinimized] = useState(false);
+  const [previewComposerActive, setPreviewComposerActive] = useState(false);
+  const [previewContextPlacement, setPreviewContextPlacement] = useState('above');
+  const [previewDockPoint, setPreviewDockPoint] = useState(null);
+  const [previewDockAnchor, setPreviewDockAnchor] = useState('bottom-right');
+  const [previewDockDragging, setPreviewDockDragging] = useState(false);
+  const previewContextId = useId();
+  const previewContextCloseRef = useRef(null);
+  const previewScrollBeforeExpandRef = useRef(null);
+  const previewWasExpandedRef = useRef(false);
+  const previewDockDragRef = useRef(null);
+  const previewDockSuppressClickRef = useRef(0);
+  const previewDockSnapRef = useRef(null);
+  const previewDockAnimationRef = useRef(null);
   const [previewImageId, setPreviewImageId] = useState('');
   const [olderGalleryItems, setOlderGalleryItems] = useState([]);
   const [galleryHasMore, setGalleryHasMore] = useState(false);
@@ -3211,6 +3228,7 @@ export default function MessagesView({
 
   useEffect(() => {
     const el = timelineRef.current;
+    if (previewExpanded && !previewContextOpen) return;
     if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError
       || olderHistoryError || autoHistoryLimitReached) return;
     const needsConversationContent = !hasOrdinaryChatMessage(messages);
@@ -3220,6 +3238,8 @@ export default function MessagesView({
       loadOlderHistory({ automatic: true });
     }
   }, [
+    previewExpanded,
+    previewContextOpen,
     messages,
     refreshingHistory,
     hasMoreHistory,
@@ -5963,6 +5983,7 @@ export default function MessagesView({
   }, [historyLoaded, messageLocationRequest?.requestId, refreshingHistory, topic]);
 
   const handleTimelineScroll = (e) => {
+    if (previewExpanded && !previewContextOpen) return;
     const el = e.target;
     const currentScrollTop = el.scrollTop;
     const previousScrollTop = lastTimelineScrollTopRef.current;
@@ -6024,13 +6045,333 @@ export default function MessagesView({
   const previewImageIndex = imageGallery.findIndex((item) => item.id === previewImageId);
   const previewImage = previewImageIndex >= 0 ? imageGallery[previewImageIndex] : null;
 
+  const restorePreviewWorkspace = useCallback(() => {
+    setPreviewExpanded(false);
+    setPreviewContextOpen(false);
+    setPreviewComposerMinimized(false);
+    setPreviewComposerActive(false);
+    requestAnimationFrame(() => {
+      chatColumnRef.current?.parentElement?.querySelector('.cc-workspace-fullscreen-action')?.focus({ preventScroll: true });
+    });
+  }, []);
+  const togglePreviewWorkspace = useCallback(() => {
+    if (previewExpanded) {
+      restorePreviewWorkspace();
+    } else if (window.innerWidth > 1024) {
+      previewScrollBeforeExpandRef.current = timelineRef.current?.scrollTop ?? 0;
+      setPreviewExpanded(true);
+    }
+  }, [previewExpanded, restorePreviewWorkspace]);
+  const handleWorkspacePreviewChange = useCallback(active => {
+    if (!active) {
+      setPreviewExpanded(false);
+      setPreviewContextOpen(false);
+    }
+  }, []);
+  useEffect(() => {
+    setPreviewExpanded(false);
+    setPreviewContextOpen(false);
+    setPreviewComposerMinimized(false);
+    setPreviewComposerActive(false);
+    setPreviewDockPoint(null);
+    setPreviewDockAnchor('bottom-right');
+    previewScrollBeforeExpandRef.current = null;
+  }, [topic]);
+  useEffect(() => {
+    if (!sidePanelOpen || (cloudArtifactsListOpen && cloudArtifactsTab !== 'gateway')) {
+      setPreviewExpanded(false);
+      setPreviewContextOpen(false);
+      setPreviewComposerMinimized(false);
+    }
+  }, [sidePanelOpen, cloudArtifactsListOpen, cloudArtifactsTab]);
+  useLayoutEffect(() => {
+    if (previewExpanded && previewContextOpen && timelineRef.current) {
+      timelineRef.current.scrollTop = timelineRef.current.scrollHeight;
+    } else if (!previewExpanded && previewWasExpandedRef.current && previewScrollBeforeExpandRef.current !== null) {
+      if (timelineRef.current) timelineRef.current.scrollTop = previewScrollBeforeExpandRef.current;
+      previewScrollBeforeExpandRef.current = null;
+    }
+    previewWasExpandedRef.current = previewExpanded;
+  }, [previewExpanded, previewContextOpen]);
+  const updatePreviewContextPlacement = useCallback(() => {
+    const workspace = chatColumnRef.current?.parentElement;
+    const dock = chatColumnRef.current;
+    if (workspace && dock) {
+      const workspaceRect = workspace.getBoundingClientRect();
+      const dockRect = dock.getBoundingClientRect();
+      const roomAbove = dockRect.top - workspaceRect.top;
+      const roomBelow = workspaceRect.bottom - dockRect.bottom;
+      const showBelow = roomAbove < 360 && roomBelow > roomAbove;
+      setPreviewContextPlacement(showBelow ? 'below' : 'above');
+      const available = Math.max(0, Math.min(340, Math.floor((showBelow ? roomBelow : roomAbove) - 20)));
+      workspace.style.setProperty('--cc-app-context-max-height', `${available}px`);
+    }
+  }, []);
+  useEffect(() => {
+    if (!previewExpanded) {
+      previewDockDragRef.current = null;
+      previewDockSuppressClickRef.current = 0;
+      previewDockSnapRef.current = null;
+      previewDockAnimationRef.current?.cancel();
+      setPreviewComposerActive(false);
+      setPreviewDockDragging(false);
+      setPreviewDockPoint(null);
+    }
+  }, [previewExpanded]);
+  const openPreviewContext = useCallback(() => {
+    updatePreviewContextPlacement();
+    setPreviewContextOpen(true);
+  }, [updatePreviewContextPlacement]);
+  // Re-clamp after restoring, resizing, or adding attachments/lines. Observe the
+  // dock rather than the timeline, which is an overlay and must not affect sizing.
+  useLayoutEffect(() => {
+    if (!previewExpanded) return undefined;
+    const dock = chatColumnRef.current;
+    const workspace = dock?.parentElement;
+    if (!workspace) return undefined;
+    const updateGeometry = () => {
+      const bounds = workspace.getBoundingClientRect();
+      const size = dock.getBoundingClientRect();
+      const surface = workspace.querySelector('.cloud-artifacts-gateway-frame, .v3-file-preview-body');
+      const surfaceTop = surface ? surface.getBoundingClientRect().top - bounds.top + 20 : 20;
+      const topAnchor = Math.max(20, Math.min(surfaceTop, bounds.height - size.height - 20));
+      workspace.style.setProperty('--cc-app-dock-top', `${topAnchor}px`);
+      setPreviewDockPoint(point => {
+        if (!point) return point;
+        const left = Math.max(8, Math.min(bounds.width - size.width - 8, point.left));
+        const top = Math.max(8, Math.min(bounds.height - size.height - 8, point.top));
+        return left === point.left && top === point.top ? point : { left, top };
+      });
+      updatePreviewContextPlacement();
+    };
+    updateGeometry();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(updateGeometry) : null;
+    observer?.observe(workspace);
+    observer?.observe(dock);
+    window.addEventListener('resize', updateGeometry);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', updateGeometry); };
+  }, [previewExpanded, previewDockPoint, previewDockAnchor, previewComposerMinimized, previewContextOpen, updatePreviewContextPlacement]);
+  useLayoutEffect(() => {
+    if (!previewExpanded || previewDockDragging || previewDockPoint) return;
+    const from = previewDockSnapRef.current;
+    const dock = chatColumnRef.current;
+    previewDockSnapRef.current = null;
+    if (!from || !dock?.animate || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const to = dock.getBoundingClientRect();
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    if (Math.hypot(dx, dy) < 1) return;
+    // Animate only the release, using an independent translate so the center
+    // anchor's existing transform and the mounted composer stay intact.
+    previewDockAnimationRef.current?.cancel();
+    previewDockAnimationRef.current = dock.animate([
+      { translate: `${dx}px ${dy}px` }, { translate: '0px 0px' },
+    ], { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+  }, [previewExpanded, previewDockDragging, previewDockPoint, previewDockAnchor]);
+  useEffect(() => () => previewDockAnimationRef.current?.cancel(), []);
+  const startPreviewDockDrag = useCallback(event => {
+    previewDockSuppressClickRef.current = 0;
+    if (!previewExpanded || event.button !== 0) return;
+    if (event.pointerType && event.pointerType !== 'mouse') return;
+    if (event.target.closest('[role="listbox"], .v3-attachment-menu, .v3-agent-picker-menu, [role="dialog"]')) return;
+    const workspace = chatColumnRef.current?.parentElement;
+    const dock = chatColumnRef.current;
+    if (!workspace || !dock) return;
+    previewDockAnimationRef.current?.cancel();
+    previewDockSnapRef.current = null;
+    const workspaceRect = workspace.getBoundingClientRect();
+    const dockRect = dock.getBoundingClientRect();
+    const initial = previewDockPoint || {
+      left: dockRect.left - workspaceRect.left,
+      top: dockRect.top - workspaceRect.top,
+    };
+    const control = event.target.closest('button, input, textarea');
+    const initialCaptureTarget = control || event.currentTarget;
+    previewDockDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: initial.left,
+      top: initial.top,
+      width: dockRect.width,
+      height: dockRect.height,
+      workspaceWidth: workspaceRect.width,
+      workspaceHeight: workspaceRect.height,
+      moved: false,
+      startedAt: performance.now(),
+      // Only populated text fields need a short selection grace period.
+      // Buttons, the minimized launcher, and empty input drag immediately.
+      textSelection: Boolean(event.target.closest('input, textarea, [contenteditable]')
+        && (event.target.value || event.target.textContent)),
+      captureTarget: event.currentTarget,
+      initialCaptureTarget,
+    };
+    initialCaptureTarget.setPointerCapture?.(event.pointerId);
+  }, [previewDockPoint, previewExpanded]);
+  const movePreviewDock = useCallback(event => {
+    const drag = previewDockDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < 5) return;
+      // Quick movements over text keep native selection. A brief hold enables
+      // dragging without making ordinary clicks on buttons wait for a timer.
+      if (drag.textSelection && performance.now() - drag.startedAt < PREVIEW_COMPOSER_TEXT_DRAG_HOLD_MS) {
+        previewDockDragRef.current = null;
+        if (drag.initialCaptureTarget.hasPointerCapture?.(event.pointerId)) {
+          drag.initialCaptureTarget.releasePointerCapture(event.pointerId);
+        }
+        return;
+      }
+      drag.captureTarget.setPointerCapture?.(event.pointerId);
+      previewDockSuppressClickRef.current = Infinity;
+      window.getSelection()?.removeAllRanges();
+      setPreviewDockPoint({ left: drag.left, top: drag.top });
+      setPreviewDockDragging(true);
+      setPreviewContextOpen(false);
+    }
+    if (event.cancelable) event.preventDefault();
+    drag.moved = true;
+    drag.point = {
+      left: Math.max(8, Math.min(drag.workspaceWidth - drag.width - 8, drag.left + event.clientX - drag.startX)),
+      top: Math.max(8, Math.min(drag.workspaceHeight - drag.height - 8, drag.top + event.clientY - drag.startY)),
+    };
+    // Follow the pointer with a transform; avoid re-rendering the conversation
+    // and re-measuring its layout on every mouse move.
+    const dock = chatColumnRef.current;
+    dock?.style.setProperty('--cc-app-dock-offset-x', `${drag.point.left - drag.left}px`);
+    dock?.style.setProperty('--cc-app-dock-offset-y', `${drag.point.top - drag.top}px`);
+  }, []);
+  const finishPreviewDockDrag = useCallback(event => {
+    const drag = previewDockDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      previewDockDragRef.current = null;
+      previewDockSuppressClickRef.current = 0;
+      setPreviewDockDragging(false);
+      if (drag.moved) {
+        previewDockSuppressClickRef.current = performance.now() + 300;
+        const dock = chatColumnRef.current;
+        const bounds = dock?.parentElement?.getBoundingClientRect();
+        if (bounds) {
+          const rect = dock.getBoundingClientRect();
+          previewDockSnapRef.current = event.type === 'pointercancel' ? null : { left: rect.left, top: rect.top };
+          const left = drag.point?.left ?? rect.left - bounds.left;
+          const top = drag.point?.top ?? rect.top - bounds.top;
+          const bottom = Math.max(20, bounds.height - rect.height - 20);
+          const right = Math.max(20, bounds.width - rect.width - 20);
+          const upper = parseFloat(dock.parentElement.style.getPropertyValue('--cc-app-dock-top')) || 20;
+          const anchors = [
+            { name: 'top-left', left: 20, top: upper },
+            { name: 'top-right', left: right, top: upper },
+            { name: 'bottom-left', left: 20, top: bottom },
+            { name: 'bottom-center', left: (bounds.width - rect.width) / 2, top: bottom },
+            { name: 'bottom-right', left: right, top: bottom },
+          ];
+          const nearest = anchors.reduce((best, candidate) => (
+            Math.hypot(candidate.left - left, candidate.top - top) < Math.hypot(best.left - left, best.top - top)
+              ? candidate : best
+          ));
+          setPreviewDockAnchor(nearest.name);
+        }
+        setPreviewDockPoint(null);
+      }
+    }
+  }, []);
+  useEffect(() => {
+    if (!previewExpanded) return undefined;
+    document.addEventListener('pointermove', movePreviewDock, { capture: true, passive: false });
+    document.addEventListener('pointerup', finishPreviewDockDrag, true);
+    document.addEventListener('pointercancel', finishPreviewDockDrag, true);
+    return () => {
+      document.removeEventListener('pointermove', movePreviewDock, true);
+      document.removeEventListener('pointerup', finishPreviewDockDrag, true);
+      document.removeEventListener('pointercancel', finishPreviewDockDrag, true);
+    };
+  }, [previewExpanded, movePreviewDock, finishPreviewDockDrag]);
+  const movePreviewDockWithKeyboard = useCallback(event => {
+    if (event.target.closest('button') || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    const anchors = ['top-left', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right'];
+    const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+    setPreviewDockAnchor(current => {
+      const index = anchors.indexOf(current);
+      return anchors[(index + delta + anchors.length) % anchors.length];
+    });
+    setPreviewDockPoint(null);
+    setPreviewContextOpen(false);
+  }, []);
+  const minimizePreviewComposer = useCallback(() => {
+    setPreviewComposerMinimized(true);
+    setPreviewContextOpen(false);
+    setAttachmentMenuOpen(false);
+    setShowMentionPicker(false);
+    setShowCommandPalette(false);
+  }, []);
+  const restorePreviewComposer = useCallback(() => {
+    setPreviewComposerMinimized(false);
+    setPreviewComposerActive(true);
+    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+  }, []);
+  useEffect(() => {
+    if (!previewExpanded) return undefined;
+    const closeContext = () => setPreviewContextOpen(false);
+    const onBlur = () => {
+      closeContext();
+      setPreviewComposerActive(false);
+      previewDockDragRef.current = null;
+      previewDockSuppressClickRef.current = 0;
+      setPreviewDockDragging(false);
+      setPreviewDockPoint(null);
+    };
+    const onPointerDown = event => {
+      if (!chatColumnRef.current?.contains(event.target)) {
+        closeContext();
+        setPreviewComposerActive(false);
+      }
+    };
+    const onEscape = event => {
+      if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented
+        || gatewayAnnotationCapture || gatewayAnnotationMode !== 'off'
+        || phoneUploadDialogOpen || previewImageId || conversationSharePreviewOpen) return;
+      if (chatColumnRef.current?.parentElement?.querySelector('.file-annotation-editor:not([data-mode="off"])')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (attachmentMenuOpen || showMentionPicker || commandPaletteVisible) {
+        setAttachmentMenuOpen(false); setShowMentionPicker(false); setShowCommandPalette(false);
+      } else if (previewContextOpen) {
+        closeContext(); textareaRef.current?.focus({ preventScroll: true });
+      } else if (previewComposerMinimized) {
+        restorePreviewComposer();
+      } else restorePreviewWorkspace();
+    };
+    const onResize = () => {
+      if (window.innerWidth <= 1024) restorePreviewWorkspace();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('keydown', onEscape, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('keydown', onEscape, true);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [previewExpanded, previewContextOpen, restorePreviewWorkspace, gatewayAnnotationCapture,
+    gatewayAnnotationMode, phoneUploadDialogOpen, previewImageId, conversationSharePreviewOpen,
+    attachmentMenuOpen, showMentionPicker, commandPaletteVisible, previewComposerMinimized,
+    restorePreviewComposer]);
+
   return (
     <>
       <div
-        className={`v3-message-workspace${sidePanelOpen ? ' has-preview' : ''}`}
+        className={`v3-message-workspace${sidePanelOpen ? ' has-preview' : ''}${previewExpanded ? ' cc-app-focus' : ''}${previewExpanded && previewContextOpen ? ' cc-app-context-open' : ''}${previewContextPlacement === 'below' ? ' cc-app-context-below' : ''}${previewComposerMinimized ? ' cc-app-composer-minimized' : ''}${previewComposerActive ? ' cc-app-composer-active' : ''}${previewDockDragging ? ' cc-app-dock-dragging' : ''}`}
         style={sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
-        <div ref={chatColumnRef} className="v3-chat-column">
+        <div ref={chatColumnRef} className="v3-chat-column" data-composer-position={previewDockAnchor} style={previewExpanded && previewDockPoint ? {
+          left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
+          transform: 'none',
+        } : undefined}>
           {topBar}
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
@@ -6060,6 +6401,9 @@ export default function MessagesView({
           )}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}${conversationShareMode ? ' is-conversation-share-mode' : ''}`}
+            id={previewContextId}
+            role={previewExpanded && previewContextOpen ? 'region' : undefined}
+            aria-label={previewExpanded && previewContextOpen ? '对话上下文' : undefined}
             ref={timelineRef}
             onScroll={handleTimelineScroll}
             onWheel={clearPendingQuestionJump}
@@ -6070,6 +6414,15 @@ export default function MessagesView({
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
+            {previewExpanded && previewContextOpen && (
+              <header className="cc-app-context-header">
+                <div><strong>上下文</strong><span>{selectedAgent?.display_name || selectedAgent?.username || peerProfile?.display_name || '当前对话'}</span></div>
+                <button ref={previewContextCloseRef} type="button" aria-label="收起上下文"
+                  onClick={() => { setPreviewContextOpen(false); textareaRef.current?.focus({ preventScroll: true }); }}>
+                  <X size={16} />
+                </button>
+              </header>
+            )}
             <div className="v3-timeline-inner">
               {conversationShareMode && (
                 <section className="cc-conversation-share-toolbar" aria-label="对话分享图选择">
@@ -6355,6 +6708,28 @@ export default function MessagesView({
       <ChatComposer
         className={isDragActive ? 'is-drag-active' : ''}
         rootProps={{
+          onPointerDownCapture: startPreviewDockDrag,
+          onLostPointerCapture: event => {
+            if (event.target === event.currentTarget) finishPreviewDockDrag(event);
+          },
+          onClickCapture: event => {
+            if (event.detail !== 0 && performance.now() < previewDockSuppressClickRef.current) {
+              event.preventDefault(); event.stopPropagation();
+              previewDockSuppressClickRef.current = 0;
+            } else if (previewExpanded) {
+              if (previewComposerMinimized && !event.target.closest('button')) restorePreviewComposer();
+              else setPreviewComposerActive(true);
+            }
+          },
+          onFocusCapture: () => {
+            if (previewExpanded && !previewDockDragRef.current) setPreviewComposerActive(true);
+          },
+          onDoubleClick: event => {
+            if (previewExpanded && !event.target.closest('button, a')) {
+              if (previewContextOpen) setPreviewContextOpen(false);
+              else openPreviewContext();
+            }
+          },
           onDragEnter: handleDragEnter,
           onDragOver: handleDragOver,
           onDragLeave: handleDragLeave,
@@ -6365,12 +6740,19 @@ export default function MessagesView({
         placeholder={composerPlaceholder}
         disabled={isSendingMessage}
         onChange={handleInputChange}
-        onKeyDown={handleKeyDown}
+        onKeyDown={event => {
+          if (previewExpanded && event.altKey && event.key === 'ArrowUp') {
+            event.preventDefault(); openPreviewContext();
+            requestAnimationFrame(() => previewContextCloseRef.current?.focus({ preventScroll: true }));
+          } else handleKeyDown(event);
+        }}
         onPaste={handlePaste}
         onVoiceFinal={handleVoiceFinal}
         voiceInputDisabled={isSendingMessage || isUploadingAttachment}
         voiceSessionKey={topic}
         textareaProps={{
+          title: previewExpanded ? '双击查看上下文 · Alt+↑ 打开上下文' : undefined,
+          'aria-details': previewExpanded && previewContextOpen ? previewContextId : undefined,
           'aria-controls': showMentionPicker
             ? 'mention-picker'
             : commandPaletteVisible
@@ -6478,6 +6860,28 @@ export default function MessagesView({
         }}
         overlay={(
           <>
+            {previewExpanded && (
+              <div className="cc-app-composer-toolbar" tabIndex={0} role="group" aria-label="输入栏位置"
+                title="按住拖动 · 方向键切换停靠位置 · 双击查看上下文"
+                onKeyDown={movePreviewDockWithKeyboard} onDoubleClick={event => {
+                  if (!event.target.closest('button')) {
+                    event.stopPropagation();
+                    if (previewContextOpen) setPreviewContextOpen(false);
+                    else openPreviewContext();
+                  }
+                }}>
+                {previewComposerMinimized ? (
+                  <button type="button" className="cc-app-composer-restore" aria-label="展开输入栏"
+                    title="展开输入栏" onClick={restorePreviewComposer}><MessageSquare size={16} /></button>
+                ) : <>
+                  <button type="button" className="cc-app-composer-minimize" aria-label="最小化输入栏"
+                    title="最小化输入栏" onClick={minimizePreviewComposer}><Minus size={16} /></button>
+                  <span className="cc-app-composer-title" title={topicName || peerProfile?.display_name || '当前对话'}>
+                    {topicName || peerProfile?.display_name || '当前对话'}
+                  </span>
+                </>}
+              </div>
+            )}
             {commandPaletteVisible && (
               <CommandPalette
                 commands={commandOptions}
@@ -6606,6 +7010,9 @@ export default function MessagesView({
             />
             {cloudArtifactsListOpen ? (
               <CloudArtifactsPanel
+                workspaceFullscreen={previewExpanded}
+                onToggleWorkspaceFullscreen={togglePreviewWorkspace}
+                onWorkspacePreviewChange={handleWorkspacePreviewChange}
                 agentUid={cloudArtifactsAgentUID}
                 topicId={topic}
                 tab={cloudArtifactsTab}
@@ -6624,6 +7031,8 @@ export default function MessagesView({
               />
             ) : (
               <FilePreviewPanel
+                workspaceFullscreen={previewExpanded}
+                onToggleWorkspaceFullscreen={togglePreviewWorkspace}
                 file={previewFile}
                 pendingRemoteArtifactFile={pendingArtifactRefresh}
                 onBack={cloudArtifactsReturnOpen ? returnToCloudArtifacts : undefined}
