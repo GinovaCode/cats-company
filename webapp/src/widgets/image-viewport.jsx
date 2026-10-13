@@ -8,7 +8,7 @@ const midpoint = points => ({ x: (points[0].x + points[1].x) / 2, y: (points[0].
 const distance = points => Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
 
 export default function ImageViewport({ src, alt = '图片预览', annotation = false, wheelZoom = false,
-  dark = false, imageClassName = '', onError, onExpandedChange }) {
+  dark = false, imageClassName = '', annotationSurface = '', onError, onExpandedChange }) {
   const rootRef = useRef(null), scrollerRef = useRef(null), imgRef = useRef(null);
   const pointers = useRef(new Map()), gesture = useRef(null), space = useRef(false), hovering = useRef(false);
   const pendingAnchor = useRef(null), previousTap = useRef(null), state = useRef(null);
@@ -191,7 +191,7 @@ export default function ImageViewport({ src, alt = '图片预览', annotation = 
       onDoubleClick={event => { if (!annotation && event.pointerType !== 'touch') zoomTo(scale > fitScale * 1.1 ? fitScale : Math.max(1, fitScale * 2), anchorFor(event), scale > fitScale * 1.1); }}>
       <div className="image-viewport-stage" style={{ width: geometry.stageWidth || '100%', height: geometry.stageHeight || '100%' }}>
         <img ref={imgRef} src={src} alt={alt} draggable={false} className={imageClassName}
-          data-file-annotation-surface={annotation ? 'image' : undefined}
+          data-file-annotation-surface={annotationSurface || undefined}
           style={{ width: ready ? geometry.width : undefined, height: ready ? geometry.height : undefined, maxWidth: ready ? 'none' : '100%', maxHeight: ready ? 'none' : '100%' }}
           onLoad={event => { setImage({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setFailed(false); }}
           onError={event => { setFailed(true); onError?.(event); }} />
