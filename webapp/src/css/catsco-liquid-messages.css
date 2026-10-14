@@ -1,0 +1,204 @@
+/* A text surface only: names, execution records and deliverables stay outside.
+   Keep the new wrapper transparent to the existing layout in other themes. */
+.v3-message-text:not(.v3-message-followup-text) {
+  display: contents;
+}
+
+.cc-working-conversation,
+.cc-working-details-label,
+.cc-working-dots {
+  display: none;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-process {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-process.is-finished > :is(.v3-working-toggle, .v3-working-status) {
+  order: -2;
+  margin-bottom: 8px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-process.is-finished > :is(.v3-working-details-inline, .v3-working-plan) {
+  order: -1;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-process.is-running > :is(.v3-working-toggle, .v3-working-status) {
+  box-sizing: border-box;
+  justify-content: center;
+  min-width: 64px;
+  min-height: 40px;
+  padding: 12px 18px;
+  margin: 0 0 6px;
+  border: 1px solid rgba(112, 119, 139, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 6px rgba(63, 72, 104, 0.035);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-process.is-running > :is(.v3-working-toggle, .v3-working-status) > :not(.cc-working-dots) {
+  display: none;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 14px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cc-text-secondary);
+  animation: cc-working-dot-pulse 1200ms ease-in-out infinite;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-dots i:nth-child(2) { animation-delay: 160ms; }
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-dots i:nth-child(3) { animation-delay: 320ms; }
+
+@keyframes cc-working-dot-pulse {
+  0%, 70%, 100% { opacity: 0.35; }
+  35% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-dots i {
+    animation: none;
+    opacity: 0.65;
+  }
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-conversation {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-details-label {
+  display: inline;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-working-details-label::before {
+  content: ' · ';
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-process.is-paused > :is(.v3-working-toggle, .v3-working-status) {
+  white-space: normal;
+  text-align: left;
+  color: var(--cc-text-secondary);
+  margin-bottom: 8px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-conversation-notice {
+  margin: 8px 0 12px 48px;
+  font-size: 13px;
+  color: var(--cc-text-secondary);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-conversation-waiting {
+  margin-bottom: 8px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message-text.cc-reply-pending {
+  min-width: 64px;
+  min-height: 40px;
+  color: var(--cc-text-secondary);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-reply-new-text {
+  animation: cc-reply-text-arrive 170ms linear both;
+}
+
+@keyframes cc-reply-text-arrive {
+  from { opacity: 0.15; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-reply-new-text {
+    animation: none;
+  }
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-summary,
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-steps > .v3-wpi-narrative.is-assistant_text,
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-working-steps > .v3-wpi-tool-step > .v3-wpi-narrative.is-assistant_text {
+  display: none;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-avatar-col {
+  padding-top: 6px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-message-bubble {
+  padding: 6px 0 0;
+  border-radius: 0;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-msg-header {
+  margin-bottom: 6px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-msg-name {
+  color: var(--cc-text-secondary);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-message-text {
+  display: block;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid rgba(112, 119, 139, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--cc-text);
+  box-shadow: 0 2px 6px rgba(63, 72, 104, 0.035);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-message-text .oc-markdown > :first-child {
+  margin-top: 0;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-message-text .oc-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message-text .oc-markdown table {
+  border-color: rgba(112, 119, 139, 0.16);
+  background: transparent;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message-text .oc-markdown :is(th, td) {
+  border-color: rgba(112, 119, 139, 0.16);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message-text .oc-markdown th {
+  background: rgba(112, 119, 139, 0.07);
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-message-footer {
+  margin-top: 4px;
+}
+
+html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-self:not(.has-file-only) .v3-message-bubble {
+  border-color: rgba(97, 110, 148, 0.12);
+  border-radius: 16px;
+  background: rgba(233, 238, 249, 0.96);
+  color: var(--cc-text);
+  box-shadow: none;
+}
+
+@media (max-width: 768px) {
+  html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-message.is-peer .v3-message-text {
+    padding: 10px 13px;
+    border-radius: 14px;
+  }
+}

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, MessageSquare, Minus, RefreshCw, Smartphone, Users, X } from 'lucide-react';
-import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq } from '../api';
+import { api, resolveMediaURL, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, wsSendArtifactResultReceipt, onWSMessage, updateTopicSeq, isWSConnected } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, downloadableMediaURL, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
@@ -52,6 +52,7 @@ import {
 } from '../gateway-annotations';
 import { screenshotFile, ownedScreenshotBlock, screenshotWarnings } from '../utils/gateway-annotation-screenshots';
 import { useShowThinkingPreference } from '../utils/show-thinking-preference';
+import { CONVERSATION_ACTIVITY_TIMEOUT, EXECUTION_LABELS, isConversationProcessMessage, isLiquidLight, mergeConversationTaskStatus, useLiquidConversation } from '../utils/liquid-conversation';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, formatUploadErrorMessage, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { describeResourceLoadError, REQUEST_ERROR_CODE } from '../utils/request-error';
 import {
@@ -480,16 +481,24 @@ export function timelineMessageKey(message) {
   return anonymousTimelineKeys.get(message);
 }
 
-function retainTimelineGroupKeys(groups, previousGroups) {
+function retainTimelineGroupKeys(groups, previousGroups, retainStreams = false) {
   const previousKeyByMessage = new Map();
   const memberKeys = (group) => (group.type === 'working' ? group.messages : group.sourceMessages || [group.message])
-    .map((message) => `${group.type}:${timelineMessageKey(message)}`);
+    .flatMap((message) => [
+      `${group.type}:${timelineMessageKey(message)}`,
+      ...(retainStreams && getStreamId(message) ? [`${group.type}:${messageSenderIdentity(message)}:stream:${getStreamId(message)}`] : []),
+    ]);
   previousGroups.forEach((group) => memberKeys(group).forEach((key) => previousKeyByMessage.set(key, group.renderKey)));
   const used = new Set();
   return groups.map((group) => {
     const keys = memberKeys(group);
     const retained = keys.map((key) => previousKeyByMessage.get(key)).find((key) => key && !used.has(key));
-    const renderKey = retained || keys.find((key) => !used.has(key));
+    const pending = retainStreams && !retained && group.type !== 'pending'
+      ? previousGroups.find(previous => previous.type === 'pending'
+        && !used.has(previous.renderKey)
+        && messageSenderIdentity(previous.message) === messageSenderIdentity(group.messages?.[0] || group.message))
+      : null;
+    const renderKey = retained || pending?.renderKey || keys.find((key) => !used.has(key));
     used.add(renderKey);
     return { ...group, renderKey };
   });
@@ -926,6 +935,37 @@ export default function MessagesView({
   const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
   const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
   const showThinking = useShowThinkingPreference();
+  const liquidConversation = useLiquidConversation();
+  const [conversationConnection, setConversationConnection] = useState(() => isWSConnected() ? 'connected' : 'disconnected');
+  const [conversationActivity, setConversationActivity] = useState({});
+  const [conversationStops, setConversationStops] = useState([]);
+  const [conversationTasks, setConversationTasks] = useState({});
+  const [conversationNotice, setConversationNotice] = useState('');
+  const reconnectingConversation = conversationConnection === 'reconnecting';
+  useEffect(() => {
+    if (!liquidConversation || !topic) return undefined;
+    let cancelled = false;
+    Promise.resolve().then(() => api.getConversations()).then(result => {
+      if (cancelled) return;
+      const summary = result?.conversations?.find(item => (item.id || item.topic_id) === topic);
+      if (summary?.task_status) setConversationTasks(current => mergeConversationTaskStatus(current, summary.task_status, topic));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [liquidConversation, reconnectingConversation, topic]);
+  const conversationActivityTimers = useRef(new Map());
+  const markConversationActivity = useCallback((uid, runId = '') => {
+    const key = `${parseUid(uid)}${runId ? `:${runId}` : ''}`;
+    setConversationActivity(current => ({ ...current, [key]: true }));
+    clearTimeout(conversationActivityTimers.current.get(key));
+    conversationActivityTimers.current.set(key, setTimeout(() => {
+      setConversationActivity(current => ({ ...current, [key]: false }));
+      conversationActivityTimers.current.delete(key);
+    }, CONVERSATION_ACTIVITY_TIMEOUT));
+  }, []);
+  useEffect(() => () => {
+    conversationActivityTimers.current.forEach(clearTimeout);
+    conversationActivityTimers.current.clear();
+  }, [topic]);
   const [conversationShareMode, setConversationShareMode] = useState(false);
   const [conversationShareSelectedKeys, setConversationShareSelectedKeys] = useState([]);
   const [conversationSharePreviewOpen, setConversationSharePreviewOpen] = useState(false);
@@ -2559,6 +2599,10 @@ export default function MessagesView({
     setSuppressedWorkingKey('');
     setLiveWorkingKey('');
     setAwaitingAgentReply(false);
+    setConversationActivity({});
+    setConversationStops([]);
+    setConversationTasks({});
+    setConversationNotice('');
     if (liveWorkingTimer.current) {
       clearTimeout(liveWorkingTimer.current);
       liveWorkingTimer.current = null;
@@ -2764,6 +2808,18 @@ export default function MessagesView({
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
+      const taskStatus = msg.task_status || msg.ctrl?.params?.task_status;
+      if (taskStatus?.topic_id === topic && taskStatus.source_uid && taskStatus.run_id
+        && ['running', 'waiting', 'completed', 'failed', 'cancelled', 'stale', 'idle'].includes(taskStatus.state)) {
+        setConversationTasks(current => mergeConversationTaskStatus(current, taskStatus, topic));
+        if (['running', 'waiting'].includes(taskStatus.state)) markConversationActivity(taskStatus.source_uid, taskStatus.run_id);
+      }
+      if (msg._type === 'ws_close' || msg._type === 'ws_auth_expired') {
+        setConversationConnection('disconnected');
+        setConversationActivity({});
+      } else if (msg._type === 'ws_open') {
+        setConversationConnection(current => current === 'connected' ? current : 'reconnecting');
+      }
       if (msg.artifact_result) {
         void handleArtifactResultRequest(msg.artifact_result);
       }
@@ -2779,6 +2835,11 @@ export default function MessagesView({
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         if (isStreamCancel(msg.data)) {
+          // A cancel control (including server fanout) is not a terminal runtime receipt.
+          setConversationStops(current => [...current, {
+            uid: parseUid(msg.data.metadata?.target_bot_uid || msg.data.from),
+            state: 'interrupted', streamId: getStreamId(msg.data),
+          }]);
           const streamId = getStreamId(msg.data);
           if (streamId) {
             setMessages((prev) => prev.filter((message) => message._stream_id !== streamId));
@@ -2793,6 +2854,8 @@ export default function MessagesView({
 
         const incomingRuntimePlan = runtimePlanFromMessage(msg.data);
         if (incomingRuntimePlan) {
+          markConversationActivity(msg.data.from, assistantReplyTurnKey(msg.data));
+          setConversationConnection('connected');
           applyRuntimePlan(incomingRuntimePlan);
           if (isRuntimePlanComplete(incomingRuntimePlan)) {
             clearCompletedRuntimePlanSoon();
@@ -2805,12 +2868,17 @@ export default function MessagesView({
           const streamId = getStreamId(msg.data);
           const delta = streamDeltaText(msg.data.content);
           if (streamId && delta) {
+            if (!sameUID(fromUid, user.uid)) {
+              markConversationActivity(fromUid, assistantReplyTurnKey(msg.data));
+              setConversationConnection('connected');
+            }
             setMessages((prev) => upsertStreamingMessage(prev, {
               streamId,
               topic,
               fromUid,
               content: delta,
               metadata: msg.data.metadata || null,
+              ignoreFinalizedStream: liquidConversation,
             }));
           }
           return;
@@ -2831,9 +2899,14 @@ export default function MessagesView({
           metadata: msg.data.metadata || null,
           msg_type: msg.data.msg_type || msg.data.type || 'text',
           reply_to: msg.data.reply_to || 0,
-          created_at: new Date().toISOString(),
+          created_at: msg.data.created_at || msg.data.ts || new Date().toISOString(),
+          ...(liquidConversation && !sameUID(fromUid, user.uid) ? { _replyArrival: {} } : {}),
         });
         if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
+        if (!sameUID(fromUid, user.uid)) {
+          markConversationActivity(fromUid, assistantReplyTurnKey(serverMsg));
+          setConversationConnection('connected');
+        }
 
         setMessages((prev) => {
           const streamId = getStreamId(serverMsg);
@@ -2841,12 +2914,17 @@ export default function MessagesView({
             const streamIdx = prev.findIndex((m) => m._stream_id === streamId);
             if (streamIdx !== -1) {
               const next = [...prev];
-              next[streamIdx] = serverMsg;
+              next[streamIdx] = { ...serverMsg, _replyArrival: prev[streamIdx]._replyArrival || serverMsg._replyArrival };
               return mergeMessages([], next);
             }
           }
           // Deduplicate by seq ID
-          if (prev.some((m) => m.id === serverMsg.id)) return prev;
+          const existing = prev.find((m) => m.id === serverMsg.id);
+          if (existing) {
+            if (!liquidConversation) return prev;
+            // Replayed snapshots update the same record; retain its timeline timestamp.
+            return mergeMessages(prev, [{ ...serverMsg, _replyArrival: existing._replyArrival, created_at: existing.created_at }]);
+          }
           // If this is our own message echoed back, replace the optimistic entry
           if (sameUID(fromUid, user.uid)) {
             const mergedEcho = mergeOwnServerEcho(prev, serverMsg, user.uid);
@@ -2875,6 +2953,8 @@ export default function MessagesView({
       if (msg.info && msg.info.topic === topic && msg.info.what === 'kp') {
         const fromUid = parseUid(msg.info.from);
         if (!sameUID(fromUid, user.uid)) {
+          markConversationActivity(fromUid);
+          setConversationConnection('connected');
           setPeerTyping(true);
           clearTimeout(peerTypingTimer.current);
           peerTypingTimer.current = setTimeout(() => setPeerTyping(false), TYPING_TIMEOUT_MS);
@@ -2888,7 +2968,7 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [clearLiveWorking, groupId, handleArtifactResultRequest, isGroup, markLiveWorking, topic, user.uid]);
+  }, [clearLiveWorking, groupId, handleArtifactResultRequest, isGroup, liquidConversation, markConversationActivity, markLiveWorking, topic, user.uid]);
 
   // Restore an older-history anchor, or follow updates while the reader
   // remains at the latest position.
@@ -2904,7 +2984,19 @@ export default function MessagesView({
       timeline.scrollTop = timeline.scrollHeight;
       lastTimelineScrollTopRef.current = timeline.scrollTop;
     }
-  }, [messages, runtimePlan, peerTyping]);
+  }, [messages, runtimePlan, peerTyping, conversationActivity, conversationConnection, conversationNotice, conversationStops, conversationTasks]);
+
+  useEffect(() => {
+    if (!liquidConversation) return undefined;
+    const timeline = timelineRef.current;
+    const followReplyGrowth = () => {
+      if (!timeline || !stickToBottomRef.current) return;
+      timeline.scrollTop = timeline.scrollHeight;
+      lastTimelineScrollTopRef.current = timeline.scrollTop;
+    };
+    timeline?.addEventListener('cc:reply-layout', followReplyGrowth);
+    return () => timeline?.removeEventListener('cc:reply-layout', followReplyGrowth);
+  }, [liquidConversation, topic]);
 
   const loadQuestionNavigationHistory = useCallback(async ({ continueOlder = false } = {}) => {
     const targetTopic = topic;
@@ -3297,7 +3389,7 @@ export default function MessagesView({
       responderUid: active ? parseUid(messages[lastWorkingIndex]?.from_uid) : 0,
       exclusiveToCurrentUser,
     };
-  }, [availableAgents, isGroup, members, messages, user.uid]);
+  }, [availableAgents, isGroup, liquidConversation, members, messages, user.uid]);
   const activeBotWorking = workingState.active
     && (peerTyping || workingState.key === liveWorkingKey)
     && workingState.key !== suppressedWorkingKey;
@@ -3467,6 +3559,7 @@ export default function MessagesView({
   }, []);
 
   const handleSend = useCallback(async () => {
+    const isConversationFollowup = liquidConversation && activeBotWorking;
     const originalInput = input;
     const initialText = originalInput.trim();
     const storedAttachments = readComposerAttachmentDraft(composerDraftStoreRef.current, topic);
@@ -3488,6 +3581,7 @@ export default function MessagesView({
     sendInFlightRef.current = true;
     setIsSendingMessage(true);
     setAwaitingAgentReply(Boolean(selectedAgent));
+    setConversationNotice('');
     setAttachmentMenuOpen(false);
 
     let sendTopic = topic;
@@ -3792,6 +3886,12 @@ export default function MessagesView({
           ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
           : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
+      if (liquidConversation && activeTopicRef.current === topic && selectedAgent) {
+        markConversationActivity(selectedAgent.uid || selectedAgent.id, 'waiting');
+      }
+      if (isConversationFollowup && activeTopicRef.current === topic) {
+        setConversationNotice('补充要求已发送，等待 Agent 确认。');
+      }
       const inputStillMatches = readComposerInputDraft(
         composerDraftStoreRef.current,
         topic,
@@ -4021,14 +4121,20 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [activeBotWorking, liquidConversation, markConversationActivity, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
     setIsStopRequested(true);
+    const stoppedMessage = messages.find(message => workingMessageKey(message) === workingState.key);
+    const stopEntry = { uid: workingState.responderUid, messageId: stoppedMessage?.id };
+    if (liquidConversation) setConversationStops(current => [...current, { ...stopEntry, state: 'stopping' }]);
     try {
       await wsSendStreamCancel(topic, workingState.responderUid);
       if (activeTopicRef.current !== topic) return;
+      if (liquidConversation) setConversationStops(current => current.map(entry => (
+        entry.messageId === stopEntry.messageId ? { ...entry, state: 'stop-requested' } : entry
+      )));
       setSuppressedWorkingKey(workingState.key);
       clearRuntimePlan();
       clearLiveWorking();
@@ -4038,10 +4144,11 @@ export default function MessagesView({
       setIsStopRequested(false);
     } catch (err) {
       if (activeTopicRef.current !== topic) return;
+      if (liquidConversation) setConversationStops(current => current.filter(entry => entry.messageId !== stopEntry.messageId));
       setIsStopRequested(false);
       setAttachmentStatus({ tone: 'error', message: err?.message || '停止请求失败，请重试。' });
     }
-  }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key, workingState.responderUid]);
+  }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, liquidConversation, messages, topic, workingState.key, workingState.responderUid]);
 
   const handleRegenerateMessage = useCallback(async (message) => {
     if (sendInFlightRef.current) {
@@ -5500,9 +5607,20 @@ export default function MessagesView({
 
     flushCurrentWorking();
 
+    if (liquidConversation && selectedAgent && (awaitingAgentReply || peerTyping) && !workingState.active
+      && !messages.some(message => message._streaming && !sameUID(message.from_uid, user.uid))) {
+      const message = { id: `waiting:${topic}`, from_uid: selectedAgent.uid || selectedAgent.id, content: '' };
+      groups.push({ type: 'pending', message, sender: getSender(message), assistantAuthored: true,
+        isConsecutive: sameUID(prevSenderUid, message.from_uid) });
+    }
+
     return retainTimelineGroupKeys(
-      reconcileRenderedGroupConsecutiveness(reorderAssistantTurnGroups(groups)),
+      reconcileRenderedGroupConsecutiveness([
+        ...reorderAssistantTurnGroups(groups.filter(group => group.type !== 'pending'), liquidConversation),
+        ...groups.filter(group => group.type === 'pending'),
+      ]),
       committedTimelineGroupsRef.current.topic === topic ? committedTimelineGroupsRef.current.groups : [],
+      liquidConversation,
     );
   }, [
     availableAgentByUID,
@@ -5511,6 +5629,11 @@ export default function MessagesView({
     memberMap,
     messageById,
     messages,
+    liquidConversation,
+    awaitingAgentReply,
+    peerTyping,
+    selectedAgent,
+    workingState.active,
     peerIsBot,
     resolvedPeerProfile,
     displayAvatarUrl,
@@ -5523,6 +5646,53 @@ export default function MessagesView({
   useLayoutEffect(() => {
     committedTimelineGroupsRef.current = { topic, groups: groupedMessages };
   }, [topic, groupedMessages]);
+
+  const latestConversationWorking = new Map();
+  const conversationReplies = new Map();
+  const conversationMessageOrder = new Map(messages.map((message, index) => [message.id, index]));
+  groupedMessages.forEach(group => {
+    if (group.type === 'working') latestConversationWorking.set(messageSenderIdentity(group.messages[0]), group);
+    else if (group.assistantAuthored && !group.message?._streaming) {
+      const last = (group.sourceMessages || [group.message]).at(-1);
+      for (const key of [group.explicitTurnKey, group.fallbackTurnKey].filter(Boolean)) {
+        conversationReplies.set(key, conversationMessageOrder.get(last.id) ?? -1);
+      }
+    }
+  });
+  const conversationExecutionState = (group) => {
+    const uid = messageSenderIdentity(group.messages[0]);
+    const task = conversationTaskForGroup(group);
+    if (task && ['completed', 'failed', 'cancelled'].includes(task.state)) return task.state;
+    const lastWorkingOrder = Math.max(...group.messages.map(message => conversationMessageOrder.get(message.id) ?? -1));
+    const replyOrder = conversationReplies.get(group.explicitTurnKey || group.fallbackTurnKey) ?? -1;
+    if (!task && (replyOrder > lastWorkingOrder || group.conversationReplied)) return 'replied';
+    const latest = latestConversationWorking.get(uid) === group;
+    const runActive = group.messages.some(message => (
+      conversationActivity[`${uid}:${assistantReplyTurnKey(message)}`]
+    ));
+    const stop = [...conversationStops].reverse().find(entry => (
+      entry.messageId != null
+        ? group.messages.some(message => message.id === entry.messageId)
+        : latest && String(entry.uid) === uid
+          && (!entry.streamId || group.messages.some(message => getStreamId(message) === entry.streamId))
+    ));
+    if (stop) return stop.state;
+    if (!latest && !runActive) return 'idle';
+    if (conversationConnection !== 'connected') return conversationConnection;
+    if (task && ['idle', 'stale'].includes(task.state)) return 'idle';
+    if (task?.state === 'waiting') return 'waiting';
+    return runActive || (latest && conversationActivity[uid]) ? 'running' : 'idle';
+  };
+  function conversationTaskForGroup(group) {
+    const uid = messageSenderIdentity(group.messages[0]);
+    for (const message of [...group.messages].reverse()) {
+      const run = message.metadata?.run_id || assistantReplyTurnKey(message);
+      if (run && conversationTasks[`${uid}:${run}`]) return conversationTasks[`${uid}:${run}`];
+    }
+    return null;
+  }
+  const pendingConversationState = conversationConnection !== 'connected' ? conversationConnection
+    : conversationActivity[`${parseUid(selectedAgent?.uid || selectedAgent?.id)}:waiting`] || peerTyping ? 'waiting' : 'idle';
 
   const conversationShareCandidates = useMemo(() => (
     groupedMessages
@@ -6518,8 +6688,15 @@ export default function MessagesView({
         )}
 
         {groupedMessages.map((group, i) => {
+          if (group.type === 'pending') return (
+            <div key={group.renderKey} className="cc-message-anchor cc-conversation-waiting">
+              <ChatMessage key="message" message={group.message} isSelf={false} senderIsBot
+                senderName={group.sender.name} senderAvatarUrl={group.sender.avatarUrl}
+                isConsecutive={group.isConsecutive} replyPending={pendingConversationState} />
+            </div>
+          );
           if (group.type === 'working') {
-            if (!showThinking) return null;
+            if (!showThinking && !liquidConversation) return null;
             return (
               <div
                 key={group.renderKey}
@@ -6534,6 +6711,7 @@ export default function MessagesView({
                   />
                 ))}
                 <ChatMessage
+                  key="message"
                   message={group.messages[0]}
                   workingMessages={group.messages}
                   isSelf={sameUID(group.messages[0].from_uid, user.uid)}
@@ -6544,6 +6722,10 @@ export default function MessagesView({
                   mentionDisplayNames={mentionDisplayNames}
                   workingOnly
                   workingComplete={group.workingComplete}
+                  replyStreaming={liquidConversation && group.conversationStreaming}
+                  executionState={liquidConversation ? conversationExecutionState(group) : undefined}
+                  executionNote={liquidConversation && conversationTaskForGroup(group)?.state === 'failed'
+                    ? String(conversationTaskForGroup(group).error || conversationTaskForGroup(group).summary || '') : undefined}
                   showThinking={showThinking}
                   isConsecutive={group.isConsecutive}
                   onPreviewFile={openFilePreview}
@@ -6584,6 +6766,7 @@ export default function MessagesView({
                 </button>
               )}
               <ChatMessage
+                key="message"
                 message={group.message}
                 isSelf={sameUID(group.message.from_uid, user.uid)}
                 isGroup={isGroup}
@@ -6606,7 +6789,7 @@ export default function MessagesView({
                   ? () => startConversationShareFromMessage(candidate)
                   : undefined}
                 showThinking={showThinking}
-                isConsecutive={showThinking
+                isConsecutive={showThinking || liquidConversation
                   ? group.isConsecutive
                   : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
                 artifactsFirst={group.artifactsFirst}
@@ -6622,7 +6805,10 @@ export default function MessagesView({
           );
         })}
           {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
-          {peerTyping && (
+          {liquidConversation && conversationNotice && (
+            <div className="cc-conversation-notice" role="status">{conversationNotice}</div>
+          )}
+          {!liquidConversation && peerTyping && (
             <div className="v3-peer-typing" role="status">
               <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
@@ -7928,6 +8114,8 @@ function reorderAssistantTurnBundle(groups) {
       ...sourceWorkingGroups[0],
       messages: executionMessages,
       workingComplete: Boolean(mergedOutput),
+      conversationReplied: Boolean(mergedOutput && !mergedOutput.message?._streaming),
+      conversationStreaming: Boolean(mergedOutput?.message?._streaming),
       explicitTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
       fallbackTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
     }]
@@ -7953,7 +8141,7 @@ function reorderAssistantTurnBundle(groups) {
   });
 }
 
-function reorderAssistantSegment(groups) {
+function reorderAssistantSegment(groups, liquidConversation) {
   const entries = [];
 
   for (const group of groups) {
@@ -7962,30 +8150,33 @@ function reorderAssistantSegment(groups) {
     ) || String(group?.sender?.name || '');
     const turnKey = group?.fallbackTurnKey || group?.explicitTurnKey || '';
     let bundle = entries[entries.length - 1];
-    const conflictsWithCurrentTurn = Boolean(
+    const conflictsWithCurrentTurn = liquidConversation && bundle?.explicitTurnKey && group?.explicitTurnKey
+      ? bundle.explicitTurnKey !== group.explicitTurnKey
+      : Boolean(
       bundle?.turnKey
       && turnKey
       && bundle.turnKey !== turnKey
     );
     if (!bundle || bundle.senderKey !== senderKey || conflictsWithCurrentTurn) {
-      bundle = { type: 'bundle', senderKey, turnKey, groups: [] };
+      bundle = { type: 'bundle', senderKey, turnKey, explicitTurnKey: group?.explicitTurnKey, groups: [] };
       entries.push(bundle);
     } else if (!bundle.turnKey && turnKey) {
       bundle.turnKey = turnKey;
     }
+    if (!bundle.explicitTurnKey && group?.explicitTurnKey) bundle.explicitTurnKey = group.explicitTurnKey;
     bundle.groups.push(group);
   }
 
   return entries.flatMap((entry) => reorderAssistantTurnBundle(entry.groups));
 }
 
-function reorderAssistantTurnGroups(groups) {
+function reorderAssistantTurnGroups(groups, liquidConversation) {
   const ordered = [];
   let assistantSegment = [];
 
   const flushAssistantSegment = () => {
     if (assistantSegment.length === 0) return;
-    ordered.push(...reorderAssistantSegment(assistantSegment));
+    ordered.push(...reorderAssistantSegment(assistantSegment, liquidConversation));
     assistantSegment = [];
   };
 
@@ -8139,7 +8330,9 @@ function streamDeltaText(content) {
   return String(content);
 }
 
-function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata }) {
+function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata, ignoreFinalizedStream = false }) {
+  if (ignoreFinalizedStream && messages.some(message => !message._streaming
+    && sameUID(message.from_uid, fromUid) && getStreamId(message) === streamId)) return messages;
   const existingIdx = messages.findIndex((message) => message._stream_id === streamId);
   if (existingIdx !== -1) {
     const next = [...messages];
@@ -8256,7 +8449,8 @@ function isWorkingTextMessage(message) {
   const type = message?.type || message?.msg_type || '';
   if (type !== 'text') return false;
   const content = typeof message?.content === 'string' ? message.content.trim() : '';
-  return content.startsWith(WORKING_TEXT_PREFIX);
+  return content.startsWith(WORKING_TEXT_PREFIX)
+    || (isLiquidLight() && isConversationProcessMessage(message));
 }
 
 // Parse "usr123" -> 123
