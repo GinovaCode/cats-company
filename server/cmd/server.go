@@ -915,6 +915,24 @@ func main() {
 	mux.HandleFunc("/api/artifacts/apps", authWithDB(artifactAppsHandler.HandleApps))
 	mux.HandleFunc("/api/artifacts/apps/", authWithDB(artifactAppsHandler.HandleApps))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
+	// Service-agents invocation surface (MCP over Streamable HTTP; design §3.3).
+	// Registered only when the configured platform store supports service-agent
+	// orchestration (both PG and MySQL adapters do).
+	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
+		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
+		serviceAgentsMCPHandler.SetBalanceChecker(server.NewServiceBalanceCheckerFromEnv())
+		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
+		// Orchestration internal API for runtime instances (design §4.3; instances
+		// reach it over the shared VPC). Authn = per-instance bearer token
+		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with
+		// CATS_SERVICE_TOKEN_SECRET, exp=+4h. The reaper reclaims expired leases
+		// so another instance can resume from the latest checkpoint.
+		serviceOrchestrator := server.NewServiceRunOrchestratorFromEnv(serviceAgentStore)
+		serviceOrchestrator.RegisterRoutes(mux)
+		go serviceOrchestrator.StartReaper(15 * time.Second)
+	} else {
+		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")
+	}
 	mux.HandleFunc("POST /api/agents/{uid}/knowledge/handoff", jwtAuthWithDB(agentHandler.IssueKnowledgeWikiHandoff))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/manifest", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiManifest, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiManifest)))
 	mux.HandleFunc("GET /api/agents/{uid}/knowledge/ws-ticket", agentHandler.WikiAuth(agentHandler.HandleKnowledgeWikiWebSocketTicket, jwtAuthWithDB(agentHandler.HandleKnowledgeWikiWebSocketTicket)))
