@@ -42,6 +42,27 @@ describe('file preview source and annotation integration', () => {
     expect(fileAnnotationSourceForPreview({ ...message(), id: -1 }, image)).toBeNull();
     expect(fileAnnotationSourceForPreview(message(), { ...image, url: '/uploads/images/other.png' })).toBeNull();
   });
+  it('resolves merged legacy files against the original delivery message', () => {
+    const original = { id: 91, topic_id: 'p2p_7_9', msg_type: 'file',
+      content: JSON.stringify(JSON.stringify({ type: 'file', payload: video })) };
+    const final = { id: 99, topic_id: 'p2p_7_9', msg_type: 'text', content: 'Done' };
+    const merged = { ...final, _display_source_messages: [original, final],
+      content_blocks: [{ type: 'file', payload: { ...video } }] };
+    expect(fileAnnotationSourceForPreview(merged, { ...video }, 'p2p_7_10'))
+      .toEqual({ topic_id: 'p2p_7_9', message_id: 91, attachment_index: 0 });
+  });
+  it('uses exact payload ownership and refuses ambiguous clones or pending originals', () => {
+    const firstPayload = { ...video };
+    const secondPayload = { ...video };
+    const first = { id: 41, topic_id: 'p2p_7_9', content_blocks: [{ type: 'file', payload: firstPayload }] };
+    const second = { id: 42, topic_id: 'p2p_7_9', content_blocks: [{ type: 'file', payload: secondPayload }] };
+    const merged = { id: 99, topic_id: 'p2p_7_9', _display_source_messages: [first, second],
+      content_blocks: [{ type: 'file', payload: secondPayload }] };
+    expect(fileAnnotationSourceForPreview(merged, secondPayload)).toEqual({ topic_id: 'p2p_7_9', message_id: 42, attachment_index: 0 });
+    expect(fileAnnotationSourceForPreview(merged, { ...video })).toBeNull();
+    expect(fileAnnotationSourceForPreview({ ...merged, _display_source_messages: [{ ...second, _pending: true }] }, secondPayload)).toBeNull();
+    expect(fileAnnotationSourceForPreview(merged, { ...video, url: '/uploads/files/other.mp4' })).toBeNull();
+  });
   it('supports legacy encoded payloads and uses the original topic over the current topic', () => {
     const legacy = { id: 91, topic_id: 'p2p_7_9', msg_type: 'file', content: JSON.stringify(JSON.stringify({ type: 'file', payload: video })) };
     expect(fileAnnotationSourceForPreview(legacy, video, 'p2p_7_10')).toEqual({ topic_id: 'p2p_7_9', message_id: 91, attachment_index: 0 });

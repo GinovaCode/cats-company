@@ -8052,6 +8052,7 @@ function mergeAssistantOutputGroups(groups) {
       ...lastGroup.message,
       content,
       content_blocks: contentBlocks,
+      _display_source_messages: sourceMessages,
     },
     sourceMessages,
     sender: groups[0].sender || lastGroup.sender,

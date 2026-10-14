@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../api', () => ({ resolveMediaURL: value => value }));
 vi.mock('./avatar', () => ({ default: () => <span /> }));
-vi.mock('./mobile-pdf-preview', () => ({ default: () => <canvas /> }));
+vi.mock('./mobile-pdf-preview', () => ({ default: () =>
+  <canvas width={800} height={600} data-file-annotation-surface="pdf"
+    data-file-annotation-page="1" data-file-annotation-ready="true" /> }));
 vi.mock('../utils/file-preview-dom-screenshots', () => ({
   captureFilePreviewDOM: vi.fn(async () => {
     const canvas = document.createElement('canvas');
@@ -88,6 +90,47 @@ async function submitComment(text) {
 }
 
 describe('file annotation production component flow', () => {
+  it('captures a PDF merged with a later reply using its original message and attachment index', async () => {
+    const payload = { name: 'report.pdf', url: '/uploads/files/report.pdf', size: 123, mime_type: 'application/pdf' };
+    const photo = { name: 'photo.png', url: '/uploads/images/photo.png', size: 456 };
+    const original = { id: 42, seq_id: 42, topic_id: 'p2p_7_9', from_uid: 9,
+      content_blocks: [{ type: 'text', text: '附件' }, { type: 'image', payload: photo }, { type: 'file', payload }] };
+    const final = { id: 99, seq_id: 99, topic_id: 'p2p_7_9', from_uid: 9, content: '报告已生成。' };
+    const message = { ...final, _display_source_messages: [original, final],
+      content_blocks: [{ type: 'file', payload }, { type: 'text', text: final.content }] };
+    const source = { ...payload, file_key: 'report.pdf', type: 'file', topic_id: original.topic_id, message_id: 42,
+      attachment_index: 1, version: 'a'.repeat(64) };
+    const api = {
+      openFileAnnotationBinding: vi.fn(async coordinates => {
+        if (coordinates.message_id !== 42 || coordinates.attachment_index !== 1) throw new Error('file_source_not_found');
+        return { open_ref: 'fob_pdf', source };
+      }),
+      revokeFileAnnotationBinding: vi.fn(async () => ({})),
+      sendFileAnnotations: vi.fn(async () => ({ seq_id: 100 })),
+      uploadImage: vi.fn(async file => {
+        const file_key = `capture-${crypto.randomUUID()}.jpg`;
+        return { file_key, url: `/uploads/images/${file_key}`, size: file.size, mime_type: 'image/jpeg' };
+      }),
+    };
+    await act(async () => root.render(<FileAnnotationFlow message={message} api={api} />));
+    await act(async () => container.querySelector('button[title="预览文件"]').click());
+    await act(async () => button('框选区域').click());
+    const canvas = container.querySelector('canvas[data-file-annotation-surface="pdf"]');
+    canvas.getBoundingClientRect = () => ({ x: 100, y: 100, left: 100, top: 100, right: 900, bottom: 700, width: 800, height: 600 });
+    await act(async () => {
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 200, clientY: 200 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: 500, clientY: 400 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: 500, clientY: 400 }));
+    });
+    expect(container.querySelector('.file-annotation-popover-error')).toBeNull();
+    expect(api.openFileAnnotationBinding).toHaveBeenCalledWith({ topic_id: original.topic_id, message_id: 42, attachment_index: 1 });
+    expect(container.querySelectorAll('.file-annotation-screenshots img')).toHaveLength(2);
+    await submitComment('修改 PDF 的这一处');
+    expect(api.uploadImage).toHaveBeenCalledTimes(2);
+    expect(api.sendFileAnnotations.mock.calls[0][0].file_annotations.source).toEqual(source);
+    expect(api.sendFileAnnotations.mock.calls[0][0].file_annotations.annotations[0].target.page).toBe(1);
+  });
+
   it.each([false, true])('captures a chat image whose stored payload omits its name (legacy=%s)', async legacy => {
     const payload = { url: '/uploads/images/generated.png', width: 800, height: 600 };
     const source = { topic_id: 'p2p_7_9', message_id: 42, attachment_index: 0,
