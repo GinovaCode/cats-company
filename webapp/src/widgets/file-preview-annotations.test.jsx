@@ -110,6 +110,23 @@ describe('file preview source and annotation integration', () => {
     expect(container.querySelector('iframe[title="PDF Preview"]')).toBeNull();
     expect(container.querySelector('[data-testid="pdf-reader"]').dataset.mode).toBe('true');
   });
+  it('keeps the rendered HTML iframe and its sandbox when annotation starts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, headers: { get: () => null },
+      text: async () => '<!doctype html><html><head><style>h1{color:red}</style></head><body><h1>报告</h1></body></html>' })));
+    const file = { name: 'report.html', url: '/uploads/files/report.html',
+      annotation_source: { topic_id: 'p2p_7_9', message_id: 42, attachment_index: 0 } };
+    await act(async () => root.render(<FilePreviewPanel file={file} annotationApi={{}} />));
+    const frame = container.querySelector('iframe[title="HTML Report Preview"]');
+    expect(frame).not.toBeNull();
+    const doc = frame.getAttribute('srcdoc');
+    expect(doc).toContain('h1{color:red}');
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
+    expect(container.querySelector('[data-testid="file-editor"]').dataset.kind).toBe('html');
+    await act(async () => container.querySelector('[data-testid="file-editor"]').click());
+    expect(container.querySelector('iframe[title="HTML Report Preview"]')).toBe(frame);
+    expect(frame.getAttribute('srcdoc')).toBe(doc);
+    expect(container.querySelector('pre[data-file-annotation-text]')).toBeNull();
+  });
   it('renders the editor only when a persisted source and annotation API are available', async () => {
     await act(async () => root.render(<FilePreviewPanel file={image} annotationApi={{}} />));
     expect(container.querySelector('[data-testid="file-editor"]')).toBeNull();

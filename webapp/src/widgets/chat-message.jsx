@@ -18,6 +18,7 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
+import HTMLFilePreview from './html-file-preview';
 import FileAnnotationEditor from './file-annotation-editor';
 import ImageViewport from './image-viewport';
 import FileAnnotationCard from './file-annotation-card';
@@ -3537,16 +3538,12 @@ export function FilePreviewPanel({
             <div className="v3-file-preview-state">加载中...</div>
           ) : previewError ? (
             <div className="v3-file-preview-state error">{previewError}</div>
-          ) : fileAnnotationMode && (isHtml || isMarkdown) ? (
+          ) : fileAnnotationMode && isMarkdown ? (
             <pre className="v3-file-preview-text" data-file-annotation-text="" data-file-annotation-surface="text">{textContent || ''}</pre>
           ) : isHtml ? (
-            <iframe
-              className="v3-file-preview-frame"
-              title="HTML Report Preview"
-              sandbox={HTML_PREVIEW_SANDBOX}
-              referrerPolicy="no-referrer"
-              srcDoc={textContent || '<!doctype html><meta charset="utf-8"><body></body>'}
-            />
+            <HTMLFilePreview key={descriptor.key} html={textContent || ''}
+              annotationMode={fileAnnotationMode}
+              annotatable={Boolean(file.annotation_source && annotationApi)} />
           ) : isMarkdown ? (
             <iframe
               className="v3-file-preview-frame"
@@ -3566,7 +3563,7 @@ export function FilePreviewPanel({
             key={`${file.annotation_source.topic_id}:${file.annotation_source.message_id}:${file.annotation_source.attachment_index}`}
             file={file}
             source={file.annotation_source}
-            kind={isImage ? 'image' : isVideo ? 'video' : isPdf ? 'pdf' : isSpreadsheet ? 'cells' : 'text'}
+            kind={isImage ? 'image' : isVideo ? 'video' : isPdf ? 'pdf' : isHtml ? 'html' : isSpreadsheet ? 'cells' : 'text'}
             contentRef={fileContentRef}
             api={annotationApi}
             onModeChange={setFileAnnotationMode}

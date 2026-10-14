@@ -10,10 +10,11 @@
 
 import { screenshotFile, ownedScreenshotBlock } from './gateway-annotation-screenshots';
 import { captureFilePreviewDOM } from './file-preview-dom-screenshots';
+import { captureHTMLPreview, normalizeHTMLViewport } from './html-preview-bridge';
 
 export const FILE_ANNOTATIONS_CONTRACT = 'catsco.file-annotations.v1';
 export const FILE_OPEN_BINDING_CONTRACT = 'catsco.file-open-binding.v1';
-export const FILE_ANNOTATION_KINDS = ['image', 'video', 'pdf', 'text', 'cells'];
+export const FILE_ANNOTATION_KINDS = ['image', 'video', 'pdf', 'html', 'text', 'cells'];
 
 export const FILE_ANNOTATION_MAX_ANNOTATIONS = 20;
 export const FILE_ANNOTATION_MAX_BODY = 2000;
@@ -215,7 +216,7 @@ export function normalizeFileAnnotationRect(value) {
 
 export function normalizeFileAnnotationTarget(kind, value) {
   if (!plainObject(value)) return null;
-  if (kind === 'image' || kind === 'video' || kind === 'pdf') {
+  if (kind === 'image' || kind === 'video' || kind === 'pdf' || kind === 'html') {
     const rect = normalizeFileAnnotationRect(value.rect);
     if (rect === null) return null;
     const target = { rect };
@@ -228,6 +229,11 @@ export function normalizeFileAnnotationTarget(kind, value) {
       const page = positiveInteger(value.page);
       if (page === null) return null;
       target.page = page;
+    }
+    if (kind === 'html') {
+      const viewport = normalizeHTMLViewport(value.viewport);
+      if (!viewport) return null;
+      target.viewport = viewport;
     }
     return target;
   }
@@ -328,6 +334,7 @@ export function fileAnnotationTargetSummary(kind, target) {
   const base = `区域 ${pct(rect.x)},${pct(rect.y)}`;
   if (kind === 'video') return `${base} @ ${Number(target.time_seconds || 0).toFixed(2)}s`;
   if (kind === 'pdf') return `${base} 第 ${target.page} 页`;
+  if (kind === 'html') return `${base} · 页面滚动 ${Math.round(target.viewport?.scroll_y || 0)}px`;
   return base;
 }
 
@@ -444,6 +451,10 @@ export function mediaContentBox(element) {
   const rect = element.getBoundingClientRect();
   if (!rect || !Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) return null;
   const tag = typeof element.tagName === 'string' ? element.tagName.toUpperCase() : '';
+  if (tag === 'IFRAME' && element.dataset?.fileAnnotationSurface === 'html') {
+    return { x: rect.left, y: rect.top, width: rect.width, height: rect.height,
+      bitmapWidth: rect.width, bitmapHeight: rect.height };
+  }
   if (tag === 'CANVAS') {
     const bw = Number(element.width);
     const bh = Number(element.height);
@@ -660,6 +671,13 @@ export function captureFileAnnotationScreenshots(element, target, options = {}) 
 // Media pixels are copied synchronously at selection time. Text and cells
 // render only the visible preview, with the same bounded JPEG/crop encoder.
 export async function captureFilePreviewScreenshots(element, kind, target, options = {}) {
+  if (kind === 'html') {
+    const { canvas, warnings } = await captureHTMLPreview(element, target, options);
+    const box = mediaContentBox(element);
+    if (!box) throw fail('unavailable', 'HTML 预览不可见');
+    return { ...captureFileAnnotationScreenshots(canvas, target, { ...options,
+      contentBox: { ...box, bitmapWidth: canvas.width, bitmapHeight: canvas.height } }), warnings, visiblePreview: true };
+  }
   if (kind !== 'text' && kind !== 'cells') return captureFileAnnotationScreenshots(element, target, options);
   const { canvas, box, selected } = await captureFilePreviewDOM(element, kind, target, options);
   const rect = normalizedRectFromBox(selected, box);
@@ -787,6 +805,8 @@ export function validateFileAnnotation(annotation) {
   } else if (annotation.kind === 'pdf') {
     if (!normalizeFileAnnotationRect(target.rect)) throw fail('bad-geometry', 'pdf rect must be normalized 0..1');
     if (!positiveInteger(target.page)) throw fail('bad-geometry', 'pdf page must be a positive integer');
+  } else if (annotation.kind === 'html') {
+    if (!normalizeFileAnnotationRect(target.rect) || !normalizeHTMLViewport(target.viewport)) throw fail('bad-geometry', 'html rect and viewport must describe the selected page');
   } else if (annotation.kind === 'text') {
     if (!Number.isInteger(target.start) || !Number.isInteger(target.end) || target.start < 0 || target.end <= target.start) {
       throw fail('bad-geometry', 'text offsets must satisfy 0 <= start < end');

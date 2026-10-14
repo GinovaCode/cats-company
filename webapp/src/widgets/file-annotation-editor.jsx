@@ -15,8 +15,10 @@ import {
   cellSelectionTarget,
 } from '../utils/file-annotations';
 
+import { htmlPreviewTarget } from '../utils/html-preview-bridge';
+
 const MODE_LABELS = { region: '框选区域', text: '文本选区', cells: '表格选区', whole: '整页/整段' };
-const REGION_KINDS = { image: true, video: true, pdf: true };
+const REGION_KINDS = { image: true, video: true, pdf: true, html: true };
 const SURFACE_SELECTOR = '[data-file-annotation-surface]';
 const CAPTURE_ERRORS = {
   tainted: '浏览器无法读取当前内容的图片数据。请重新打开文件后重试。',
@@ -111,6 +113,7 @@ export default function FileAnnotationEditor({
 
   const invalidateCapture = useCallback((message) => {
     epochRef.current += 1;
+    dragRef.current = null;
     setCapturing(false);
     setScreenshots(null);
     setRegion(null);
@@ -139,7 +142,7 @@ export default function FileAnnotationEditor({
       invalidateCapture('页面或缩放已变化，请重新框选');
     };
     const onSeek = () => invalidateCapture('播放位置已变化，请重新框选');
-    const onViewChange = () => invalidateCapture('图片视图已变化，请重新框选');
+    const onViewChange = () => invalidateCapture(surface?.dataset.fileAnnotationError || '页面视图已变化，请重新框选');
     window.addEventListener('resize', onViewport);
     window.addEventListener('scroll', onViewport, true);
     root?.addEventListener('seeked', onSeek, true);
@@ -441,6 +444,10 @@ export default function FileAnnotationEditor({
     const surface = contentRef?.current?.querySelector(SURFACE_SELECTOR);
     const box = mediaContentBox(surface);
     if (!box) return;
+    if (kind === 'html' && surface.dataset.fileAnnotationReady !== 'true') {
+      setNotice(surface.dataset.fileAnnotationError || 'HTML 页面尚未就绪，请稍候再框选');
+      return;
+    }
     if (kind === 'pdf' && surface.dataset.fileAnnotationReady === 'false') {
       setNotice('当前页尚未渲染完成，请稍候再框选');
       return;
@@ -504,7 +511,11 @@ export default function FileAnnotationEditor({
       return;
     }
     if (!normalized || normalized.width < 0.005 || normalized.height < 0.005) return;
-    const target = { rect: normalized };
+    let target = { rect: normalized };
+    if (kind === 'html') {
+      try { target = htmlPreviewTarget(contentRef?.current?.querySelector(SURFACE_SELECTOR), normalized); }
+      catch (error) { setNotice(error.message); return; }
+    }
     if (kind === 'pdf') {
       const page = Number(contentRef?.current?.querySelector(SURFACE_SELECTOR)?.dataset.fileAnnotationPage || 0);
       if (!page) { setNotice('当前页信息缺失，请稍候再框选'); return; }
@@ -576,6 +587,9 @@ export default function FileAnnotationEditor({
       if (!video) return;
       video.pause?.();
       return acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 }, time_seconds: Number(video.currentTime || 0) });
+    } else if (kind === 'html') {
+      try { return acceptTarget(htmlPreviewTarget(contentRef?.current?.querySelector(SURFACE_SELECTOR), { x: 0, y: 0, width: 1, height: 1 })); }
+      catch (error) { setNotice(error.message); return false; }
     } else if (kind === 'image') {
       return acceptTarget({ rect: { x: 0, y: 0, width: 1, height: 1 } });
     }
@@ -591,24 +605,41 @@ export default function FileAnnotationEditor({
         selectCells(event);
       }
     };
+    const framePointer = (event) => {
+      const frame = root.querySelector(SURFACE_SELECTOR);
+      if (kind !== 'html' || event.target !== frame) return;
+      const data = event.detail, box = frame.getBoundingClientRect();
+      const pointer = { target: frame, clientX: box.left + data.x, clientY: box.top + data.y, preventDefault() {} };
+      if (data.event === 'pointerdown') onPointerDown(pointer);
+      else if (data.event === 'pointermove') onPointerMove(pointer);
+      else if (data.event === 'pointerup') void onPointerUp(pointer);
+      else { dragRef.current = null; setRegion(null); }
+    };
     root.dataset.fileAnnotationMode = mode;
+    root.addEventListener('file-annotation-pointer', framePointer);
     root.addEventListener('pointerdown', onPointerDown);
     if (mode === 'text') root.addEventListener('mouseup', selectText);
     root.addEventListener('keydown', selectCellWithKey);
+    const frameEscape = event => {
+      if (kind === 'html' && event.key === 'Escape') invalidateCapture();
+    };
+    root.addEventListener('keydown', frameEscape);
     return () => {
+      root.removeEventListener('keydown', frameEscape);
       delete root.dataset.fileAnnotationMode;
+      root.removeEventListener('file-annotation-pointer', framePointer);
       root.removeEventListener('pointerdown', onPointerDown);
       root.removeEventListener('mouseup', selectText);
       root.removeEventListener('keydown', selectCellWithKey);
     };
-  }, [contentRef, mode, onPointerDown, selectCells, selectText]);
+  }, [contentRef, invalidateCapture, kind, mode, onPointerDown, onPointerMove, onPointerUp, selectCells, selectText]);
 
   useEffect(() => {
     if (mode !== 'whole') return undefined;
-    if (kind !== 'pdf') { void selectWhole(); return undefined; }
+    if (kind !== 'pdf' && kind !== 'html') { void selectWhole(); return undefined; }
     const root = contentRef?.current;
     let active = true, timer;
-    setNotice('正在加载当前 PDF 页面…');
+    setNotice(kind === 'html' ? '正在加载 HTML 页面…' : '正在加载当前 PDF 页面…');
     const tryReadyPage = () => {
       clearTimeout(timer);
       if (root?.querySelector(SURFACE_SELECTOR)?.dataset.fileAnnotationReady !== 'true') return;
@@ -686,7 +717,7 @@ export default function FileAnnotationEditor({
                 } else changeMode(mode === item ? 'off' : item);
               }}
             >
-              {MODE_LABELS[item]}
+              {kind === 'html' && item === 'whole' ? '当前可见页' : MODE_LABELS[item]}
             </button>
           ))}
         </div>
@@ -694,7 +725,8 @@ export default function FileAnnotationEditor({
           <p className={`file-annotation-hint${error ? ' is-error' : ''}`} role={error ? 'alert' : 'status'}>
             {error || notice || (kind === 'text' ? '在原文中选中要批注的文本。'
               : kind === 'cells' ? '点击要批注的单元格。'
-                : '在内容上拖出要批注的区域；Esc 取消当前选区。')}
+                : kind === 'html' && mode === 'whole' ? '批注当前可见页面；滚动或页面变化后请重新选择。'
+                  : '在内容上拖出要批注的区域；Esc 取消当前选区。')}
           </p>
         )}
       </div>
@@ -764,7 +796,7 @@ export default function FileAnnotationEditor({
       {mode === 'off' && (
         <button type="button" className="file-annotation-keyboard-target"
           onClick={() => changeMode(kind === 'text' ? 'text' : kind === 'cells' ? 'cells' : 'whole')}>
-          添加整段/整页批注（键盘）
+          {kind === 'html' ? '添加当前可见页批注（键盘）' : '添加整段/整页批注（键盘）'}
         </button>
       )}
 

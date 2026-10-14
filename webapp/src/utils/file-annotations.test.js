@@ -124,6 +124,21 @@ describe('file annotation validation', () => {
     expect(normalizeFileAnnotationTarget('cells', { sheet: 'Sheet1', row_start: 1, row_end: 2, column_start: 51, column_end: 3, quote: 'v' })).toBeNull();
   });
 
+  it('preserves HTML viewport geometry and rejects incomplete or unbounded locations', () => {
+    const target = { rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+      viewport: { width: 800, height: 600, scroll_x: 0, scroll_y: 500, revision: 0 } };
+    expect(normalizeFileAnnotationTarget('html', target)).toEqual(target);
+    expect(normalizeFileAnnotationTarget('html', { rect: target.rect })).toBeNull();
+    for (const change of [{ width: 0 }, { width: 32769 }, { height: Infinity }, { scroll_y: NaN }, { revision: -1 }]) {
+      expect(normalizeFileAnnotationTarget('html', { ...target, viewport: { ...target.viewport, ...change } })).toBeNull();
+    }
+    const entry = { id: 'fa_html', kind: 'html', body: '调整这里', target };
+    expect(validateFileAnnotation(entry)).toBe(entry);
+    expect(normalizeFileAnnotations(docFixture({ annotations: [entry] })).annotations[0].target).toEqual(target);
+    expect(fileAnnotationTargetSummary('html', target)).toContain('500px');
+    expect(fileAnnotationHasScreenshot('html')).toBe(true);
+  });
+
   it('rejects empty bodies, duplicate ids, unknown kinds and oversized sets', () => {
     expect(normalizeFileAnnotations(docFixture({ annotations: [{ id: 'a', kind: 'image', body: ' ', target: { rect: { x: 0, y: 0, width: 1, height: 1 } } }] }))).toBeNull();
     const row = { id: 'a', kind: 'image', body: 'x', target: { rect: { x: 0, y: 0, width: 1, height: 1 } } };

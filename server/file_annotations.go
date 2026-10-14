@@ -52,22 +52,32 @@ type fileAnnotationRect struct {
 	Height float64 `json:"height"`
 }
 
+// fileAnnotationHTMLViewport locates a rendered region within the HTML page.
+type fileAnnotationHTMLViewport struct {
+	Width    int64   `json:"width"`
+	Height   int64   `json:"height"`
+	ScrollX  float64 `json:"scroll_x"`
+	ScrollY  float64 `json:"scroll_y"`
+	Revision int64   `json:"revision"`
+}
+
 // fileAnnotationTarget is the bounded, kind-dependent target of one file
 // annotation. Only the fields for its kind are populated.
 type fileAnnotationTarget struct {
-	Rect        *fileAnnotationRect `json:"rect,omitempty"`
-	TimeSeconds float64             `json:"time_seconds,omitempty"`
-	Page        int64               `json:"page,omitempty"`
-	Start       int64               `json:"start,omitempty"`
-	End         int64               `json:"end,omitempty"`
-	Quote       string              `json:"quote,omitempty"`
-	LineStart   int64               `json:"line_start,omitempty"`
-	LineEnd     int64               `json:"line_end,omitempty"`
-	Sheet       string              `json:"sheet,omitempty"`
-	RowStart    int64               `json:"row_start,omitempty"`
-	RowEnd      int64               `json:"row_end,omitempty"`
-	ColumnStart int64               `json:"column_start,omitempty"`
-	ColumnEnd   int64               `json:"column_end,omitempty"`
+	Viewport    *fileAnnotationHTMLViewport `json:"viewport,omitempty"`
+	Rect        *fileAnnotationRect         `json:"rect,omitempty"`
+	TimeSeconds float64                     `json:"time_seconds,omitempty"`
+	Page        int64                       `json:"page,omitempty"`
+	Start       int64                       `json:"start,omitempty"`
+	End         int64                       `json:"end,omitempty"`
+	Quote       string                      `json:"quote,omitempty"`
+	LineStart   int64                       `json:"line_start,omitempty"`
+	LineEnd     int64                       `json:"line_end,omitempty"`
+	Sheet       string                      `json:"sheet,omitempty"`
+	RowStart    int64                       `json:"row_start,omitempty"`
+	RowEnd      int64                       `json:"row_end,omitempty"`
+	ColumnStart int64                       `json:"column_start,omitempty"`
+	ColumnEnd   int64                       `json:"column_end,omitempty"`
 }
 
 type fileAnnotation struct {
@@ -89,6 +99,8 @@ func (a fileAnnotation) MarshalJSON() ([]byte, error) {
 		target["rect"], target["time_seconds"] = a.Target.Rect, a.Target.TimeSeconds
 	case "pdf":
 		target["rect"], target["page"] = a.Target.Rect, a.Target.Page
+	case "html":
+		target["rect"], target["viewport"] = a.Target.Rect, a.Target.Viewport
 	case "text", "code":
 		target["start"], target["end"], target["quote"] = a.Target.Start, a.Target.End, a.Target.Quote
 		target["line_start"], target["line_end"] = a.Target.LineStart, a.Target.LineEnd
@@ -134,7 +146,7 @@ type fileAnnotationsDocument struct {
 
 func validFileAnnotationKind(value string) bool {
 	switch value {
-	case "image", "video", "pdf", "text", "code", "cells":
+	case "image", "video", "pdf", "html", "text", "code", "cells":
 		return true
 	}
 	return false
@@ -344,7 +356,7 @@ func normalizeFileAnnotation(value interface{}, index int) (*fileAnnotation, err
 	}
 	kind, _ := record["kind"].(string)
 	if !validFileAnnotationKind(kind) {
-		return nil, fmt.Errorf("%s.kind must be one of image, video, pdf, text, code, cells", prefix)
+		return nil, fmt.Errorf("%s.kind must be one of image, video, pdf, html, text, code, cells", prefix)
 	}
 	label, _ := record["label"].(string)
 	if utf8.RuneCountInString(label) > fileAnnotationsMaxLabelRunes {
@@ -376,7 +388,7 @@ func normalizeFileAnnotationTarget(kind string, value interface{}) (*fileAnnotat
 		return nil, errors.New("target must be an object")
 	}
 	target := &fileAnnotationTarget{}
-	if kind == "image" || kind == "video" || kind == "pdf" {
+	if kind == "image" || kind == "video" || kind == "pdf" || kind == "html" {
 		rawRect, present := record["rect"]
 		if !present || rawRect == nil {
 			return nil, errors.New("target.rect is required")
@@ -388,6 +400,21 @@ func normalizeFileAnnotationTarget(kind string, value interface{}) (*fileAnnotat
 		target.Rect = rect
 	}
 	switch kind {
+	case "html":
+		view, ok := record["viewport"].(map[string]interface{})
+		if !ok {
+			return nil, errors.New("target.viewport is required for HTML")
+		}
+		width, widthOK := imageEditInteger(view["width"])
+		height, heightOK := imageEditInteger(view["height"])
+		revision, revisionOK := imageEditInteger(view["revision"])
+		x, xOK := boundedFloat(view, "scroll_x", -1e7, 1e7)
+		y, yOK := boundedFloat(view, "scroll_y", -1e7, 1e7)
+		if !widthOK || !heightOK || width < 1 || height < 1 || width > 32768 || height > 32768 ||
+			!revisionOK || revision < 0 || int64(revision) > (1<<53)-1 || !xOK || !yOK {
+			return nil, errors.New("target.viewport requires bounded dimensions, scroll offsets and revision")
+		}
+		target.Viewport = &fileAnnotationHTMLViewport{Width: int64(width), Height: int64(height), ScrollX: x, ScrollY: y, Revision: int64(revision)}
 	case "video":
 		rawTime, present := record["time_seconds"]
 		if !present || rawTime == nil {
@@ -685,6 +712,9 @@ func (t fileAnnotationTarget) modelDescription() string {
 	var parts []string
 	if t.Rect != nil {
 		parts = append(parts, fmt.Sprintf("区域(x=%v,y=%v,w=%v,h=%v)", t.Rect.X, t.Rect.Y, t.Rect.Width, t.Rect.Height))
+	}
+	if t.Viewport != nil {
+		parts = append(parts, fmt.Sprintf("HTML可见页面(%d×%d,scroll_x=%v,scroll_y=%v)", t.Viewport.Width, t.Viewport.Height, t.Viewport.ScrollX, t.Viewport.ScrollY))
 	}
 	if t.TimeSeconds != 0 {
 		parts = append(parts, fmt.Sprintf("time_seconds=%v", t.TimeSeconds))
