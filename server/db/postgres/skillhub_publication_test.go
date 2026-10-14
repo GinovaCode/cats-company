@@ -13,7 +13,7 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-func publicationDatabase(t *testing.T) (*Adapter, string, store.SkillHubPublicationEntryInput, int64) {
+func publicationEmptyDatabase(t *testing.T) (*Adapter, string) {
 	t.Helper()
 	dsn := os.Getenv("CATS_PG_TEST_DSN")
 	if dsn == "" {
@@ -40,6 +40,12 @@ func publicationDatabase(t *testing.T) (*Adapter, string, store.SkillHubPublicat
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
+	return db, dsn
+}
+
+func publicationDatabase(t *testing.T) (*Adapter, string, store.SkillHubPublicationEntryInput, int64) {
+	t.Helper()
+	db, dsn := publicationEmptyDatabase(t)
 	// Use the production initializer to catch missing table registration. A
 	// second initialization must preserve entries and the admission lock.
 	if err := db.CreateSchema(); err != nil {

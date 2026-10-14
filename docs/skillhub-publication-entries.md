@@ -36,10 +36,12 @@ into chat, browser responses or logs.
 
 ## Storage and limits
 
-Ordinary additive tables are registered in `server/db/postgres/schema.go`, following
-the repository's migration policy. `CreateSchema` adds them idempotently on the
-next normal startup. There is no separate numbered migration or runtime DDL in
-store operations. Startup schema failures retain existing startup behavior;
+The additive tables are registered in `server/db/postgres/schema.go` and mirrored
+in `000028_skillhub_publication_entries.up.sql`, following the dual-track policy
+in [DB_MIGRATIONS.md](DB_MIGRATIONS.md). `CreateSchema` adds them idempotently on
+the next normal startup; external migration tools can apply the same DDL. A test
+checks that both definitions match. Store operations execute no runtime DDL.
+Startup schema failures retain existing startup behavior;
 missing tables in an already-running process return an error, never memory-only
 success. MySQL does not implement this optional store; later routes must report
 unsupported storage rather than silently switch adapters or use an in-memory job.
@@ -103,3 +105,17 @@ go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -coun
 Without `CATS_PG_TEST_DSN`, database tests skip; this is not evidence of database
 correctness. This change needs no user manual testing because no entrypoint is
 exposed yet. Do not enable Cloud publication switches based on this PR alone.
+
+Migration verification uses a frozen **relevant-table** baseline from pre-PR620
+main `bf2e938d`: `users` and `bot_config`, plus synthetic owner/Bot rows. This is
+not a production database dump or a claim to test every historic production table.
+The fixture contains no publication tables. Tests cover empty SQL creation,
+historical startup-first and SQL-first upgrades, repeated startup/up execution,
+preservation of the legacy rows, and working admission after either order.
+
+The `down` migration atomically removes only empty publication tables, in reverse
+dependency order, without CASCADE. Retained entries/outbox rows make it fail
+closed, preserving replay evidence. Tests verify empty down/up and rejection of
+populated rollback. Stop writers, back up and deploy a compatible older binary
+before an actual rollback; otherwise current `CreateSchema()` recreates the
+tables. No migration is executed on production by this PR.

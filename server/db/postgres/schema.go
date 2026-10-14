@@ -628,8 +628,8 @@ CREATE TABLE IF NOT EXISTS bot_config (
 `
 
 // Publication entry persistence is inert until the later delegated routes and
-// dispatcher are implemented. Additive schema belongs here, not a second SQL
-// migration (see server/db/migrations/README.md).
+// dispatcher are implemented. Keep these definitions mirrored in migration
+// 000028_skillhub_publication_entries (see docs/DB_MIGRATIONS.md).
 const createSkillHubPublicationEntriesTable = `
 CREATE TABLE IF NOT EXISTS skillhub_publication_entries (
     entry_id VARCHAR(41) PRIMARY KEY CHECK (entry_id ~ '^pubentry_[a-f0-9]{32}$'),
