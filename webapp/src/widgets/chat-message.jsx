@@ -2,6 +2,8 @@ import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState }
 import { createPortal } from 'react-dom';
 import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
+import { EXECUTION_LABELS, useLiquidConversation } from '../utils/liquid-conversation';
+import { FadingMarkdown, FadingText, LiquidReplySurface, useReplyReveal } from './liquid-reply-motion';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
 import { responseErrorMessage } from '../auth-session';
@@ -400,11 +402,11 @@ function groupContentBlocks(blocks) {
       continue;
     }
     if (block.type === 'assistant_text') {
-      items.push({ type: 'assistant_text', text: block.text || block.content || '' });
+      items.push({ type: 'assistant_text', text: block.text || block.content || '', streaming: block._streaming, arrival: block._replyArrival });
       continue;
     }
     if (block.type === 'text' && block.presentation_role === 'process') {
-      items.push({ type: 'assistant_text', text: block.text || block.content || '' });
+      items.push({ type: 'assistant_text', text: block.text || block.content || '', streaming: block._streaming, arrival: block._replyArrival });
       continue;
     }
     if (block.type === 'tool_use') {
@@ -657,6 +659,8 @@ function contentBlocksFromMessage(msg) {
     return storedBlocks.map((block) => ({
       ...block,
       metadata: block.metadata || msg?.metadata || null,
+      _streaming: block._streaming ?? msg?._streaming,
+      _replyArrival: block._replyArrival || msg?._replyArrival,
     }));
   }
 
@@ -687,11 +691,14 @@ function contentBlocksFromMessage(msg) {
     && (
       msg.content.trim().startsWith(WORKING_TEXT_PREFIX)
       || msg._display_text_role === 'process'
+      || msg.metadata?.presentation_role === 'process'
     )
   ) {
     return [{
       type: 'assistant_text',
       text: workingTextContent(msg.content),
+      _streaming: msg._streaming,
+      _replyArrival: msg._replyArrival,
     }];
   }
 
@@ -915,7 +922,9 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks, complete: completeOverride = false }) {
+function WorkingProcess({ blocks, complete: completeOverride = false, stopped = false, executionState, executionNote, replyStreaming, showDetails = true }) {
+  const liquidConversation = useLiquidConversation();
+  const [revealingNarratives, setRevealingNarratives] = useState({});
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   const stepsID = `working-steps-${useId().replace(/:/g, '')}`;
@@ -923,10 +932,18 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   const planItem = latestWorkingPlanItem(safeBlocks);
   const plan = planItem ? planFromUpdatePlanTool(planItem) : null;
   const detailBlocks = safeBlocks.filter((item) => item !== planItem);
-  const hasDetails = detailBlocks.length > 0;
+  // Only explicit user-facing progress messages become conversation bubbles.
+  // Keep reasoning blocks, raw tool outputs and subagent logs in the details.
+  const progressMessages = detailBlocks.flatMap((item) => (
+    item.type === 'assistant_text' ? [item] : (item.narratives || [])
+  )).filter((item) => item.type === 'assistant_text' && item.text?.trim());
+  const hasDetails = showDetails && detailBlocks.length > 0;
   const completedPlanSteps = plan?.steps?.filter((step) => step.status === 'completed').length || 0;
-  const complete = completeOverride || isPlanComplete(plan);
-  const statusLabel = complete ? '已完成' : '正在执行';
+  const complete = executionState ? ['replied', 'completed'].includes(executionState) : completeOverride || isPlanComplete(plan);
+  const finished = complete || stopped || ['failed', 'cancelled'].includes(executionState);
+  const statusLabel = executionState ? EXECUTION_LABELS[executionState] : stopped ? '已停止' : complete ? '已完成' : '正在执行';
+  const running = executionState ? executionState === 'running' : !complete && !stopped;
+  const streamingNarrative = replyStreaming || progressMessages.some((item, index) => item.streaming || revealingNarratives[index]);
   const lastTool = [...detailBlocks].reverse().find((item) => item.type === 'tool_pair');
   const summary = plan
     ? `${completedPlanSteps}/${plan.steps.length}${!complete && lastTool?.name && lastTool.name !== 'update_plan' ? ` · ${lastTool.name}` : ''}`
@@ -937,9 +954,13 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
       {hasDetails && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
       <span className="v3-working-label">{statusLabel}</span>
       <span className="v3-working-summary">{summary}</span>
+      {hasDetails && <span className="cc-working-details-label">执行详情</span>}
+      {running && !streamingNarrative && (
+        <span className="cc-working-dots" aria-hidden="true"><i /><i /><i /></span>
+      )}
     </>
   );
-  const planContent = planItem ? (
+  const planContent = planItem && showDetails ? (
     <div className={`v3-working-plan${open && hasDetails ? ' is-after-details' : ''}`}>
       <WorkingPlanCard item={planItem} />
     </div>
@@ -969,8 +990,21 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   if (safeBlocks.length === 0) return null;
 
   return (
-    <div className={`v3-working-process${planItem ? ' has-persistent-plan' : ''}`}>
-      {hasDetails ? (
+    <div data-execution-state={executionState} className={`v3-working-process${planItem ? ' has-persistent-plan' : ''}${finished ? ' is-finished' : running ? ' is-running' : ' is-paused'}`}>
+      {progressMessages.length > 0 && (
+        <div className="cc-working-conversation">
+          {progressMessages.map((item, index) => (
+            <LiquidReplySurface className="cc-process-message" key={index} enabled={liquidConversation}
+              streaming={item.streaming} contentKey={item.text}>
+              <TextContent content={item.text} softStream={liquidConversation && item.streaming && !finished}
+                replyArrival={liquidConversation ? item.arrival : undefined}
+                onRevealChange={active => setRevealingNarratives(previous => previous[index] === active ? previous : { ...previous, [index]: active })}
+                immediateReveal={!liquidConversation || stopped || ['failed', 'cancelled'].includes(executionState)} />
+            </LiquidReplySurface>
+          ))}
+        </div>
+      )}
+      {(!liquidConversation || !streamingNarrative || !running) && (hasDetails ? (
         <button
           ref={triggerRef}
           type="button"
@@ -986,7 +1020,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
         <div className="v3-working-status" role="status">
           {statusContent}
         </div>
-      )}
+      ))}
       {!open && planContent}
       {open && hasDetails && (
         <div
@@ -1018,6 +1052,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
         </div>
       )}
       {open && hasDetails && planContent}
+      {executionNote && <div className="v3-message-text cc-execution-note" role="status">{executionNote}</div>}
     </div>
   );
 }
@@ -1059,7 +1094,11 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+  const liquidConversation = useLiquidConversation();
+  const [replyRevealing, setReplyRevealing] = useState(false);
+  const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
+    && !['completed', 'replied', 'cancelled', 'failed'].includes(executionState);
   const previewMessageFile = useCallback((payload, attachmentType = payload?.type) => {
     if (trustedArtifactPreviewPayloads.has(payload)) {
       onPreviewFileCallback?.(payload);
@@ -1125,11 +1164,11 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       .join('\n\n');
   }, [storedBlocks, displayTextBlocks, content]);
   const hasText = useMemo(() => (
-    typeof renderedTextContent === 'string'
+    workingOnly && executionState ? false : typeof renderedTextContent === 'string'
       ? renderedTextContent.trim().length > 0
       : renderedTextContent != null
-  ), [renderedTextContent]);
-  const workingProcessComplete = workingComplete || workingPlanComplete || (
+  ), [executionState, renderedTextContent, workingOnly]);
+  const workingProcessComplete = executionState ? ['replied', 'completed'].includes(executionState) : workingComplete || workingPlanComplete || (
     workingBlocks.length > 0
     && !workingOnly
     && !message._streaming
@@ -1165,6 +1204,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   ), [content, renderedTextContent, richBlocks, parsed]);
   const hasArtifactFirstSummary = artifactsFirst && richBlocks.length > 0 && hasText;
   const artifactFollowupSections = useMemo(() => {
+    // Liquid replies share one presentation queue, including text delivered with files.
+    if (liquidConversation) return null;
     if (!hasArtifactFirstSummary || displayTextBlocks.length === 0) return null;
     return displayTextBlocks.map((block, index) => {
       const role = block.presentation_role || 'body';
@@ -1190,6 +1231,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     });
   }, [
     activePreviewFile,
+    liquidConversation,
     hasArtifactFirstSummary,
     isGroup,
     knownArtifacts,
@@ -1216,6 +1258,10 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       onPreviewFile={onPreviewFile}
       activePreviewFile={activePreviewFile}
       onOpenArtifactApp={onOpenArtifactApp}
+      softStream={softStream}
+      replyArrival={liquidConversation && !isSelf ? message._replyArrival : undefined}
+      immediateReveal={!liquidConversation || isSelf || message._stopped || ['failed', 'cancelled'].includes(executionState)}
+      onRevealChange={setReplyRevealing}
     />
   ));
 
@@ -1314,11 +1360,11 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     [message],
   );
 
-  if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0 && !workingAnnotationDoc) return null;
+  if (!replyPending && !hasText && richBlocks.length === 0 && workingBlocks.length === 0 && !workingAnnotationDoc) return null;
 
   return (
     <div
-      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}${artifactsFirst ? ' artifacts-first' : ''}${(workingOnly || message._streaming) && !workingProcessComplete ? ' is-working' : ''}${workingProcessComplete ? ' is-complete' : ''}`}
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}${artifactsFirst ? ' artifacts-first' : ''}${(executionState ? executionState === 'running' : (workingOnly || message._streaming) && !workingProcessComplete && !message._stopped) ? ' is-working' : ''}${workingProcessComplete && !message._stopped ? ' is-complete' : ''}`}
       data-conversation-question={questionAnchorKey || undefined}
     >
       {!isSelf && (
@@ -1359,14 +1405,14 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
             </div>
           )}
 
-          {!isSelf && showThinking && (
-            <WorkingProcess blocks={workingBlocks} complete={workingProcessComplete} />
+          {!isSelf && (showThinking || executionState) && (
+            <WorkingProcess blocks={workingBlocks} complete={workingProcessComplete} stopped={message._stopped} executionState={executionState} executionNote={executionNote} replyStreaming={replyStreaming} showDetails={showThinking} />
           )}
 
           {workingAnnotationDoc && <GatewayAnnotationCard doc={workingAnnotationDoc} />}
           {message?.metadata?.file_annotations && <FileAnnotationCard value={message.metadata.file_annotations} />}
 
-          {(hasText || richBlocks.length > 0) && (
+          {(replyPending || hasText || richBlocks.length > 0) && (
             <div className="v3-message-content">
               {hasArtifactFirstSummary ? (
                 <>
@@ -1383,9 +1429,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       />
                     ))}
                   </div>
-                  <div className="v3-message-followup-text" data-message-part="summary">
+                  <div className={`v3-message-followup-text${!parsed ? ' v3-message-text' : ''}`} data-message-part="summary">
                     {artifactFollowupSections || renderedMessageText}
-                    {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                    {message._streaming && !liquidConversation && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
                   </div>
                 </>
               ) : (
@@ -1401,7 +1447,21 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                     />
                   ))}
-                  {renderedMessageText}
+                  {(hasText || replyPending) && !parsed ? (
+                    <LiquidReplySurface enabled={liquidConversation} streaming={softStream} waiting={Boolean(replyPending)} contentKey={renderedTextContent}
+                      className={replyPending ? "cc-reply-pending" : ""} role={replyPending ? "status" : undefined}
+                      aria-label={replyPending ? EXECUTION_LABELS[replyPending] : undefined}>
+                      {replyPending ? (replyPending === "waiting"
+                        ? <span className="cc-working-dots" aria-hidden="true"><i /><i /><i /></span>
+                        : EXECUTION_LABELS[replyPending]) : renderedMessageText}
+                      {message._streaming && !liquidConversation && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                    </LiquidReplySurface>
+                  ) : (
+                    <>
+                      {renderedMessageText}
+                      {message._streaming && !liquidConversation && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                    </>
+                  )}
                   {!artifactsFirst && richBlocks.map((block, index) => (
                     <RichContent
                       key={`${block.type}-${index}`}
@@ -1413,14 +1473,13 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                       imageId={imageGalleryItemId(message, block.__imageBlockIndex ?? index, block?.payload)}
                     />
                   ))}
-                  {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
                 </>
               )}
             </div>
           )}
         </div>
 
-        {!workingOnly && <div className="v3-message-footer">
+        {!workingOnly && !replyPending && !softStream && !replyRevealing && <div className="v3-message-footer">
           <div
             className={`v3-message-actions${messageActionsOpen ? ' open' : ''}`}
             onClick={(event) => event.stopPropagation()}
@@ -1533,6 +1592,10 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.onRegenerate === nextProps.onRegenerate &&
     prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
     prevProps.showThinking === nextProps.showThinking &&
+    prevProps.executionState === nextProps.executionState &&
+    prevProps.executionNote === nextProps.executionNote &&
+    prevProps.replyPending === nextProps.replyPending &&
+    prevProps.replyStreaming === nextProps.replyStreaming &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
     prevProps.annotationTopicId === nextProps.annotationTopicId &&
@@ -1545,8 +1608,11 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
 
 export default ChatMessage;
 
-function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifacts = [], onPreviewFile, activePreviewFile, onOpenArtifactApp }) {
-  const text = useMemo(() => messageContentText(content), [content]);
+function TextContent({ content, softStream = false, replyArrival, immediateReveal = false, onRevealChange, isGroup, mentionDisplayNames = {}, knownArtifacts = [], onPreviewFile, activePreviewFile, onOpenArtifactApp }) {
+  const receivedText = useMemo(() => messageContentText(content), [content]);
+  const reveal = useReplyReveal(receivedText, softStream, { arrival: replyArrival, immediate: immediateReveal });
+  React.useLayoutEffect(() => { onRevealChange?.(reveal.animate); }, [onRevealChange, reveal.animate]);
+  const text = reveal.animate ? reveal.parts.slice(0, reveal.count).join('') : receivedText;
   const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
   const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
   const renderableTable = useMemo(() => hasRenderableTable(text), [text]);
@@ -1577,7 +1643,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
   if (markdownHtml) {
     return (
       <>
-        <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />
+        <FadingMarkdown html={markdownHtml} enabled={reveal.animate} receivedVisible className={markdownClassName} />
         <ArtifactMessageCards
           artifacts={matchedArtifacts}
           onPreviewFile={onPreviewFile}
@@ -1601,7 +1667,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
     const renderGroupText = (value, keyPrefix = 'group-text') => (
       value.split(/(@usr\d+)/g).map((part, i) => {
         const uidMatch = part.match(/^@usr(\d+)$/);
-        if (!uidMatch) return <span key={`${keyPrefix}-${i}`}>{part}</span>;
+        if (!uidMatch) return <FadingText key={`${keyPrefix}-${i}`} text={part} enabled={false} tail={reveal.animate && value.endsWith(part) && plainText.endsWith(value)} />;
         const displayName = mentionDisplayNames[uidMatch[1]];
         return (
           <span key={`${keyPrefix}-${i}`} className="oc-mention" data-mention-uid={uidMatch[1]}>
@@ -1641,7 +1707,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
       <>
         <div className="oc-plain-text-paragraphs">
           {plainTextParagraphs.map((paragraph, index) => (
-            <p className={`oc-plain-text-paragraph${index === 0 ? ' is-first' : ''}`} key={index}>{paragraph}</p>
+            <p className={`oc-plain-text-paragraph${index === 0 ? ' is-first' : ''}`} key={index}><FadingText text={paragraph} enabled={false} tail={reveal.animate && index === plainTextParagraphs.length - 1} /></p>
           ))}
         </div>
         <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
@@ -1651,7 +1717,7 @@ function TextContent({ content, isGroup, mentionDisplayNames = {}, knownArtifact
 
   return (
     <>
-      <span className="oc-plain-text-paragraph is-first" style={{ whiteSpace: 'pre-wrap' }}>{plainTextParagraphs[0]}</span>
+      <span className="oc-plain-text-paragraph is-first" style={{ whiteSpace: 'pre-wrap' }}><FadingText text={plainTextParagraphs[0]} enabled={false} tail={reveal.animate} /></span>
       <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} onOpenArtifactApp={onOpenArtifactApp} />
     </>
   );

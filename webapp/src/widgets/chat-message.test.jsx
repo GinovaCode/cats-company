@@ -118,6 +118,22 @@ function utf8ArrayBuffer(text) {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 }
 
+function controlReplyFrames() {
+  let now = performance.now();
+  let id = 0;
+  const frames = new Map();
+  vi.stubGlobal('requestAnimationFrame', callback => { frames.set(++id, callback); return id; });
+  vi.stubGlobal('cancelAnimationFrame', key => frames.delete(key));
+  return async count => {
+    for (let i = 0; i < count; i += 1) {
+      now += 43;
+      const pending = [...frames.values()];
+      frames.clear();
+      await act(async () => pending.forEach(callback => callback(now)));
+    }
+  };
+}
+
 describe('ChatMessage rich file rendering', () => {
   let container;
   let root;
@@ -148,7 +164,10 @@ describe('ChatMessage rich file rendering', () => {
     });
     container.remove();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
+    delete document.documentElement.dataset.theme;
+    delete document.documentElement.dataset.liquidVariant;
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {
@@ -1865,6 +1884,143 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-wpi-narrative')?.textContent)
       .toBe('Checking the implementation.');
     expect(container.textContent).not.toContain('AI文本:');
+  });
+
+  it('surfaces only explicit progress messages while preserving their tool details', async () => {
+    await act(async () => {
+      root.render(<ChatMessage
+        message={{ id: 31, content: '', content_blocks: [
+          { type: 'thinking', thinking: 'Internal reasoning stays in the details.' },
+          { type: 'text', presentation_role: 'process', text: '手机号没找到，我先留空。' },
+          { type: 'tool_use', id: 'fill-1', name: 'apply_fields', input: { field: 'name' } },
+          { type: 'tool_result', tool_use_id: 'fill-1', content: 'raw result payload' },
+          { type: 'text', presentation_role: 'process', text: '姓名填好了，接下来填写工作信息。' },
+        ] }} workingOnly isSelf={false} senderIsBot senderName="CatsCo"
+      />);
+    });
+    const conversation = container.querySelector('.cc-working-conversation');
+    expect(Array.from(conversation.querySelectorAll('.cc-process-message')).map(node => node.textContent))
+      .toEqual(['手机号没找到，我先留空。', '姓名填好了，接下来填写工作信息。']);
+    expect(conversation.textContent).not.toContain('Internal reasoning');
+    expect(conversation.textContent).not.toContain('raw result payload');
+    expect(container.querySelector('.v3-working-details-inline')).toBeNull();
+    await act(async () => { Simulate.click(container.querySelector('.v3-working-toggle')); });
+    expect(container.querySelector('.v3-wpi-tool-name')?.textContent).toBe('apply_fields');
+    expect(container.querySelector('.v3-wpi-narrative.is-thinking')?.textContent).toContain('Internal reasoning');
+    expect(container.querySelectorAll('.cc-process-message')).toHaveLength(2);
+  });
+
+  it('shows liquid process communication without exposing hidden thinking or duplicating the source text', async () => {
+    await act(async () => {
+      root.render(<ChatMessage message={{ id: 33, type: 'text', content: 'AI文本:我先核对资料。' }}
+        workingMessages={[
+          { id: 33, type: 'text', content: 'AI文本:我先核对资料。' },
+          { id: 34, type: 'thinking', content: 'private reasoning' },
+        ]} workingOnly executionState="running" showThinking={false} isSelf={false} senderIsBot senderName="CatsCo" />);
+    });
+    expect(container.querySelector('.cc-process-message').textContent).toBe('我先核对资料。');
+    expect(container.querySelectorAll('.v3-message-content')).toHaveLength(0);
+    expect(container.textContent).not.toContain('private reasoning');
+    expect(container.querySelector('.v3-working-toggle')).toBeNull();
+    expect(container.querySelectorAll('.cc-working-dots i')).toHaveLength(3);
+  });
+
+  it.each(['idle', 'disconnected', 'reconnecting', 'stopping', 'stop-requested', 'replied'])(
+    'updates a mounted conversation to %s without keeping running dots', async (state) => {
+      const message = { id: 35, content: '', content_blocks: [
+        { type: 'text', presentation_role: 'process', text: '公司已填好，手机号留空。' },
+        { type: 'tool_use', id: 'plan-1', name: 'update_plan', input: { plan: [{ step: '填表', status: 'completed' }] } },
+        { type: 'tool_result', tool_use_id: 'plan-1', content: 'done' },
+      ] };
+      const render = executionState => root.render(<ChatMessage message={message} workingOnly executionState={executionState}
+        isSelf={false} senderIsBot senderName="CatsCo" />);
+      await act(async () => render('running'));
+      expect(container.querySelectorAll('.cc-working-dots i')).toHaveLength(3);
+      await act(async () => render(state));
+      expect(container.querySelectorAll('.cc-working-dots')).toHaveLength(0);
+      expect(container.querySelector('.v3-working-process').dataset.executionState).toBe(state);
+      expect(container.querySelector('.v3-working-label').textContent).not.toBe('已完成');
+      expect(container.querySelector('.cc-process-message').textContent).toBe('公司已填好，手机号留空。');
+    },
+  );
+
+  it('keeps one liquid reply surface from waiting through streaming and final delivery', async () => {
+    const advance = controlReplyFrames();
+    document.documentElement.dataset.theme = 'liquid';
+    const render = (message, replyPending) => root.render(<ChatMessage message={message} replyPending={replyPending}
+      isSelf={false} senderIsBot senderName="CatsCo" onRegenerate={() => {}} />);
+    await act(async () => render({ id: 'waiting', content: '' }, 'waiting'));
+    const surface = container.querySelector('.v3-message-text');
+    expect(surface.querySelectorAll('.cc-working-dots i')).toHaveLength(3);
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
+    await act(async () => render({ id: 'stream:1', content: '公司已填好。', _streaming: true }));
+    expect(container.querySelector('.v3-message-text')).toBe(surface);
+    expect(container.querySelector('.cc-working-dots')).toBeNull();
+    expect(container.querySelector('.oc-streaming-cursor')).toBeNull();
+    expect(surface.textContent).toBe('');
+    await act(async () => render({ id: 'stream:1', content: '公司已填好。手机号留空。', _streaming: true }));
+    expect(container.querySelector('.v3-message-text')).toBe(surface);
+    expect(surface.textContent).toBe('');
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
+    await act(async () => render({ id: 44, content: '公司已填好。手机号留空。' }));
+    expect(container.querySelector('.v3-message-text')).toBe(surface);
+    expect(surface.textContent).toBe('');
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
+    await advance(25);
+    expect(surface.textContent).toBe('公司已填好。手机号留空。');
+    expect(container.querySelector('.cc-reply-new-text')).toBeNull();
+    expect(container.querySelector('.v3-message-footer')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="重新生成"]')).not.toBeNull();
+  });
+
+  it('drains received markdown after final delivery without dumping the queue', async () => {
+    const advance = controlReplyFrames();
+    document.documentElement.dataset.theme = 'liquid';
+    const render = (content, streaming = true) => root.render(<ChatMessage
+      message={{ id: 45, content, _streaming: streaming }} isSelf={false} senderIsBot senderName="CatsCo" />);
+    await act(async () => render('**先核对资料**'));
+    expect(container.querySelector('.v3-message-text').textContent).toBe('');
+    await act(async () => render('**先核对资料**，手机号留空。'));
+    expect(container.querySelector('.v3-message-text').textContent).toBe('');
+    await act(async () => render('**先核对资料**，手机号留空。', false));
+    expect(container.querySelector('.v3-message-text').textContent).toBe('');
+    await advance(30);
+    expect(container.querySelector('.cc-reply-new-text')).toBeNull();
+    expect(container.querySelector('.oc-markdown').textContent).toBe('**先核对资料**，手机号留空。');
+  });
+
+  it('retains the streaming cursor and actions outside liquid light', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    document.documentElement.dataset.liquidVariant = 'green';
+    await act(async () => root.render(<ChatMessage message={{ id: 46, content: '正在回复', _streaming: true }}
+      isSelf={false} senderIsBot senderName="CatsCo" />));
+    expect(container.querySelector('.oc-streaming-cursor')).not.toBeNull();
+    expect(container.querySelector('.v3-message-footer')).not.toBeNull();
+    expect(container.querySelector('.cc-reply-new-text')).toBeNull();
+  });
+
+  it('does not show a second typing indicator beside a streaming process bubble', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    await act(async () => root.render(<ChatMessage message={{ id: 47, content: '' }}
+      workingMessages={[{ id: 'stream:process', type: 'text', content: '我先核对资料。', _streaming: true,
+        metadata: { presentation_role: 'process' } }]}
+      executionState="running" workingOnly isSelf={false} senderIsBot senderName="CatsCo" />));
+    expect(container.querySelector('.cc-process-message').textContent).toBe('');
+    expect(container.querySelector('.cc-working-dots')).toBeNull();
+  });
+
+  it('does not report a stopped execution as complete', async () => {
+    await act(async () => {
+      root.render(<ChatMessage
+        message={{ id: 32, content: '', _stopped: true, content_blocks: [
+          { type: 'text', presentation_role: 'process', text: '我先核对资料。' },
+          { type: 'tool_use', id: 'read-1', name: 'read_page_context' },
+        ] }} workingOnly isSelf={false} senderIsBot senderName="CatsCo"
+      />);
+    });
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已停止');
+    expect(container.querySelector('.v3-message').classList.contains('is-working')).toBe(false);
+    expect(container.querySelector('.v3-message').classList.contains('is-complete')).toBe(false);
   });
 
   it('opens external HTML files instead of fetching them into the preview panel', async () => {

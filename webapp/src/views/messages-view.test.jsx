@@ -56,6 +56,9 @@ vi.mock('../widgets/chat-message', () => ({
         data-working-only={String(Boolean(props.workingOnly))}
         data-working-expanded={String(workingExpanded)}
         data-working-complete={String(Boolean(props.workingComplete))}
+        data-execution-state={props.executionState}
+        data-show-thinking={String(props.showThinking)}
+        data-reply-pending={props.replyPending}
         data-working-count={String(props.workingMessages?.length || 0)}
         data-working-message-ids={(props.workingMessages || []).map((message) => message.id).join(',')}
         data-artifacts-first={String(Boolean(props.artifactsFirst))}
@@ -262,6 +265,7 @@ vi.mock('../utils/conversation-share-image', () => ({
 vi.mock('../api', () => ({
   api: {
     getMessages: vi.fn(),
+    getConversations: vi.fn(async () => ({ conversations: [] })),
     getFriends: vi.fn(),
     getAgents: vi.fn(),
     getAgentQuota: vi.fn(),
@@ -295,6 +299,7 @@ vi.mock('../api', () => ({
   wsSendArtifactResultReceipt: vi.fn(),
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
+  isWSConnected: vi.fn(() => true),
   getApiBaseURL: () => window.location.origin,
   resolveMediaURL: (url) => url,
 }));
@@ -896,6 +901,8 @@ describe('MessagesView composer draft isolation', () => {
     });
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    delete document.documentElement.dataset.theme;
+    delete document.documentElement.dataset.liquidVariant;
     window.IntersectionObserver = originalIntersectionObserver;
     container.remove();
     vi.restoreAllMocks();
@@ -3539,6 +3546,162 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(textarea.value).toBe('正在输入中文');
+  });
+
+  it('uses real activity, inactivity and reconnect events for liquid conversation state', async () => {
+    vi.useFakeTimers();
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 40, from_uid: 1, type: 'text', content: '填写表格' },
+      { id: 41, from_uid: 2, type: 'tool_use', content: 'read_file', metadata: { turn_id: 'run-a' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const state = () => container.querySelector('[data-working-only="true"]')?.dataset.executionState;
+    expect(state()).toBe('idle'); // History is not proof of ongoing execution.
+    await act(async () => wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } }));
+    expect(state()).toBe('running');
+    await act(async () => { vi.advanceTimersByTime(30_001); await flushPromises(); });
+    expect(state()).toBe('idle');
+    await act(async () => wsHandler({ _type: 'ws_close' }));
+    expect(state()).toBe('disconnected');
+    await act(async () => wsHandler({ _type: 'ws_open' }));
+    expect(state()).toBe('reconnecting');
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', type: 'stream_delta',
+      content: '已填好', metadata: { stream_id: 's-a', turn_id: 'run-a' } } }));
+    expect(state()).toBe('running'); // Streaming output is not completion.
+    await act(async () => wsHandler({ data: { topic: 'p2p_1_2', from: 'usr2', seq: 42, type: 'text',
+      content: '已填好，手机号留空。', role: 'assistant', metadata: { stream_id: 's-a', turn_id: 'run-a' } } }));
+    expect(state()).toBe('replied');
+    expect(container.querySelectorAll('[data-message-content="已填好，手机号留空。"]')).toHaveLength(1);
+  });
+
+  it('keeps liquid progress visible with thinking hidden and updates repeated snapshots once', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    localStorage.setItem('cc_show_thinking', 'false');
+    await mountTopic(root, 'p2p_1_2');
+    const data = { topic: 'p2p_1_2', from: 'usr2', seq: 141, type: 'text', role: 'assistant',
+      content: '先核对资料', content_blocks: [{ type: 'text', text: '先核对资料', presentation_role: 'process' }],
+      metadata: { turn_id: 'progress-run' } };
+    await act(async () => wsHandler({ data }));
+    const group = container.querySelector('[data-working-only="true"]');
+    expect(group?.dataset.showThinking).toBe('false');
+    expect(group?.dataset.executionState).toBe('running');
+    await act(async () => {
+      wsHandler({ data: { ...data, content: '已核对资料', content_blocks: [{ type: 'text', text: '已核对资料', presentation_role: 'process' }] } });
+      wsHandler({ data: { ...data, content: '已核对资料', content_blocks: [{ type: 'text', text: '已核对资料', presentation_role: 'process' }] } });
+    });
+    expect(container.querySelectorAll('[data-working-only="true"]')).toHaveLength(1);
+    expect(container.querySelector('[data-working-only="true"]').dataset.workingCount).toBe('1');
+    expect(container.querySelector('[data-working-only="true"]').dataset.messageContent).toBe('已核对资料');
+    localStorage.removeItem('cc_show_thinking');
+  });
+
+  it('does not merge different explicit runs under one liquid prompt', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 240, from_uid: 1, type: 'text', content: '分析' },
+      { id: 241, from_uid: 2, type: 'tool_use', content: 'read', metadata: { turn_id: 'run-a' } },
+      { id: 242, from_uid: 2, type: 'tool_use', content: 'read', metadata: { turn_id: 'run-b' } },
+      { id: 243, from_uid: 2, type: 'text', role: 'assistant', content: '第二次的结果', metadata: { turn_id: 'run-b' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const groups = container.querySelectorAll('[data-working-only="true"]');
+    expect(groups).toHaveLength(2);
+    expect(groups[0].dataset.executionState).toBe('idle');
+    expect(groups[1].dataset.executionState).toBe('replied');
+  });
+
+  it('shows stop delivery without claiming the liquid execution has stopped', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 250, from_uid: 1, type: 'text', content: '执行长任务' },
+      { id: 251, from_uid: 2, type: 'tool_use', content: 'read', metadata: { turn_id: 'run-a' } },
+    ] });
+    const pendingStop = deferred();
+    wsSendStreamCancel.mockReturnValueOnce(pendingStop.promise);
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } }));
+    await act(async () => Simulate.click(container.querySelector('button[aria-label="停止当前工作"]')));
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('stopping');
+    await act(async () => { pendingStop.resolve(1); await flushPromises(); });
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('stop-requested');
+    expect(container.querySelector('textarea').disabled).toBe(false);
+  });
+
+  it('associates legacy output without a run identifier with its liquid process group', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 550, from_uid: 1, type: 'text', content: '分析' },
+      { id: 551, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-legacy' } },
+      { id: 552, from_uid: 2, type: 'text', role: 'assistant', content: '结果' },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('replied');
+  });
+
+  it('finishes the same liquid run when its final reply arrives after a human follow-up', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 650, from_uid: 1, type: 'text', content: '分析' },
+      { id: 651, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-followup' } },
+      { id: 652, from_uid: 1, type: 'text', content: '手机号留空' },
+      { id: 653, from_uid: 2, type: 'text', role: 'assistant', content: '结果', metadata: { run_id: 'run-followup' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('replied');
+  });
+
+  it.each(['completed', 'failed', 'cancelled'])('uses a matching runtime %s receipt and ignores unrelated or older events', async (state) => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 350, from_uid: 1, type: 'text', content: '执行长任务' },
+      { id: 351, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-a' } },
+    ] });
+    await mountTopic(root, 'p2p_1_2');
+    const currentState = () => container.querySelector('[data-working-only="true"]').dataset.executionState;
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 3, run_id: 'run-a', state,
+      updated_at: '2026-10-14T01:00:00Z' } }));
+    expect(currentState()).toBe('idle');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'other-run', state,
+      updated_at: '2026-10-14T01:00:00Z' } }));
+    expect(currentState()).toBe('idle');
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-a', state,
+      updated_at: '2026-10-14T01:00:00Z' } }));
+    expect(currentState()).toBe(state);
+    await act(async () => wsHandler({ task_status: { topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-a', state: 'running',
+      updated_at: '2026-10-14T00:00:00Z' } }));
+    expect(currentState()).toBe(state);
+  });
+
+  it('restores the matching terminal task receipt after reload without animating stale history', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getMessages.mockResolvedValueOnce({ messages: [
+      { id: 451, from_uid: 2, type: 'tool_use', content: 'read', metadata: { run_id: 'run-reload' } },
+    ] });
+    api.getConversations.mockResolvedValueOnce({ conversations: [{ id: 'p2p_1_2', task_status: {
+      topic_id: 'p2p_1_2', source_uid: 2, run_id: 'run-reload', state: 'completed', updated_at: '2026-10-14T01:00:00Z',
+    } }] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => flushPromises());
+    expect(container.querySelector('[data-working-only="true"]').dataset.executionState).toBe('completed');
+  });
+
+  it('reuses the pending liquid reply component through stream updates and the persisted final', async () => {
+    document.documentElement.dataset.theme = 'liquid';
+    api.getAgents.mockResolvedValueOnce({ agents: [{ uid: 2, is_bot: true, topic_id: 'p2p_1_2', display_name: '达芬奇' }] });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => { wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } }); });
+    const pending = container.querySelector('[data-reply-pending="waiting"]');
+    expect(pending).not.toBeNull();
+    const delta = { topic: 'p2p_1_2', from: 'usr2', type: 'stream_delta', metadata: { stream_id: 'reply-stream' }, content: '我可以' };
+    await act(async () => { wsHandler({ data: delta }); });
+    expect(container.querySelector('[data-message-content="我可以"]')).toBe(pending);
+    expect(container.querySelector('[data-reply-pending]')).toBeNull();
+    await act(async () => { wsHandler({ data: { ...delta, content: '帮你填写。' } }); });
+    expect(container.querySelector('[data-message-content="我可以帮你填写。"]')).toBe(pending);
+    await act(async () => { wsHandler({ data: { ...delta, seq: 750, type: 'text', content: '我可以帮你填写。' } }); });
+    expect(container.querySelector('[data-message-content="我可以帮你填写。"]')).toBe(pending);
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(1);
   });
 
   it('keeps the composer usable and sends a follow-up while the agent is working', async () => {

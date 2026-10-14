@@ -11,3 +11,4 @@ import '../css/catsco-secondary-surfaces.css';
 import '../css/search-overlay.css';
 import '../css/catsco-input-states.css';
 import '../css/catsco-app-focus.css';
+import '../css/catsco-liquid-messages.css';

@@ -1,0 +1,41 @@
+.cc-bubbles-demo {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-width: 0;
+}
+.cc-bubbles-demo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 28px;
+  border-bottom: 1px solid rgba(112, 119, 139, 0.1);
+}
+.cc-bubbles-demo-header > div { display: grid; gap: 4px; text-align: center; }
+.cc-bubbles-demo-header strong { font-size: 14px; font-weight: 600; }
+.cc-bubbles-demo-header span { color: var(--cc-muted); font-size: 12px; }
+.cc-bubbles-demo-header a, .cc-bubbles-demo-header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.cc-bubbles-demo-header a:hover, .cc-bubbles-demo-header button:hover { background: var(--cc-hover); }
+.cc-bubbles-demo-chat { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.cc-bubbles-demo-timeline { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 28px; }
+.cc-bubbles-demo .cc-message-anchor + .cc-message-anchor { margin-top: 8px; }
+.cc-bubbles-demo .v3-composer { padding-bottom: 20px; }
+@media (max-width: 768px) {
+  .cc-bubbles-demo-header { padding: 10px 12px; gap: 4px; }
+  .cc-bubbles-demo-header span { font-size: 11px; }
+  .cc-bubbles-demo-timeline { padding: 18px 14px; }
+}
