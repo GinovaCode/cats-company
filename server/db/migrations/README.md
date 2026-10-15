@@ -9,6 +9,7 @@ Current state:
 - Every schema change, including additive tables, columns, indexes, constraints and triggers, must also have a uniquely numbered `up` / `down` SQL migration mirroring the same DDL. `CreateSchema()` remains the runtime authority; keep both tracks consistent and test their equivalence.
 - Data backfills/transformations belong only in the numbered migration, not startup DDL. Apply the ordering and release gates in [docs/DB_MIGRATIONS.md](../../../docs/DB_MIGRATIONS.md): test empty creation and a named historical schema upgrade, repeat the upgrade to prove idempotence, and run database tests with a real test DSN in CI.
 - Do not edit an already-applied migration. Add a new one.
+- `000030_skillhub_publication_delivery` adds inert publication delivery leases to the existing outbox. Its down migration preserves pre-existing intents but refuses to discard any delivery attempt/receipt evidence; see [publication persistence](../../../docs/skillhub-publication-entries.md).
 - MySQL is not part of the migration system. Keep MySQL compatibility fixes in code only unless the product explicitly reintroduces MySQL migrations.
 
 Sensitive values never belong here:
