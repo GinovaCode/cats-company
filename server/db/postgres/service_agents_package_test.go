@@ -68,21 +68,21 @@ func TestServiceAgentPackagePublishRoundtrip(t *testing.T) {
 	// 模拟事故现场：首次发布派生值缺模型白名单，重发同内容时应自愈。
 	definition := json.RawMessage(`{"async_threshold_seconds": 60, "models": []}`)
 
-	version, err := db.PublishServiceAgentPackage(ctx, "hello", definition, hash, bundle, false)
+	version, err := db.PublishServiceAgentPackage(ctx, "hello", "Hello", definition, hash, bundle, false)
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if version <= 0 {
 		t.Fatalf("version = %d", version)
 	}
-	replayed, err := db.PublishServiceAgentPackage(ctx, "hello", definition, hash, bundle, false)
+	replayed, err := db.PublishServiceAgentPackage(ctx, "hello", "Hello", definition, hash, bundle, false)
 	if err != nil || replayed != version {
 		t.Fatalf("republish: version=%d err=%v, want idempotent %d", replayed, err, version)
 	}
 
 	// 同 hash 重发新派生值 → definition_json 覆盖（修正历史派生 bug 的自愈路径）。
 	fixed := json.RawMessage(`{"async_threshold_seconds": 60, "models": ["MiniMax-M3"]}`)
-	if _, err := db.PublishServiceAgentPackage(ctx, "hello", fixed, hash, bundle, false); err != nil {
+	if _, err := db.PublishServiceAgentPackage(ctx, "hello", "Hello", fixed, hash, bundle, false); err != nil {
 		t.Fatalf("republish with fixed definition: %v", err)
 	}
 	_, _, latestDefinition, err := db.GetServiceAgentDefinition(ctx, id, 0)
@@ -108,7 +108,7 @@ func TestServiceAgentPackagePublishRoundtrip(t *testing.T) {
 	}
 
 	// force 重发：同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容）。
-	forced, err := db.PublishServiceAgentPackage(ctx, "hello", fixed, hash, bundle, true)
+	forced, err := db.PublishServiceAgentPackage(ctx, "hello", "Hello", fixed, hash, bundle, true)
 	if err != nil {
 		t.Fatalf("force publish: %v", err)
 	}
@@ -142,8 +142,32 @@ func TestServiceAgentPackagePublishRoundtrip(t *testing.T) {
 	if _, err := db.GetServiceAgentPackage(ctx, strings.Repeat("cd", 32)); !errors.Is(err, store.ErrServicePackageNotFound) {
 		t.Fatalf("unknown hash err = %v, want ErrServicePackageNotFound", err)
 	}
-	if _, err := db.PublishServiceAgentPackage(ctx, "ghost", definition, hash, bundle, false); !errors.Is(err, store.ErrServiceAgentNotFound) {
-		t.Fatalf("unknown slug err = %v, want ErrServiceAgentNotFound", err)
+
+	// 发布即上架：未知 slug 自动注册（manifest name 入表），version=1；重复发布不重复建 agent。
+	agentHash := strings.Repeat("ef", 32)
+	agentBundle := json.RawMessage(`{"schema":"catsco.service-agent-bundle.v1","slug":"ghost","files":[]}`)
+	ghostVersion, err := db.PublishServiceAgentPackage(ctx, "ghost", "幽灵助手", fixed, agentHash, agentBundle, false)
+	if err != nil || ghostVersion != 1 {
+		t.Fatalf("auto-register publish: version=%d err=%v, want 1", ghostVersion, err)
+	}
+	var ghostID int64
+	var ghostName, ghostState string
+	if err := db.db.QueryRowContext(ctx, `SELECT id, name, state FROM service_agents WHERE slug = 'ghost'`).Scan(&ghostID, &ghostName, &ghostState); err != nil {
+		t.Fatalf("select auto-registered agent: %v", err)
+	}
+	if ghostName != "幽灵助手" || ghostState != "active" {
+		t.Fatalf("auto-registered agent = %q/%q, want 幽灵助手/active", ghostName, ghostState)
+	}
+	if again, err := db.PublishServiceAgentPackage(ctx, "ghost", "幽灵助手", fixed, agentHash, agentBundle, false); err != nil || again != ghostVersion {
+		t.Fatalf("auto-registered republish: version=%d err=%v, want idempotent %d", again, err, ghostVersion)
+	}
+
+	// 已存在但非 active → 仍拒绝（不会"复活"被停用的 agent）。
+	if _, err := db.db.ExecContext(ctx, `UPDATE service_agents SET state = 'disabled' WHERE slug = 'ghost'`); err != nil {
+		t.Fatalf("disable ghost: %v", err)
+	}
+	if _, err := db.PublishServiceAgentPackage(ctx, "ghost", "幽灵助手", fixed, strings.Repeat("ab", 31)+"cd", agentBundle, false); !errors.Is(err, store.ErrServiceAgentNotFound) {
+		t.Fatalf("disabled agent err = %v, want ErrServiceAgentNotFound", err)
 	}
 
 	// 未发布过包的 agent（无 package_json 行）最新 hash 为空（claim 下发空 → 实例回退内置包）。

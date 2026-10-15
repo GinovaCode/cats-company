@@ -16,8 +16,8 @@ import (
 //	POST /internal/service-agents/{slug}/publish   —— 发布包（写新版本行；同 hash 幂等）
 //	GET  /internal/service-agent-packages/{hash}   —— 按内容 hash 拉取包
 //
-// 发布即派生：definition_json 从包 manifest 计算（async_threshold_seconds/models），
-// 平台不再手工维护定义，消除"包内模型 vs 平台定义"双写裂缝。
+// 发布即派生：definition_json 从包 manifest 计算（name/async_threshold_seconds/models）；
+// slug 不存在时自动注册 agent（发布即上架）——不再需要手工 SQL 注册这一步。
 
 const serviceBundleHTTPLimit = 4 << 20 // 传输上限（内容上限在 ValidateServiceAgentBundle）
 
@@ -48,7 +48,7 @@ func (o *ServiceRunOrchestrator) handlePublishServiceAgentPackage(w http.Respons
 	// force=1：同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容，claim 立即切回）。
 	forceValue := strings.TrimSpace(r.URL.Query().Get("force"))
 	force := forceValue == "1" || strings.EqualFold(forceValue, "true")
-	version, err := o.store.PublishServiceAgentPackage(r.Context(), slug, definitionJSON, packageHash, bundleJSON, force)
+	version, err := o.store.PublishServiceAgentPackage(r.Context(), slug, definition.Name, definitionJSON, packageHash, bundleJSON, force)
 	if errors.Is(err, store.ErrServiceAgentNotFound) {
 		writeServiceJSON(w, http.StatusNotFound, map[string]any{"error": "agent_not_found"})
 		return
@@ -61,6 +61,7 @@ func (o *ServiceRunOrchestrator) handlePublishServiceAgentPackage(w http.Respons
 	log.Printf("service package published slug=%s version=%d hash=%s", slug, version, packageHash)
 	writeServiceJSON(w, http.StatusOK, map[string]any{
 		"slug":            slug,
+		"name":            definition.Name,
 		"version":         version,
 		"package_hash":    packageHash,
 		"definition":      definition,

@@ -380,7 +380,7 @@ func TestServiceClaimPinsSessionSnapshot(t *testing.T) {
 	hashB := strings.Repeat("b", 64)
 
 	// 发布 A（v1）→ 建会话（钉定 A；MCP 语义：建会话时固化当时最新）
-	if _, err := st.PublishServiceAgentPackage(ctx, "hello", json.RawMessage(`{"models":["m1"]}`), hashA, json.RawMessage(`{"schema":"x"}`), false); err != nil {
+	if _, err := st.PublishServiceAgentPackage(ctx, "hello", "Hello", json.RawMessage(`{"models":["m1"]}`), hashA, json.RawMessage(`{"schema":"x"}`), false); err != nil {
 		t.Fatalf("publish A: %v", err)
 	}
 	pinnedSession, err := st.CreateServiceSession(ctx, 1, 1, 441, 0, hashA)
@@ -389,7 +389,7 @@ func TestServiceClaimPinsSessionSnapshot(t *testing.T) {
 	}
 
 	// 发布 B（v2；最新变为 B）
-	if _, err := st.PublishServiceAgentPackage(ctx, "hello", json.RawMessage(`{"models":["m2"]}`), hashB, json.RawMessage(`{"schema":"y"}`), false); err != nil {
+	if _, err := st.PublishServiceAgentPackage(ctx, "hello", "Hello", json.RawMessage(`{"models":["m2"]}`), hashB, json.RawMessage(`{"schema":"y"}`), false); err != nil {
 		t.Fatalf("publish B: %v", err)
 	}
 

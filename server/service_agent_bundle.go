@@ -27,6 +27,8 @@ const (
 	maxServiceBundleFileBytes  = 512 << 10
 	maxServiceBundleFileCount  = 64
 	maxServiceBundlePathLength = 200
+	// service_agents.name 列宽（VARCHAR(128)）；自动注册时按 rune 截断。
+	maxServiceAgentNameRunes = 128
 )
 
 var (
@@ -51,7 +53,9 @@ type ServiceAgentBundle struct {
 
 // ServiceAgentDerivedDefinition 是从 manifest 派生的平台侧定义（claim 签发服务 token 用）。
 // 发布即派生——消除"包内模型 vs 平台定义"的双写裂缝。
+// Name 仅用于首次发布时的 agent 自动注册（展示名），不参与 claim 签发。
 type ServiceAgentDerivedDefinition struct {
+	Name                  string   `json:"name,omitempty"`
 	AsyncThresholdSeconds int      `json:"async_threshold_seconds"`
 	Models                []string `json:"models"`
 }
@@ -128,6 +132,7 @@ func ValidateServiceAgentBundle(bundle ServiceAgentBundle, expectedSlug string) 
 	var manifest struct {
 		Schema string `json:"schema"`
 		Slug   string `json:"slug"`
+		Name   string `json:"name"`
 		Prompt struct {
 			System string `json:"system"`
 		} `json:"prompt"`
@@ -183,7 +188,15 @@ func ValidateServiceAgentBundle(bundle ServiceAgentBundle, expectedSlug string) 
 	for _, name := range manifest.Models {
 		appendModel(name)
 	}
-	return ServiceAgentDerivedDefinition{AsyncThresholdSeconds: threshold, Models: models}, nil
+	// 展示名：manifest.name（缺省回退 slug）；服务端列宽 VARCHAR(128)，按 rune 截断。
+	displayName := strings.TrimSpace(manifest.Name)
+	if displayName == "" {
+		displayName = bundle.Slug
+	}
+	if runes := []rune(displayName); len(runes) > maxServiceAgentNameRunes {
+		displayName = string(runes[:maxServiceAgentNameRunes])
+	}
+	return ServiceAgentDerivedDefinition{Name: displayName, AsyncThresholdSeconds: threshold, Models: models}, nil
 }
 
 func validateBundlePath(p string) error {

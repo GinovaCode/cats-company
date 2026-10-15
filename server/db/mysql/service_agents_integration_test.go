@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,5 +253,41 @@ func TestMySQLServiceRunsWithoutClientToken(t *testing.T) {
 	}
 	if second.ClientToken != "" {
 		t.Fatalf("NULL token must scan back as empty string, got %q", second.ClientToken)
+	}
+}
+
+// 发布即上架（PG 同语义镜像）：未知 slug 自动注册新 agent，重复发布幂等。
+func TestMySQLServiceAgentPackagePublishAutoRegisters(t *testing.T) {
+	db := mysqlTestAdapter(t)
+	ctx := context.Background()
+	slug := fmt.Sprintf("auto-%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		db.db.Exec(`DELETE FROM service_agent_versions WHERE agent_id = (SELECT id FROM service_agents WHERE slug = ?)`, slug)
+		db.db.Exec(`DELETE FROM service_agents WHERE slug = ?`, slug)
+	})
+	hash := strings.Repeat("ef", 32)
+	bundle := json.RawMessage(`{"schema":"catsco.service-agent-bundle.v1","slug":"` + slug + `","files":[]}`)
+	definition := json.RawMessage(`{"async_threshold_seconds": 60, "models": ["MiniMax-M3"]}`)
+
+	version, err := db.PublishServiceAgentPackage(ctx, slug, "自动注册助手", definition, hash, bundle, false)
+	if err != nil || version != 1 {
+		t.Fatalf("auto-register publish: version=%d err=%v, want 1", version, err)
+	}
+	var name, state string
+	if err := db.db.QueryRowContext(ctx, `SELECT name, state FROM service_agents WHERE slug = ?`, slug).Scan(&name, &state); err != nil {
+		t.Fatalf("select auto-registered: %v", err)
+	}
+	if name != "自动注册助手" || state != "active" {
+		t.Fatalf("auto-registered = %q/%q", name, state)
+	}
+	if again, err := db.PublishServiceAgentPackage(ctx, slug, "自动注册助手", definition, hash, bundle, false); err != nil || again != version {
+		t.Fatalf("republish: version=%d err=%v, want idempotent %d", again, err, version)
+	}
+	// 已存在但非 active → 拒绝
+	if _, err := db.db.ExecContext(ctx, `UPDATE service_agents SET state = 'disabled' WHERE slug = ?`, slug); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := db.PublishServiceAgentPackage(ctx, slug, "自动注册助手", definition, strings.Repeat("cd", 32), bundle, false); !errors.Is(err, store.ErrServiceAgentNotFound) {
+		t.Fatalf("disabled agent err = %v, want ErrServiceAgentNotFound", err)
 	}
 }

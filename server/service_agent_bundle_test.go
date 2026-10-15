@@ -170,4 +170,31 @@ func TestServiceAgentBundleDefaults(t *testing.T) {
 	if definition.Models == nil {
 		t.Fatal("models must default to empty slice, not nil")
 	}
+	// 自动注册的展示名：manifest 无 name → 回退 slug。
+	if definition.Name != "weekly-report" {
+		t.Fatalf("default name = %q, want slug fallback", definition.Name)
+	}
+}
+
+// manifest name → 展示名（strip + VARCHAR(128) 列宽按 rune 截断）；中文名不被切坏。
+func TestServiceAgentBundleDerivesDisplayName(t *testing.T) {
+	bundle := validBundleFixture()
+	bundle.Files[0].Content = `{"schema":"catsco.service-agent.v1","slug":"weekly-report","name":"  周报助手  ","prompt":{"system":"system-prompt.md"}}`
+	definition, err := ValidateServiceAgentBundle(bundle, "weekly-report")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if definition.Name != "周报助手" {
+		t.Fatalf("name = %q, want 周报助手", definition.Name)
+	}
+
+	longName := strings.Repeat("超", 200)
+	bundle.Files[0].Content = `{"schema":"catsco.service-agent.v1","slug":"weekly-report","name":"` + longName + `","prompt":{"system":"system-prompt.md"}}`
+	definition, err = ValidateServiceAgentBundle(bundle, "weekly-report")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if runes := []rune(definition.Name); len(runes) != maxServiceAgentNameRunes {
+		t.Fatalf("truncated name runes = %d, want %d", len(runes), maxServiceAgentNameRunes)
+	}
 }
