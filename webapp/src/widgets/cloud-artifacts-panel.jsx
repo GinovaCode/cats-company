@@ -25,7 +25,7 @@ import {
 import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
-import { createGatewayApplicationViewerURL } from '../artifact-preview-coordinator';
+import { createGatewayApplicationViewerURL, gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
@@ -225,6 +225,7 @@ export default function CloudArtifactsPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copiedID, setCopiedID] = useState('');
+  const [copiedShareID, setCopiedShareID] = useState('');
   const [pendingID, setPendingID] = useState('');
   const [confirmArtifact, setConfirmArtifact] = useState(null);
   const [confirmError, setConfirmError] = useState('');
@@ -239,6 +240,12 @@ export default function CloudArtifactsPanel({
     const timer = window.setTimeout(() => setCopiedID(''), 1500);
     return () => window.clearTimeout(timer);
   }, [copiedID]);
+
+  useEffect(() => {
+    if (!copiedShareID) return undefined;
+    const timer = window.setTimeout(() => setCopiedShareID(''), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedShareID]);
 
   useLayoutEffect(() => {
     const tabs = tabsRef.current;
@@ -537,6 +544,26 @@ export default function CloudArtifactsPanel({
       setCopiedID(artifact.id);
     } catch {
       setError('链接复制失败，请直接打开后从地址栏复制');
+    }
+  };
+
+  // Copy the gateway's own public address for the application, not the viewer
+  // URL. The viewer URL carries this conversation's topic and the application's
+  // owner, so a recipient is either refused (they are not in that conversation)
+  // or would join a session that is not theirs. The gateway address needs no
+  // identity at all, so the recipient sees the application as a guest.
+  const copyGatewayShareURL = async (app) => {
+    const shareURL = gatewayApplicationShareURL(app);
+    if (!shareURL) {
+      feedback.notify({ tone: 'warning', message: '这个应用暂时没有可分享的地址。' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(shareURL);
+      setCopiedShareID(app?.id || '');
+      feedback.notify({ tone: 'success', message: '分享链接已复制，对方无需账号即可打开。' });
+    } catch {
+      feedback.notify({ tone: 'warning', message: '复制失败，请手动复制：' + shareURL });
     }
   };
 
@@ -1186,7 +1213,6 @@ export default function CloudArtifactsPanel({
                           {updatedAt && <span>{updatedAt}</span>}
                         </p>
                       </div>
-                      <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
                     </button>
                     <button
                       type="button"
@@ -1195,6 +1221,19 @@ export default function CloudArtifactsPanel({
                       onClick={() => openGatewayApp(app, 'window')}
                     >
                       新页面打开
+                    </button>
+                    <button
+                      type="button"
+                      className="cloud-artifact-open-external"
+                      aria-label={copiedShareID === app?.id
+                        ? '已复制 ' + (app?.title || app?.id || '') + ' 的分享链接'
+                        : '复制 ' + (app?.title || app?.id || '') + ' 的分享链接'}
+                      title={copiedShareID === app?.id
+                        ? '已复制（对方无需账号即可打开）'
+                        : '复制分享链接（对方无需账号即可打开）'}
+                      onClick={() => copyGatewayShareURL(app)}
+                    >
+                      {copiedShareID === app?.id ? '已复制' : '复制链接'}
                     </button>
                   </article>
                 );

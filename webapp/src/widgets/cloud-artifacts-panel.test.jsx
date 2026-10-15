@@ -772,6 +772,38 @@ describe('CloudArtifactsPanel', () => {
     expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
   });
 
+  test('shares the gateway public address, not the conversation-bound viewer URL', async () => {
+    api.listArtifactApps.mockResolvedValueOnce({
+      apps: [{
+        id: 'saturday-demo',
+        title: 'Saturday 演示应用',
+        url: 'https://artifact.catsco.cc/saturday-demo/',
+        urls: ['https://artifact.catsco.cc/saturday-demo/', 'https://artifact.catsco.cn/saturday-demo/'],
+        status: 'ready',
+      }],
+    });
+
+    await renderPanel({ initialTab: 'active' });
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '应用').click();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="复制 Saturday 演示应用 的分享链接"]').click();
+      await Promise.resolve();
+    });
+
+    // The gateway address needs no identity, so a recipient without an account
+    // still opens it. The viewer URL would carry this conversation instead.
+    const copied = navigator.clipboard.writeText.mock.calls.at(-1)[0];
+    expect(copied).toBe('https://artifact.catsco.cc/saturday-demo/');
+    expect(copied).not.toContain('artifact-viewer');
+    expect(copied).not.toContain('topic');
+    expect(container.querySelector('button[aria-label="已复制 Saturday 演示应用 的分享链接"]')).not.toBeNull();
+  });
+
   test('lists gateway applications and opens one inside the sidebar', async () => {
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{

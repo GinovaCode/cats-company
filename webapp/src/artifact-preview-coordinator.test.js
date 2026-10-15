@@ -8,6 +8,8 @@ import {
   createArtifactPreviewMessage,
   createArtifactViewerURL,
   createGatewayApplicationViewerURL,
+  gatewayApplicationShareURL,
+  gatewayPublicCatalogURLs,
   normalizeArtifactPreviewIdentity,
   normalizeArtifactPreviewMessage,
   parseArtifactViewerLocation,
@@ -32,6 +34,48 @@ test.each(['https://app.catsco.cc', 'https://app.catsco.cn'])('creates an indepe
   });
   expect(createGatewayApplicationViewerURL({ ...identity, topicId: '' }, { origin })).toBe('');
   expect(parseArtifactViewerLocation({ pathname: ARTIFACT_VIEWER_PATH, search: '?mode=gateway&topic=p2p_7_440&agent=440&artifact=../../bad' })).toBeNull();
+});
+
+test('shares the gateway public address, never the conversation-bound viewer URL', () => {
+  const app = {
+    id: 'ocean-growth-coop',
+    url: 'https://artifact.catsco.cc/ocean-growth-coop/',
+    urls: ['https://artifact.catsco.cc/ocean-growth-coop/', 'https://artifact.catsco.cn/ocean-growth-coop/'],
+  };
+  // The viewer URL carries the sharer's conversation and owner, so it cannot be
+  // shared. The gateway address needs no identity at all.
+  const shared = gatewayApplicationShareURL(app, { origin: 'https://app.catsco.cc' });
+  expect(shared).toBe('https://artifact.catsco.cc/ocean-growth-coop/');
+  expect(shared).not.toContain('topic');
+  expect(shared).not.toContain('agent');
+  expect(shared).not.toContain('artifact-viewer');
+});
+
+test('prefers the domain family the sharer is on', () => {
+  const app = {
+    url: 'https://artifact.catsco.cc/app/',
+    urls: ['https://artifact.catsco.cc/app/', 'https://artifact.catsco.cn/app/'],
+  };
+  expect(gatewayApplicationShareURL(app, { origin: 'https://app.catsco.cn' }))
+    .toBe('https://artifact.catsco.cn/app/');
+  expect(gatewayApplicationShareURL(app, { origin: 'https://app.catsco.cc' }))
+    .toBe('https://artifact.catsco.cc/app/');
+});
+
+test('refuses to share a non-https or missing address', () => {
+  expect(gatewayApplicationShareURL({ url: 'http://artifact.catsco.cc/app/' })).toBe('');
+  expect(gatewayApplicationShareURL({ urls: ['not a url'] })).toBe('');
+  expect(gatewayApplicationShareURL({})).toBe('');
+  expect(gatewayApplicationShareURL(null)).toBe('');
+});
+
+test('points the guest catalog at the caller\'s own domain family first', () => {
+  expect(gatewayPublicCatalogURLs({ origin: 'https://app.catsco.cn' })[0])
+    .toBe('https://artifact.catsco.cn/api/apps');
+  expect(gatewayPublicCatalogURLs({ origin: 'https://app.catsco.cc' })[0])
+    .toBe('https://artifact.catsco.cc/api/apps');
+  // Both families are always offered, so a recipient still resolves on the other.
+  expect(gatewayPublicCatalogURLs({ origin: 'https://app.catsco.cc' })).toHaveLength(2);
 });
 
 test('builds a CatsCo Viewer URL from identity without accepting an Artifact URL', () => {

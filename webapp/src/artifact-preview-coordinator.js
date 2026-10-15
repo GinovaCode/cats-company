@@ -129,6 +129,56 @@ export function createGatewayApplicationViewerURL(value, { origin = globalThis.l
   } catch { return ''; }
 }
 
+// The stateless share address: the gateway's own public URL for the application.
+//
+// Opening it needs no platform identity at all — the gateway serves every
+// application path anonymously — so a recipient without an account still sees
+// the application. What a recipient does not get is any session: no
+// conversation, no task host, no annotation bridge. That is the point. The
+// viewer URL deliberately carries the sharer's topic and owner so the tab joins
+// the same conversation; sending that to somebody else would either fail (they
+// are not in that conversation) or hand them a session that is not theirs.
+export function gatewayApplicationShareURL(app, { origin = globalThis.location?.origin } = {}) {
+  const candidates = [app?.url, ...(Array.isArray(app?.urls) ? app.urls : [])]
+    .map((value) => {
+      try {
+        return new URL(String(value || '').trim());
+      } catch {
+        return null;
+      }
+    })
+    .filter((url) => url && url.protocol === 'https:');
+  if (!candidates.length) return '';
+  // Prefer the domain family the caller is on, so a .cn user shares a .cn
+  // address instead of sending everyone to .cc.
+  const preferred = domainFamily(origin);
+  const chosen = (preferred && candidates.find((url) => domainFamily(url.origin) === preferred))
+    || candidates[0];
+  return chosen.toString();
+}
+
+function domainFamily(origin) {
+  try {
+    const host = new URL(String(origin || '')).hostname.toLowerCase();
+    const match = /\.(catsco\.[a-z]+)$/.exec(host);
+    return match ? match[1] : '';
+  } catch {
+    return '';
+  }
+}
+
+// The gateway's own application catalog, which answers without any platform
+// identity. Used only as a fallback: a recipient who cannot authenticate (no
+// account, or not in the sharer's conversation) still needs the application's
+// public address to open it. Returns the caller's own domain family first.
+export function gatewayPublicCatalogURLs({ origin = globalThis.location?.origin } = {}) {
+  const family = domainFamily(origin);
+  const hosts = family === 'catsco.cn'
+    ? ['artifact.catsco.cn', 'artifact.catsco.cc']
+    : ['artifact.catsco.cc', 'artifact.catsco.cn'];
+  return hosts.map((host) => `https://${host}/api/apps`);
+}
+
 export function createArtifactPreviewMessage(type, identity, extra = {}) {
   const normalizedType = String(type || '').trim();
   const normalizedIdentity = normalizeArtifactPreviewIdentity(identity);

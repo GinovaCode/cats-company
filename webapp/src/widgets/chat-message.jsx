@@ -39,6 +39,7 @@ import {
 import PwaDownloadLink from './pwa-download-link';
 import { previewPageURL, sharePreviewLink } from './preview-share';
 import { normalizeGatewayAnnotations } from '../gateway-annotations';
+import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -1930,6 +1931,23 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile, onOpe
             type="button"
           >
             <ExternalLink size={15} /><span>新页面</span>
+          </button>
+        )}
+        {isGatewayApp && (
+          <button
+            className="v3-artifact-action"
+            onClick={() => {
+              // Share the gateway's public address, not the viewer URL: the
+              // viewer URL carries this conversation, so a recipient cannot
+              // open it. The gateway address needs no identity.
+              const shareURL = gatewayApplicationShareURL(artifact);
+              if (shareURL) void sharePreviewLink({ url: shareURL, name: payload.name || '应用' });
+            }}
+            title="复制分享链接（对方无需账号即可打开）"
+            aria-label={`复制 ${payload.name} 的分享链接`}
+            type="button"
+          >
+            <Share2 size={15} /><span>分享</span>
           </button>
         )}
       </div>

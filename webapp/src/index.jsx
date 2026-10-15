@@ -13,6 +13,7 @@ import {
   setToken,
 } from './auth-session';
 import { FeedbackProvider } from './components/feedback-system';
+import { ARTIFACT_VIEWER_PATH } from './artifact-preview-coordinator';
 import {
   getPwaUpdateServiceWorker,
   isPwaRefreshPending,
@@ -243,8 +244,14 @@ export function App() {
   // The knowledge wiki signs in through the host-scoped handoff cookie and must
   // load before any local session token exists on that origin; the wiki view
   // keeps access enforced through the API session checks.
+  // The application viewer is also reachable without a session: a shared link
+  // must open for a recipient who has no account at all, and the viewer itself
+  // decides what that visitor may see (the application, read-only). Loading the
+  // shell is not the same as granting access — every platform call behind it
+  // still authenticates.
   const standaloneRoute = browserLocation.pathname.startsWith('/mobile-upload/')
     || isKnowledgeWikiPathname(browserLocation.pathname)
+    || browserLocation.pathname === ARTIFACT_VIEWER_PATH
     || new URLSearchParams(browserLocation.search).get('workflow_demo') === '1';
   const shouldLoadWorkspace = auth.loggedIn || standaloneRoute || developmentWorkspacePreview;
   const shouldMountPwaController = auth.loggedIn

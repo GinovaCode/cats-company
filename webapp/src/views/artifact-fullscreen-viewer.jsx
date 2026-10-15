@@ -23,6 +23,8 @@ import {
   artifactPreviewCoordinationID,
   createArtifactPreviewChannel,
   createArtifactPreviewMessage,
+  gatewayApplicationShareURL,
+  gatewayPublicCatalogURLs,
   normalizeArtifactPreviewMessage,
   parseArtifactViewerLocation,
   sameArtifactPreviewIdentity,
@@ -63,6 +65,33 @@ function viewerErrorMessage(error) {
   if (code.includes('artifact_viewer_channel')) return '当前浏览器无法建立应用连接。';
   if (code.includes('artifact_viewer_connection')) return '应用已打开，但暂时无法连接虚拟员工。';
   return '暂时无法打开这个应用。';
+}
+
+// The stateless fallback. This viewer URL carries the sharer's conversation and
+// the application's owner, so it only works for somebody who is in that
+// conversation. Anyone else — a recipient of a shared link, or a visitor with no
+// account — would otherwise hit an error. The gateway's own catalog answers
+// without any platform identity, so it can still resolve the application's
+// public address and show it read-only: no conversation, no task host, no
+// annotation bridge.
+async function loadGuestApplication(artifactId, signal) {
+  for (const catalogURL of gatewayPublicCatalogURLs()) {
+    try {
+      const response = await fetch(catalogURL, { credentials: 'omit', signal });
+      if (!response.ok) continue;
+      const body = await response.json();
+      const app = (Array.isArray(body?.apps) ? body.apps : [])
+        .find((item) => item?.id === artifactId);
+      if (!app) continue;
+      const url = gatewayApplicationShareURL(app);
+      if (!url) continue;
+      return { browseURL: url, title: app.title || app.id, guest: true };
+    } catch (error) {
+      if (signal?.aborted) return null;
+      // Try the next domain before giving up.
+    }
+  }
+  return null;
 }
 
 export default function ArtifactFullscreenViewer({ location = window.location } = {}) {
@@ -117,13 +146,32 @@ function GatewayApplicationViewer({ params }) {
         ...artifact, url: url.toString(), publish_version: version, agent_uid: params.agentUid,
       });
       setLoaded({ file, params: { ...params, displayedVersion: version } });
-    }).catch((e) => {
-      if (!cancelled) setError(String(e?.message || 'artifact_not_found'));
+    }).catch(async (e) => {
+      if (cancelled) return;
+      // A shared link lands here: the recipient is not in the sharer's
+      // conversation, so the authenticated path is refused with 401/403. Only
+      // that refusal degrades to the guest view. Every other failure is a real
+      // error (wrong owner, unusable version, untrusted launch URL, missing
+      // application) and must stay closed — falling back there would show an
+      // application the caller is not entitled to.
+      const status = Number(e?.status || 0);
+      if (status === 401 || status === 403) {
+        const guest = await loadGuestApplication(params.artifactId, controller.signal);
+        if (cancelled) return;
+        if (guest) {
+          setLoaded(guest);
+          return;
+        }
+      }
+      setError(String(e?.message || 'artifact_not_found'));
     });
     return () => { cancelled = true; controller.abort(); };
   }, [params.topicId, params.agentUid, params.artifactId]);
   if (loaded?.browseURL) return (
     <main className="artifact-fullscreen-viewer artifact-fullscreen-browse-only" aria-label="CatsCo 应用查看器">
+      {loaded.guest && (
+        <p role="status">这是分享的应用，以访客方式浏览。登录后可以把它加入自己的会话。</p>
+      )}
       <iframe className="artifact-fullscreen-viewer-frame" title={loaded.title} src={loaded.browseURL}
         sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals" referrerPolicy="no-referrer" />
     </main>

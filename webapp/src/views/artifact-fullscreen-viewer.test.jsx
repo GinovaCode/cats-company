@@ -405,6 +405,44 @@ describe('ArtifactFullscreenViewer', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it('falls back to the guest view when the platform refuses a shared link', async () => {
+    // A recipient of a shared link is not in the sharer's conversation, so the
+    // authenticated path answers 403. The viewer must still show the
+    // application, read-only, instead of an error.
+    const refusal = Object.assign(new Error('forbidden'), { status: 403 });
+    mocks.listArtifactApps.mockRejectedValue(refusal);
+    const catalog = { apps: [{ id: 'risk-register', title: '项目风险台账', url: 'https://artifact.catsco.cc/risk-register/' }] };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => catalog });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('iframe')?.src).toBe('https://artifact.catsco.cc/risk-register/');
+    expect(container.textContent).toContain('访客');
+    // A guest gets no session: no task host, no runtime, no conversation.
+    expect(mocks.connectWS).not.toHaveBeenCalled();
+    expect(mocks.createArtifactTask).not.toHaveBeenCalled();
+  });
+
+  it('still fails closed when the platform refuses and the application is not public', async () => {
+    const refusal = Object.assign(new Error('forbidden'), { status: 403 });
+    mocks.listArtifactApps.mockRejectedValue(refusal);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ apps: [] }) }));
+
+    await act(async () => {
+      root.render(<ArtifactFullscreenViewer location={{ ...location, search: '?mode=gateway&topic=p2p_1_440&agent=440&artifact=risk-register' }} />);
+      await flushPromises(20);
+    });
+
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
   it.each(['wrong-agent', 'no-version', 'missing-app', 'untrusted-launch'])('fails closed for invalid gateway metadata: %s', async (problem) => {
     if (problem === 'wrong-agent' || problem === 'no-version') mocks.getCloudArtifacts.mockResolvedValue({ artifacts: [{
       id: 'risk-register', agent_uid: problem === 'wrong-agent' ? 441 : 440, publish_version: problem === 'no-version' ? 0 : 3,
