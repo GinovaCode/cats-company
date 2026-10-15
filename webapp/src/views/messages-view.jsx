@@ -1050,6 +1050,73 @@ export default function MessagesView({
   artifactTaskFeedbackRef.current = feedback;
   const phoneUploadTopicRef = useRef('');
   const phoneUploadSyncRef = useRef(null);
+  // Assigned during render so the long-lived bridge effect (empty deps) always
+  // calls the current implementation instead of a stale closure.
+  const artifactComposeInjectRef = useRef(null);
+
+  // Gateway application -> conversation injection. The application hands over a
+  // free-form string and nothing else; this decides where it goes. The target is
+  // always the conversation of the bot that owns the application, because the
+  // files an application refers to live on that bot's machine. If that
+  // conversation is already open we send into it; otherwise we open it first, so
+  // the user sees where the message landed.
+  artifactComposeInjectRef.current = async (text, binding) => {
+    const ownerAgentUid = Number(binding?.agentUid || 0);
+    const appId = String(binding?.appId || '');
+    if (!ownerAgentUid) return { ok: false, reason: 'open_failed' };
+
+    const currentTopic = String(activeTopicRef.current || '');
+    const currentAgent = availableAgents.find((agent) => agent.topic_id === currentTopic) || null;
+    const currentAgentUid = Number(currentAgent?.uid || currentAgent?.id || 0);
+
+    let topicId = currentTopic;
+    let switched = false;
+    let agentName = currentAgent?.display_name || currentAgent?.name || '';
+
+    if (!currentTopic || currentAgentUid !== ownerAgentUid) {
+      let opened = null;
+      try {
+        opened = await api.openAgent(ownerAgentUid);
+      } catch (error) {
+        const status = Number(error?.status || 0);
+        if (status === 401) return { ok: false, reason: 'not_logged_in' };
+        if (status === 403) return { ok: false, reason: 'agent_forbidden' };
+        return { ok: false, reason: 'open_failed' };
+      }
+      const openedAgent = opened?.agent || null;
+      topicId = String(openedAgent?.topic_id || opened?.topic || '');
+      if (!topicId) return { ok: false, reason: 'open_failed' };
+      agentName = openedAgent?.display_name || openedAgent?.name || agentName;
+      onActivateTopic?.({
+        topicId,
+        name: agentName || undefined,
+        isGroup: false,
+        avatar_url: openedAgent?.avatar_url,
+        friendId: openedAgent?.uid || ownerAgentUid,
+        isBot: true,
+      });
+      switched = true;
+    }
+
+    try {
+      await api.sendMessage(topicId, {
+        type: 'text',
+        content: text,
+        metadata: { app_id: appId, agent_uid: ownerAgentUid },
+      });
+    } catch {
+      return { ok: false, reason: 'send_failed' };
+    }
+
+    const label = agentName || `bot ${ownerAgentUid}`;
+    feedback.notify({
+      tone: 'success',
+      message: switched
+        ? `已切换到与 ${label} 的会话并注入`
+        : `已注入到与 ${label} 的会话`,
+    });
+    return { ok: true };
+  };
   const sendInFlightRef = useRef(false);
   const conversationShareGenerateButtonRef = useRef(null);
   const conversationSharePreviewRef = useRef(null);
@@ -2170,6 +2237,13 @@ export default function MessagesView({
           && reason !== 'rebind' && reason !== 'deactivate' && reason !== 'dispose') {
           setGatewayAnnotationCapabilityNote('标注桥不可用，标注已停止');
         }
+      },
+      // An application asked to inject text into its owning bot's conversation.
+      // Routed through a ref because this effect has empty deps by design.
+      onCompose: (text, binding) => {
+        const inject = artifactComposeInjectRef.current;
+        if (typeof inject !== 'function') return { ok: false, reason: 'send_failed' };
+        return inject(text, binding);
       },
     });
     gatewayAnnotationHostRef.current = host;

@@ -49,6 +49,11 @@ export const GATEWAY_SCREENSHOT_REQUEST_TYPE = 'catsco.gateway.annotation.screen
 export const GATEWAY_SCREENSHOT_RESULT_TYPE = 'catsco.gateway.annotation.screenshot.result.v1';
 export const GATEWAY_SCREENSHOT_CANCEL_TYPE = 'catsco.gateway.annotation.screenshot.cancel.v1';
 
+// Artifact -> conversation compose channel.
+export const ARTIFACT_COMPOSE_TYPE = 'catsco.artifact.compose.v1';
+export const ARTIFACT_COMPOSE_ACK_TYPE = 'catsco.artifact.compose.ack.v1';
+export const ARTIFACT_COMPOSE_CONTRACT = GATEWAY_ANNOTATION_BRIDGE_CONTRACT;
+
 const SCREENSHOT_WARNINGS = ['cross-origin-image', 'unloaded-image', 'video', 'embedded-content', 'webgl-canvas', 'unreadable-canvas', 'cross-origin-background', 'sensitive-content-masked'];
 
 function jpegDimensions(raw) {
@@ -369,6 +374,16 @@ function createSessionToken() {
   return `catsco_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 }
 
+// Minimal shape gate for the compose channel. The only content rule is
+// "a non-empty string": this channel injects visible text into the owner's own
+// conversation, so there is nothing here worth refusing beyond emptiness.
+export function normalizeArtifactCompose(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.text !== 'string') return null;
+  if (!value.text.trim()) return null;
+  return { text: value.text };
+}
+
 export function createGatewayAnnotationHost({
   getBinding,
   onReady,
@@ -376,6 +391,7 @@ export function createGatewayAnnotationHost({
   onPageChange,
   onUnavailable,
   onModeChange,
+  onCompose,
 } = {}) {
   if (typeof getBinding !== 'function') {
     throw new Error('getBinding is required');
@@ -666,6 +682,51 @@ export function createGatewayAnnotationHost({
     notify(onModeChange, 'off');
   }
 
+  // The compose channel. `onCompose(text, binding)` is the consumer's
+  // injection point: it decides which conversation this belongs to and sends.
+  // It may return a promise; the ack is withheld until it settles.
+  function handleCompose(payload) {
+    if (!state.ready) {
+      ackCompose(payload, false, 'not_connected');
+      return;
+    }
+    const normalized = normalizeArtifactCompose(payload);
+    if (!normalized) {
+      ackCompose(payload, false, 'empty_text');
+      return;
+    }
+    let outcome;
+    try {
+      outcome = typeof onCompose === 'function'
+        ? onCompose(normalized.text, state.session?.binding)
+        : null;
+    } catch {
+      outcome = { ok: false, reason: 'send_failed' };
+    }
+    Promise.resolve(outcome).then((result) => {
+      const ok = Boolean(result && result.ok);
+      ackCompose(payload, ok, ok ? '' : (result && result.reason) || 'send_failed');
+    }).catch(() => {
+      ackCompose(payload, false, 'send_failed');
+    });
+  }
+
+  // The ack deliberately carries no conversation id: the application cannot act
+  // on one (it has no platform API access from a cross-origin frame), so
+  // success/failure is the whole contract.
+  function ackCompose(payload, accepted, reason) {
+    const binding = state.session?.binding;
+    if (!binding) return;
+    postToFrame(binding, {
+      type: ARTIFACT_COMPOSE_ACK_TYPE,
+      contract_version: GATEWAY_ANNOTATION_BRIDGE_CONTRACT,
+      session_id: state.session.token,
+      request_id: typeof payload.request_id === 'string' ? payload.request_id : '',
+      accepted,
+      reason,
+    });
+  }
+
   function handleWindowMessage(event) {
     if (state.disposed) return;
     const current = state.session;
@@ -692,6 +753,9 @@ export function createGatewayAnnotationHost({
           return;
         case GATEWAY_HOST_MODE_TYPE:
           handleModeExit(payload);
+          return;
+        case ARTIFACT_COMPOSE_TYPE:
+          handleCompose(payload);
           return;
         default:
           return;
@@ -770,6 +834,7 @@ export function createGatewayAnnotationHost({
     captureScreenshot,
     cancelScreenshot,
     screenshotSupported: () => state.screenshotSupported && !state.disposed,
+    compose: (text) => handleCompose({ text, request_id: '' }),
     hasSession: () => state.session !== null && !state.disposed,
     readyCapabilities: () => (state.ready ? state.ready.capabilities.slice() : []),
     deactivate() {

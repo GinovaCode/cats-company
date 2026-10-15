@@ -1136,3 +1136,207 @@ describe('R3B real Selection host round trip',()=>{
     expect(stale).toHaveLength(0);
   });
 });
+
+
+describe('compose channel (SDK side)', () => {
+  function createComposeSdk(acks) {
+    const { fakeParent, posted } = createParentBus();
+    const sdk = window.CatsCoAnnotations.create({
+      parentOrigin: 'https://host.catsco.example',
+      revision: 'r1',
+      onComposeAck: (result) => acks.push(result),
+    });
+    activeSdk = sdk;
+    return { sdk, posted, fakeParent };
+  }
+
+  const composeMessages = (posted) => posted.map((p) => p.message).filter((m) => m.type === TYPES.compose);
+
+  function sendComposeAck(requestId, overrides = {}) {
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://host.catsco.example',
+      source: currentFakeParent,
+      data: {
+        type: TYPES.composeAck,
+        contract_version: BRIDGE,
+        session_id: 'catsco_session_1',
+        request_id: requestId,
+        accepted: true,
+        reason: '',
+        ...overrides,
+      },
+    }));
+  }
+
+  it('exposes proposeCompose on the instance and the two type names', () => {
+    const { sdk } = createComposeSdk([]);
+    expect(typeof sdk.proposeCompose).toBe('function');
+    expect(TYPES.compose).toBe('catsco.artifact.compose.v1');
+    expect(TYPES.composeAck).toBe('catsco.artifact.compose.ack.v1');
+  });
+
+  it('posts the text verbatim under the bridge contract with the live session', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+
+    const text = '  \u5e2e\u6211\u6539\u6210\u5ba2\u6237\u7248  \n\u7b2c\u4e8c\u884c  ';
+    expect(sdk.proposeCompose({ text })).toBe(true);
+
+    const [message] = composeMessages(posted);
+    expect(message).toBeDefined();
+    expect(message.text).toBe(text);            // verbatim: not trimmed
+    expect(message.session_id).toBe('catsco_session_1');
+    expect(message.contract_version).toBe(BRIDGE);
+    expect(typeof message.request_id).toBe('string');
+    expect(message.request_id.length).toBeGreaterThan(0);
+  });
+
+  it('accepts a bare string as the payload', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+
+    expect(sdk.proposeCompose('\u76f4\u63a5\u4f20\u5b57\u7b26\u4e32')).toBe(true);
+    expect(composeMessages(posted)[0].text).toBe('\u76f4\u63a5\u4f20\u5b57\u7b26\u4e32');
+  });
+
+  it('has no self-imposed length cap: long text is still handed to the host', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+
+    const long = 'x'.repeat(70000);
+    expect(sdk.proposeCompose({ text: long })).toBe(true);
+    expect(composeMessages(posted)[0].text).toBe(long);
+  });
+
+  it('refuses empty or whitespace-only text locally and posts nothing', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+
+    expect(sdk.proposeCompose({ text: '' })).toBe(false);
+    expect(sdk.proposeCompose({ text: '   \n ' })).toBe(false);
+    expect(sdk.proposeCompose('   ')).toBe(false);
+    expect(sdk.proposeCompose({})).toBe(false);
+    expect(sdk.proposeCompose({ text: 7 })).toBe(false);
+    expect(composeMessages(posted)).toHaveLength(0);
+  });
+
+  it('refuses to propose before the host established a session', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    expect(sdk.proposeCompose({ text: 'too early' })).toBe(false);
+    expect(composeMessages(posted)).toHaveLength(0);
+  });
+
+  it('delivers the ack for its own request to onComposeAck', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sendComposeAck(requestId, { accepted: true, reason: '' });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]).toMatchObject({ accepted: true, reason: '' });
+  });
+
+  it('reports a refusal with its reason', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sendComposeAck(requestId, { accepted: false, reason: 'agent_forbidden' });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]).toMatchObject({ accepted: false, reason: 'agent_forbidden' });
+  });
+
+  it('never surfaces a conversation id to the application', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sendComposeAck(requestId, { accepted: true, topic_id: 'p2p_1_365' });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]).not.toHaveProperty('topicId');
+    expect(Object.keys(acks[0])).not.toContain('topicId');
+    expect(JSON.stringify(acks[0])).not.toContain('p2p_1_365');
+  });
+
+  it('ignores an ack for a request it never made', () => {
+    const acks = [];
+    const { sdk } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    sendComposeAck('cc_not_mine', { accepted: true });
+    expect(acks).toHaveLength(0);
+  });
+
+  it('ignores an ack carrying the wrong contract version', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sendComposeAck(requestId, { contract_version: 'catsco.something.else.v1' });
+    expect(acks).toHaveLength(0);
+  });
+
+  it('ignores an ack from a foreign origin', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    window.dispatchEvent(new MessageEvent('message', {
+      origin: 'https://evil.example.com',
+      source: currentFakeParent,
+      data: {
+        type: TYPES.composeAck,
+        contract_version: BRIDGE,
+        session_id: 'catsco_session_1',
+        request_id: requestId,
+        accepted: true,
+        reason: '',
+      },
+    }));
+    expect(acks).toHaveLength(0);
+  });
+
+  it('consumes a compose ack only once', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sendComposeAck(requestId, { accepted: true });
+    sendComposeAck(requestId, { accepted: true });
+    expect(acks).toHaveLength(1);
+  });
+
+  it('tolerates a missing onComposeAck callback', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    expect(() => sendComposeAck(requestId, { accepted: true })).not.toThrow();
+  });
+
+  it('does not disturb the annotation handshake', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+    const ready = readyMessage(posted);
+    expect(ready).not.toBeNull();
+    expect(ready.capabilities).toEqual(['element', 'text', 'region']);
+    sdk.proposeCompose({ text: 'hello' });
+    expect(targetMessages(posted)).toHaveLength(0);
+  });
+});
