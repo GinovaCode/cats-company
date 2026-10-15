@@ -85,9 +85,10 @@ request body or arbitrary source path. A display name is never an identity key.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, effective `workspaceCreateEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database or target-runtime health check. |
+| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, effective `sourceStatusReadsEnabled`, effective `workspaceCreateEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database or target-runtime health check. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}` | When enabled on a supported store, reads the original publisher's record. Missing, wrong-publisher and disabled reads return the same 404. Bot ownership transfer does not grant historical record access to the new owner. |
 | `GET /api/skillhub/publications/requests/{requestId}` | Same private projection, using the original account-scoped request ID to recover a lost creation response. This does not reauthorize, create, replay or mutate an entry. |
+| `GET /api/skillhub/publications/entries/{entryRequestId}/source-status` | Original publisher's historical source-probe progress, using the same read flag and private transport guards. Requires the optional PostgreSQL source-status reader. Never claims, settles or resumes a task. |
 
 The entry response contains only `schemaVersion` and `entry` with
 `entryRequestId`, decimal-string `botUid`, `entrypoint`, `state` and UTC
@@ -112,6 +113,47 @@ context deadline; client cancellation propagates to the store. 429 and concurren
 503 responses supply `Retry-After: 5`. These are local load guards, not a durable
 cross-replica quota. They do not replace deployment-wide request/authentication
 limits. Clients should wait at least five seconds and back off on failures.
+
+### Source check progress
+
+The additive `source-status` route leaves existing entry/request responses
+unchanged. It shares the per-entry polling budget with the entry-ID route and
+the handler's 16 concurrent reads/five-second deadline. The existing read flag
+is sufficient; delivery/admission need not be enabled to read history after a
+worker rollback. Unsupported storage returns 503, never invented progress.
+Neither capabilities nor this endpoint is connected to a new UI in this slice.
+
+The response contains only `schemaVersion: 1`, `entryRequestId`, and
+`sourceStatus` with `stage`, `attempts`, `maxAttempts: 8`, `observedAt`, and the
+optional fields described below. Times are UTC; `observedAt` comes from the
+database in the same statement as the committed ledger observation. These are
+transport-probe attempts, not the later three-round automatic repair budget.
+
+| Stage | Meaning and optional fields |
+| --- | --- |
+| `waiting_runtime` | No background attempt recorded. Does not prove the Bot is offline or the worker enabled. |
+| `probing` | A source-probe lease is unexpired at `observedAt`; it does not prove socket delivery or ongoing execution. |
+| `recovery_wait` | The saved lease has expired, including an expired eighth attempt. Only a worker can reclaim or durably settle it; a read does not change the ledger. |
+| `retry_wait` | A saved retryable timeout/unavailable receipt; includes allowlisted `code` and `retryNotBeforeAt`. This is the earliest eligible time, not a guaranteed retry time or current authority check. It may be in the past while the runtime/worker is unavailable. |
+| `verified` | A historical read-only source receipt, with `verifiedAt`. Not a captured candidate, validation result, upload, publication, or current execution permission. |
+| `needs_user_action` | A saved terminal source failure or exhausted eight-attempt budget, with allowlisted `code`. No retry/reset button or auto-repair is introduced. |
+
+Codes are limited to `publication.runtime_timeout`, `publication.runtime_unavailable`,
+`publication.source_missing`, `publication.source_changed`, `publication.source_unsafe`,
+`publication.runtime_unsupported`, and `publication.delivery_exhausted`, in their
+matching stages. Unknown state/code combinations, inconsistent counters or
+missing evidence return a sanitized 503 instead of being passed through.
+No free-form messages, publisher UID, source references, device/body/installation,
+lease token, lease deadline, node, connection or connection generation are exposed.
+
+Original active human publishers retain historical reads after Bot ownership or
+binding changes; new owners/friends do not inherit them. Account disablement is
+checked again by the database query. This route does not check or grant current
+runtime authority, clear a terminal failure, reset attempts, create another
+intent, or trigger a model. An entry's orchestration state remains
+`waiting_runtime` even after `verified`; only a future Cloud result can claim
+publication. Clients must not present this observation as a live online/permission
+indicator or fabricate a repair action from infrastructure errors.
 
 ## Workspace source verification and entry admission
 
@@ -238,8 +280,8 @@ lease or changing the result. This is only a read-only source receipt. It does
 not capture bytes, consume/delete the original event, issue a grant, upload,
 install or publish. The immutable entry and public status remain `waiting_runtime`.
 Future capture dispatch needs its own explicit transition and fresh authority
-checks; it cannot treat this timestamp as current permission. No account-facing
-delivery-state projection or resume action is wired in this slice.
+checks; it cannot treat this timestamp as current permission. The private
+`source-status` projection above exposes historical progress, not a resume action.
 
 Migration `000030_skillhub_publication_delivery` mirrors the startup DDL. It adds
 columns/defaults/constraints/indexes without rewriting old identities or Bot
@@ -298,7 +340,7 @@ test. XiaoBa still must implement and explicitly advertise the new capability.
 
 ## Remaining integration
 
-Durable **pre-probe** admission, owner-visible delivery failures/resume, and the
+Durable **pre-probe** admission, UI integration of delivery progress, safe resume, and the
 later capture/upload adapter remain required. Initial browser submission is still
 same-node and online-only. The worker resumes already accepted requests, not new
 offline requests. No production switch should be enabled on these tests alone.

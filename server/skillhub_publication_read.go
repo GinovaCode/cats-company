@@ -112,6 +112,10 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	path := r.URL.Path
 	capabilities := path == skillHubPublicationPrefix+"/capabilities"
 	id := strings.TrimPrefix(path, skillHubPublicationPrefix+"/entries/")
+	sourceStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/source-status")
+	if sourceStatus {
+		id = strings.TrimSuffix(id, "/source-status")
+	}
 	byRequest := strings.HasPrefix(path, skillHubPublicationPrefix+"/requests/")
 	valid := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && skillHubPublicationEntryID.MatchString(id)
 	if byRequest {
@@ -138,9 +142,11 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		return
 	}
 	if capabilities {
+		_, sourceStatusSupported := h.db.(store.SkillHubPublicationSourceStatusReader)
 		writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
 			"schemaVersion": 1, "entryReadsEnabled": h.enabled && h.entries != nil,
-			"workspaceCreateEnabled": h.workspaceEntriesEnabled, "chatCreateEnabled": false,
+			"sourceStatusReadsEnabled": h.enabled && h.entries != nil && sourceStatusSupported,
+			"workspaceCreateEnabled":   h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"minPollIntervalMs": 5000,
 		})
 		return
@@ -153,7 +159,11 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.storage_unsupported")
 		return
 	}
-	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_reads_entry", Limit: 12, Window: time.Minute, Burst: 3}, actor+":"+path) {
+	pollKey := path
+	if sourceStatus {
+		pollKey = skillHubPublicationPrefix + "/entries/" + id
+	}
+	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_reads_entry", Limit: 12, Window: time.Minute, Burst: 3}, actor+":"+pollKey) {
 		w.Header().Set("Retry-After", "5")
 		skillHubPublicationReadError(w, http.StatusTooManyRequests, "publication.rate_limited")
 		return
@@ -197,6 +207,10 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	identityMatches := (!byRequest && entry.ID == id) || (byRequest && entry.Input.RequestID == id)
 	if !identityMatches || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.State != "waiting_runtime" || entry.Input.Entrypoint != "workspace" || entry.Input.BotUID <= 0 || entry.CreatedAt.IsZero() {
 		skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.record_unavailable")
+		return
+	}
+	if sourceStatus {
+		h.readSourceStatus(w, ctx, claims.UID, entry.ID)
 		return
 	}
 	writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
