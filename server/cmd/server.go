@@ -1052,6 +1052,11 @@ func main() {
 	// Bot's credentials. This additive subtree defaults off in production.
 	skillHubMarketplaceHandler := server.NewSkillHubMarketplaceHandlerFromEnv(skillHubProxyHandler)
 	mux.HandleFunc("/api/skillhub/marketplace/", ownerAuthWithDB(skillHubMarketplaceHandler.Handle))
+	// Read-only publication status authenticates an active human internally,
+	// including no-store error responses. It cannot create or dispatch work.
+	skillHubPublicationReadHandler := server.NewSkillHubPublicationReadHandlerFromEnv(db)
+	mux.HandleFunc("/api/skillhub/publications", skillHubPublicationReadHandler.Handle)
+	mux.HandleFunc("/api/skillhub/publications/", skillHubPublicationReadHandler.Handle)
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
