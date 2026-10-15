@@ -2523,8 +2523,10 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	shouldNotifyOffline := shouldNotifyOfflineForMessage(msg)
 
 	memberCount := len(members)
+	roster := groupRoster(members)
 	if msg != nil && msg.Data != nil {
 		msg.Data.MemberCount = memberCount
+		msg.Data.BotCount = groupBotCount(members)
 	}
 
 	channelManaged := h.isChannelManagedGroup(groupID)
@@ -2596,6 +2598,13 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		}
 		if out != nil && out.Data != nil && isBot {
 			out = cloneDataMessageWithActivation(out, activated, m.UserID)
+			// The roster is Agent-only material: it exists so a receiving Agent
+			// can tell a person from a peer, and a person's client already has
+			// the member list in its own UI. Sending it to every human on every
+			// message would be pure weight, so only the Agent copy carries it.
+			if out != nil && out.Data != nil {
+				out.Data.Roster = roster
+			}
 		}
 		// Agent-side readability on the clone only: the target Agent's copy
 		// gets the validated annotations through both consumer channels while
@@ -2651,6 +2660,54 @@ func groupTopicID(groupID int64) string {
 		return ""
 	}
 	return "grp_" + formatInt64(groupID)
+}
+
+// groupBotCount reports how many of a group's members are Agents.
+//
+// It is what tells a multi-Agent room from a room that merely has several
+// people. member_count cannot: one Agent plus three people needs no
+// coordination, while two Agents do, and both can have the same head count.
+func groupBotCount(members []*types.GroupMember) int {
+	count := 0
+	for _, member := range members {
+		if member == nil || !member.IsBot {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// groupRoster renders the group's members for delivery to an Agent.
+//
+// The roster is what lets a receiving Agent tell a person from a peer: a name
+// in the transcript says nothing about which it is, and member_count carries no
+// names at all. Names are the display names the group itself shows, so the
+// roster and the conversation agree on who is who.
+//
+// Muted members are included. A silenced member cannot be addressed, so a peer
+// planning a handover needs to know that naming it will reach nobody; omitting
+// it would make a silenced member look like an absent one.
+func groupRoster(members []*types.GroupMember) []GroupRosterMember {
+	if len(members) == 0 {
+		return nil
+	}
+	roster := make([]GroupRosterMember, 0, len(members))
+	for _, member := range members {
+		if member == nil {
+			continue
+		}
+		roster = append(roster, GroupRosterMember{
+			UID:   formatUID(member.UserID),
+			Name:  activationMemberName(member),
+			IsBot: member.IsBot,
+			Muted: member.Muted,
+		})
+	}
+	if len(roster) == 0 {
+		return nil
+	}
+	return roster
 }
 
 // activationMutedUIDs lists the group members the group has silenced.
