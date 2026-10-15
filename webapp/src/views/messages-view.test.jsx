@@ -308,6 +308,7 @@ vi.mock('../api', () => ({
 import MessagesView, {
   canonicalizeStructuredMentionText,
   collectStructuredMentionTargets,
+  composeTargetsCurrentConversation,
   gatewayAppsAsArtifacts,
   mergeArtifactSources,
   mergeOwnServerEcho,
@@ -526,6 +527,81 @@ function dispatchFrameMessage(source, origin, data) {
   });
   window.dispatchEvent(event);
 }
+
+describe('gateway application injection target', () => {
+  const owner = 365;
+
+  it('lands in the group the user is looking at when the owner bot is a member', () => {
+    // The reported case: the application is opened from a group that contains the
+    // owning bot, so the text must stay in that group instead of jumping to a
+    // one-to-one conversation with the bot.
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner,
+      currentTopic: 'grp_4133',
+      currentAgentUid: 0,
+      isGroup: true,
+      memberUIDs: ['usr116', 'usr365'],
+    })).toBe(true);
+  });
+
+  it('lands in a one-to-one conversation with the owner bot', () => {
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner,
+      currentTopic: 'p2p_116_365',
+      currentAgentUid: owner,
+      isGroup: false,
+      memberUIDs: [],
+    })).toBe(true);
+  });
+
+  it('leaves a group that does not contain the owner bot', () => {
+    // A group without the owner cannot reach the files the application refers to,
+    // so the text has to go to the owner's own conversation instead.
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner,
+      currentTopic: 'grp_80',
+      currentAgentUid: 0,
+      isGroup: true,
+      memberUIDs: ['usr116', 'usr42'],
+    })).toBe(false);
+  });
+
+  it('leaves a one-to-one conversation with a different bot', () => {
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner,
+      currentTopic: 'p2p_116_42',
+      currentAgentUid: 42,
+      isGroup: false,
+      memberUIDs: [],
+    })).toBe(false);
+  });
+
+  it('leaves when no conversation is open or the owner is unknown', () => {
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner, currentTopic: '', currentAgentUid: 0, isGroup: false, memberUIDs: [],
+    })).toBe(false);
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: 0, currentTopic: 'grp_4133', currentAgentUid: 0, isGroup: true, memberUIDs: ['usr365'],
+    })).toBe(false);
+  });
+
+  it('matches the owner regardless of uid formatting', () => {
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner,
+      currentTopic: 'p2p_116_365',
+      currentAgentUid: 'usr365',
+      isGroup: false,
+      memberUIDs: [],
+    })).toBe(true);
+    expect(composeTargetsCurrentConversation({
+      ownerAgentUid: owner,
+      currentTopic: 'grp_4133',
+      currentAgentUid: 0,
+      isGroup: true,
+      memberUIDs: ['usr365'],
+    })).toBe(true);
+  });
+});
 
 describe('structured composer mention provenance', () => {
   it('does not promote hand-typed uid-like text into structured targets', () => {
