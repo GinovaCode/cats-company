@@ -70,8 +70,9 @@ type ServiceAgentStore interface {
 	// definitionRev<=0 = 最新版本；指定版本不存在时回退最新（会话钉定语义的兑底，不阻斯工具）。
 	GetServiceAgentDefinition(ctx context.Context, agentID int64, definitionRev int64) (slug string, thresholdSeconds int, definitionJSON json.RawMessage, err error)
 	// 云端包分发：发布新版本（packageHash 内容寻址；同 hash 幂等返回既有版本）与按 hash 取包。
+	// slug 不存在时用 name 自动注册新 agent（发布即上架，设计 A §3）；已存在且非 active → ErrServiceAgentNotFound。
 	// force=true 时同 hash 也建新版本（回滚通道：重发旧包 → 新版本指向旧内容）。
-	PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (version int64, err error)
+	PublishServiceAgentPackage(ctx context.Context, slug, name string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (version int64, err error)
 	GetServiceAgentPackage(ctx context.Context, packageHash string) (bundle json.RawMessage, err error)
 	// GetServiceAgentPackageHash 返回该 agent 当前最新版本的 assets_hash（无包时为空串）。
 	GetServiceAgentPackageHash(ctx context.Context, agentID int64) (string, error)

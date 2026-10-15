@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/openchat/openchat/server/store"
 )
@@ -13,10 +14,14 @@ import (
 // PublishServiceAgentPackage 发布一个 agent 新版本（云端包分发；设计 A §2）。
 // packageHash 为内容寻址：同 hash 已存在（任意版本）→ 幂等返回既有版本号，不重复入库。
 // force=true 时跳过幂等分支：同 hash 也建新版本（回滚通道：重发旧包使新版本指向旧内容）。
+// slug 不存在时用 name 自动注册新 agent（发布即上架）；已存在且非 active → ErrServiceAgentNotFound。
 // definition 由平台从包 manifest 派生（消除"包内模型 vs 平台定义"双写裂缝）。
-func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
+func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug, name string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
 	if packageHash == "" {
 		return 0, fmt.Errorf("publish service agent package: empty package hash")
+	}
+	if strings.TrimSpace(name) == "" {
+		name = slug
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -24,19 +29,28 @@ func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, d
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var agentID int64
+	// 自动注册（发布即上架）：仅当 slug 不存在时插入；已存在不改名（平台侧可人工调整展示名）。
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO service_agents (slug, name) VALUES ($1, $2)
+		ON CONFLICT (slug) DO NOTHING`, slug, name); err != nil {
+		return 0, fmt.Errorf("publish service agent package: %w", err)
+	}
+
+	// 锁 agent 行（并发 publish 不抢同一 version），并校验状态。
+	var (
+		agentID int64
+		state   string
+	)
 	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM service_agents WHERE slug = $1 AND state = 'active'`, slug).Scan(&agentID)
+		SELECT id, state FROM service_agents WHERE slug = $1 FOR UPDATE`, slug).Scan(&agentID, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, store.ErrServiceAgentNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
-
-	// 锁 agent 行，避免并发 publish 抢同一 version。
-	if _, err := tx.ExecContext(ctx, `SELECT id FROM service_agents WHERE id = $1 FOR UPDATE`, agentID); err != nil {
-		return 0, fmt.Errorf("publish service agent package: %w", err)
+	if state != "active" {
+		return 0, store.ErrServiceAgentNotFound
 	}
 
 	if !force {

@@ -53,7 +53,7 @@ func newFakeServiceAgentStore() *fakeServiceAgentStore {
 
 // ---- 云端包分发（store.ServiceAgentStore 扩展方法）----
 
-func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, slug string, _ json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
+func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, slug, name string, _ json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	agentID := int64(0)
@@ -64,7 +64,13 @@ func (f *fakeServiceAgentStore) PublishServiceAgentPackage(_ context.Context, sl
 		}
 	}
 	if agentID == 0 {
-		return 0, store.ErrServiceAgentNotFound
+		// 自动注册（发布即上架）：与 PG/MySQL 实现同语义。
+		if strings.TrimSpace(name) == "" {
+			name = slug
+		}
+		f.nextID++
+		agentID = 1000 + f.nextID
+		f.agents = append(f.agents, store.ServiceAgentDescriptor{ID: agentID, Slug: slug, Name: name, Version: 1, AsyncThresholdSeconds: 60})
 	}
 	if _, ok := f.packages[packageHash]; !ok {
 		f.packages[packageHash] = append(json.RawMessage(nil), bundle...)
@@ -474,7 +480,7 @@ func TestServiceAgentsMCPSessionPinsPackageHash(t *testing.T) {
 	st := newFakeServiceAgentStore()
 	st.autoCompleteAfter = 5 * time.Millisecond
 	hashA := strings.Repeat("a", 64)
-	if _, err := st.PublishServiceAgentPackage(context.Background(), "hello", json.RawMessage(`{"models":["m1"]}`), hashA, json.RawMessage(`{"schema":"x"}`), false); err != nil {
+	if _, err := st.PublishServiceAgentPackage(context.Background(), "hello", "Hello", json.RawMessage(`{"models":["m1"]}`), hashA, json.RawMessage(`{"schema":"x"}`), false); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	handler := NewServiceAgentsMCPHandler(st)

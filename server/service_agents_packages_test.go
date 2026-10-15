@@ -33,19 +33,41 @@ func TestServicePackagePublishAndDownload(t *testing.T) {
 	if status, payload := doInternal(t, "POST", base+"/internal/service-agents/custom/publish", "inst-token-1", string(bundleJSON)); status != http.StatusBadRequest {
 		t.Fatalf("slug mismatch status = %d body=%s, want 400", status, payload)
 	}
-	// 未知 agent（包自洽但平台无此 agent）
+	// 坏包
+	if status, _ := doInternal(t, "POST", base+"/internal/service-agents/hello/publish", "inst-token-1", `{"schema":"x"}`); status != http.StatusBadRequest {
+		t.Fatalf("invalid bundle status = %d, want 400", status)
+	}
+
+	// 发布即上架：平台无此 agent 的包 → 自动注册（manifest 无 name → 展示名回退 slug）
 	ghost := helloBundleFixture()
 	ghost.Slug = "ghost"
 	for i := range ghost.Files {
 		ghost.Files[i].Content = strings.ReplaceAll(ghost.Files[i].Content, `"slug":"hello"`, `"slug":"ghost"`)
 	}
 	ghostJSON, _ := json.Marshal(ghost)
-	if status, _ := doInternal(t, "POST", base+"/internal/service-agents/ghost/publish", "inst-token-1", string(ghostJSON)); status != http.StatusNotFound {
-		t.Fatalf("unknown agent status = %d, want 404", status)
+	status, ghostPublished := doInternal(t, "POST", base+"/internal/service-agents/ghost/publish", "inst-token-1", string(ghostJSON))
+	if status != http.StatusOK {
+		t.Fatalf("auto-register publish status = %d body=%s, want 200", status, ghostPublished)
 	}
-	// 坏包
-	if status, _ := doInternal(t, "POST", base+"/internal/service-agents/hello/publish", "inst-token-1", `{"schema":"x"}`); status != http.StatusBadRequest {
-		t.Fatalf("invalid bundle status = %d, want 400", status)
+	var ghostResult struct {
+		Name    string `json:"name"`
+		Version int64  `json:"version"`
+	}
+	_ = json.Unmarshal(ghostPublished, &ghostResult)
+	if ghostResult.Version != 1 || ghostResult.Name != "ghost" {
+		t.Fatalf("auto-registered = %+v, want version=1 name=ghost", ghostResult)
+	}
+	// 自动注册后 MCP 工具即可见（catsco_ghost）
+	st.mu.Lock()
+	ghostRegistered := false
+	for _, a := range st.agents {
+		if a.Slug == "ghost" {
+			ghostRegistered = true
+		}
+	}
+	st.mu.Unlock()
+	if !ghostRegistered {
+		t.Fatal("auto-registered agent missing from store listing")
 	}
 
 	// 发布成功

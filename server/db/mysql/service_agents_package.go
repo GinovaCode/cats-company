@@ -6,16 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/openchat/openchat/server/store"
 )
 
 // PublishServiceAgentPackage 发布一个 agent 新版本（云端包分发；PG 同语义镜像）。
 // 同 hash 已存在 → 幂等返回既有版本号；force=true 时同 hash 也建新版本（回滚通道）。
+// slug 不存在时用 name 自动注册新 agent（发布即上架）；已存在且非 active → ErrServiceAgentNotFound。
 // definition 由平台从包 manifest 派生。
-func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
+func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug, name string, definition json.RawMessage, packageHash string, bundle json.RawMessage, force bool) (int64, error) {
 	if packageHash == "" {
 		return 0, fmt.Errorf("publish service agent package: empty package hash")
+	}
+	if strings.TrimSpace(name) == "" {
+		name = slug
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -23,17 +28,26 @@ func (a *Adapter) PublishServiceAgentPackage(ctx context.Context, slug string, d
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var agentID int64
+	// 自动注册（发布即上架）：仅当 slug 不存在时插入；已存在不改名。
+	if _, err := tx.ExecContext(ctx, `INSERT IGNORE INTO service_agents (slug, name) VALUES (?, ?)`, slug, name); err != nil {
+		return 0, fmt.Errorf("publish service agent package: %w", err)
+	}
+
+	// 锁 agent 行（并发 publish 不抢同一 version），并校验状态。
+	var (
+		agentID int64
+		state   string
+	)
 	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM service_agents WHERE slug = ? AND state = 'active'`, slug).Scan(&agentID)
+		SELECT id, state FROM service_agents WHERE slug = ? FOR UPDATE`, slug).Scan(&agentID, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, store.ErrServiceAgentNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("publish service agent package: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT id FROM service_agents WHERE id = ? FOR UPDATE`, agentID); err != nil {
-		return 0, fmt.Errorf("publish service agent package: %w", err)
+	if state != "active" {
+		return 0, store.ErrServiceAgentNotFound
 	}
 
 	if !force {
