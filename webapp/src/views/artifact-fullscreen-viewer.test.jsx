@@ -334,7 +334,9 @@ describe('ArtifactFullscreenViewer', () => {
       await flushPromises(20);
     });
     expect(container.querySelector('iframe')?.src).toContain('/_launch/fresh-code');
-    expect(container.querySelector('[role="status"]')?.textContent).toContain('只能浏览');
+    // A gateway-only app opens straight into the frame, with no browse-only
+    // notice above it.
+    expect(container.querySelector('[role="status"]')).toBeNull();
     expect(mocks.connectWS).not.toHaveBeenCalled();
     expect(mocks.createArtifactTask).not.toHaveBeenCalled();
   });

@@ -8,8 +8,9 @@ The webapp therefore binds a gateway iframe to the task host only when the
 active platform registry contains the same `id` with a positive
 `publish_version`. The server then validates that identity and loads the
 manifest from the exact registry version before creating a task. Gateway-only
-applications remain browsable and show an actionable warning instead of
-submitting a request that the server must reject.
+applications remain browsable: the missing registry entry only withholds the
+task host, and it is deliberately not surfaced as a notice — the application
+opens normally, with no banner above it.
 
 The panel's explicitly selected bot also identifies a gateway iframe when the
 legacy `cloud_artifacts_enabled` flag is missing or the conversation has multiple

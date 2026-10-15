@@ -884,7 +884,7 @@ describe('CloudArtifactsPanel', () => {
     openSpy.mockRestore();
   });
 
-  test('shows a visible metadata failure when a gateway app cannot be bound to an Artifact', async () => {
+  test('keeps a gateway-only app annotatable without a visible notice', async () => {
     api.listArtifactApps.mockResolvedValueOnce({
       apps: [{
         id: 'saturday-demo',
@@ -909,10 +909,10 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[role="alert"]')?.textContent)
-      .toContain('任务连接信息读取失败，无法提交任务；浏览与标注不受影响');
-    // A gateway-only app (no registry record) still annotates: the toolbar
-    // renders independent of the task-host binding error.
+    // The task-registry mismatch stays internal: it must not surface a notice,
+    // and it must not disable annotation for a gateway-only app.
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).not.toContain('浏览与标注不受影响');
     expect(container.querySelector('[aria-label="批注应用"]')).not.toBeNull();
   });
 

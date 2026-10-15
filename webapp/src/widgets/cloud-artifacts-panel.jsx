@@ -359,7 +359,6 @@ export default function CloudArtifactsPanel({
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
-    let metadataError = '';
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, ...(target === 'panel' && topicId ? { topic_id: topicId } : {}) });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
@@ -382,12 +381,7 @@ export default function CloudArtifactsPanel({
         const registry = await api.getCloudArtifacts(agentUid, 'active');
         artifact = (Array.isArray(registry?.artifacts) ? registry.artifacts : [])
           .find((item) => String(item?.id || '') === String(app.id || '')) || null;
-        if (!artifact) metadataError = '未接入 CatSco 任务系统（gateway-only 应用），无法提交任务；浏览与标注不受影响';
-        else if (Number(artifact.publish_version || 0) <= 0) {
-          metadataError = '任务版本信息缺失，无法提交任务；浏览与标注不受影响';
-        }
       } catch (error) {
-        metadataError = '任务连接信息读取失败，无法提交任务；浏览与标注不受影响';
         console.warn('[CatsCo] gateway artifact metadata lookup failed', {
           agentUid,
           appId: app.id,
@@ -415,7 +409,6 @@ export default function CloudArtifactsPanel({
       viewerURL,
       visitor,
       artifact,
-      metadataError,
       openBinding,
       bindingSignal: bindingController.signal,
     });
@@ -1136,13 +1129,9 @@ export default function CloudArtifactsPanel({
                   点击元素或拖动画框，随后在选区旁写评论并发送至原会话。Esc 退出。
                 </p>
               )}
-              {(gatewayPreview.visitor || gatewayPreview.metadataError) && (
-                <p
-                  className="cloud-artifacts-gateway-viewer-note"
-                  role={gatewayPreview.metadataError ? 'alert' : 'status'}
-                >
-                  {[gatewayPreview.visitor && '身份未附带，按访客打开', gatewayPreview.metadataError]
-                    .filter(Boolean).join('；')}
+              {gatewayPreview.visitor && (
+                <p className="cloud-artifacts-gateway-viewer-note" role="status">
+                  身份未附带，按访客打开
                 </p>
               )}
               {annotationCapture && (
