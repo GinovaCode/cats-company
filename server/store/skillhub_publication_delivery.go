@@ -86,7 +86,7 @@ func SkillHubPublicationDeliveryOutcome(code string) (state string, valid bool) 
 	}
 }
 
-// Persistence only: no dispatcher or HTTP/RPC caller is wired in this slice.
+// Persistence interface used only by the opt-in node-local source-probe worker.
 // A lease fences DB receipts, NOT external execution. Future consumers must
 // revalidate socket/lease/capability before dispatch and receipt acceptance.
 // No network/file IO is allowed inside these store transactions. A verified
@@ -95,4 +95,30 @@ type SkillHubPublicationDeliveryStore interface {
 	ListSkillHubPublicationDeliveries(context.Context, int64, int) ([]string, error)
 	ClaimSkillHubPublicationDelivery(context.Context, string, SkillHubPublicationDeliveryBinding) (*SkillHubPublicationDeliveryLeaseRecord, error)
 	FinishSkillHubPublicationDelivery(context.Context, SkillHubPublicationDeliveryLeaseRecord, string) error
+}
+
+// Filter before LIMIT so old devices/installations cannot starve current work.
+// This selector comes from authenticated runtime facts, not a public endpoint.
+type SkillHubPublicationRuntimeSelector struct {
+	ActorUID       int64
+	BotUID         int64
+	DeviceID       string
+	BodyID         string
+	InstallationID string
+}
+
+func (s SkillHubPublicationRuntimeSelector) Validate() error {
+	if s.ActorUID <= 0 || s.BotUID <= 0 || s.ActorUID == s.BotUID {
+		return ErrSkillHubPublicationInvalid
+	}
+	for _, ref := range []string{s.DeviceID, s.BodyID, s.InstallationID} {
+		if !publicationReference.MatchString(ref) {
+			return ErrSkillHubPublicationInvalid
+		}
+	}
+	return nil
+}
+
+type SkillHubPublicationRuntimeDeliveryLister interface {
+	ListSkillHubPublicationRuntimeDeliveries(context.Context, SkillHubPublicationRuntimeSelector, int) ([]string, error)
 }

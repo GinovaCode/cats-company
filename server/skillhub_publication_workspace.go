@@ -61,15 +61,23 @@ func (h *Hub) publicationWorkspaceReply(pending thinToolRPCPending, result any, 
 // connection generation. Browser source references are only selectors until
 // the runtime has confirmed them. There is no body/device fallback or rebinding.
 func (h *Hub) publicationWorkspaceBinding(client *Client, botUID int64, deviceID string) (store.SkillHubPublicationSource, runtimeRoute, string, string) {
+	if h == nil || client == nil || client.uid <= 0 || client.accountType != types.AccountHuman ||
+		client.deviceConnector != nil || client.wikiAgentUID != 0 || !h.isClientRegistered(client) {
+		return store.SkillHubPublicationSource{}, runtimeRoute{}, "", "publication.owner_required"
+	}
+	return h.publicationRuntimeBinding(client.uid, botUID, deviceID)
+}
+
+// Background work derives actorUID from an immutable accepted entry, never a
+// synthetic Client or runtime-supplied owner. It does not require an owner socket.
+func (h *Hub) publicationRuntimeBinding(actorUID, botUID int64, deviceID string) (store.SkillHubPublicationSource, runtimeRoute, string, string) {
 	deny := func(code string) (store.SkillHubPublicationSource, runtimeRoute, string, string) {
 		return store.SkillHubPublicationSource{}, runtimeRoute{}, "", code
 	}
-	if h == nil || h.db == nil || h.userDevices == nil || h.bodyLeases == nil || client == nil ||
-		client.uid <= 0 || client.accountType != types.AccountHuman || client.deviceConnector != nil ||
-		client.wikiAgentUID != 0 || !h.isClientRegistered(client) {
+	if h == nil || h.db == nil || h.userDevices == nil || h.bodyLeases == nil || actorUID <= 0 {
 		return deny("publication.owner_required")
 	}
-	actor, err := h.db.GetUser(client.uid)
+	actor, err := h.db.GetUser(actorUID)
 	if err != nil {
 		return deny("publication.authority_unavailable")
 	}
@@ -87,14 +95,14 @@ func (h *Hub) publicationWorkspaceBinding(client *Client, botUID int64, deviceID
 	if err != nil {
 		return deny("publication.authority_unavailable")
 	}
-	if config == nil || config.UserID != botUID || config.OwnerID != client.uid || !config.Enabled {
+	if config == nil || config.UserID != botUID || config.OwnerID != actorUID || !config.Enabled {
 		return deny("publication.owner_required")
 	}
-	device, ok := h.userDevices.activeDevice(client.uid, deviceID)
+	device, ok := h.userDevices.activeDevice(actorUID, deviceID)
 	if !ok {
 		return deny("publication.runtime_unavailable")
 	}
-	if device.OwnerUID != client.uid || device.BotUID != botUID || device.DeviceID != deviceID ||
+	if device.OwnerUID != actorUID || device.BotUID != botUID || device.DeviceID != deviceID ||
 		config.BodyID == "" || isLegacyBotBodyID(config.BodyID) || device.BodyID != config.BodyID ||
 		device.InstallationID == "" || (device.RuntimeRole != "server" && device.RuntimeRole != "desktop") {
 		return deny("publication.runtime_changed")
@@ -108,7 +116,7 @@ func (h *Hub) publicationWorkspaceBinding(client *Client, botUID int64, deviceID
 	if !supported {
 		return deny("publication.runtime_unsupported")
 	}
-	route, target := h.findDeviceRPCTarget(client.uid, device)
+	route, target := h.findDeviceRPCTarget(actorUID, device)
 	if !route.validAt(nowForRoute(h)) {
 		return deny("publication.runtime_unavailable")
 	}
@@ -121,9 +129,9 @@ func (h *Hub) publicationWorkspaceBinding(client *Client, botUID int64, deviceID
 		return deny("publication.runtime_unavailable")
 	}
 	h.mu.RLock()
-	exact := target.uid == botUID && target.accountType == types.AccountBot && target.deviceConnector == nil &&
+	exact := target.uid == botUID && target.accountType == types.AccountBot && target.deviceConnector == nil && target.wikiAgentUID == 0 &&
 		target.bodyID == config.BodyID && target.installationID == device.InstallationID &&
-		target.deviceOwnerUID == client.uid && target.deviceID == deviceID &&
+		target.deviceOwnerUID == actorUID && target.deviceID == deviceID &&
 		target.deviceBodyID == config.BodyID && target.deviceInstallationID == device.InstallationID
 	localGeneration := h.botConnectionEpochs[botUID]
 	h.mu.RUnlock()

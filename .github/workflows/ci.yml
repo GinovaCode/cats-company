@@ -60,7 +60,7 @@ jobs:
         run: go test ./server/...
 
       - name: Test race-sensitive concurrency
-        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace)' -count=1
+        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery)' -count=1
 
       - name: Scan Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
@@ -74,6 +74,13 @@ jobs:
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1 -v
+
+      - name: Test PostgreSQL SkillHub dispatcher recovery
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server -run '^TestSkillHubPublicationDeliveryPostgres' -count=1 -v
 
       - name: Test MySQL Artifact Runtime and application metadata
         env:
