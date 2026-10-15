@@ -101,9 +101,10 @@ func (p SkillHubPublicationEntryPolicy) Validate() error {
 	return nil
 }
 
-// SkillHubPublicationEntryStore is optional. No production route or dispatcher
-// uses it yet. Unsupported adapters must fail closed, never use an in-memory
-// substitute. Creation atomically saves identity, replay evidence and an inert
+// SkillHubPublicationEntryStore is optional. The default-off status API can read
+// it; no production creator or dispatcher uses it yet. Unsupported adapters must
+// fail closed, never use an in-memory substitute. Creation atomically saves
+// identity, replay evidence and an inert
 // capture event, with current human/owner/body checks in the same transaction.
 // Implementers must also bound database waits; caller deadlines still apply.
 type SkillHubPublicationEntryStore interface {

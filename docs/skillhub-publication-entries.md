@@ -2,8 +2,9 @@
 
 This is the first implementation slice of the
 [approved three-repository contract](https://github.com/buildsense-ai/catsco-skillhub-cloud/blob/c369cc9d5e956a4c42095ebcbb93b4ac7506e5f0/docs/api/publication-entrypoint-delegation.md).
-It adds a PostgreSQL store for durable **workspace publication intents**, not
-publication, delegated credentials or a new user-facing entrypoint.
+It adds a PostgreSQL store for durable **workspace publication intents** and a
+default-off private status API, not publication, delegated credentials or a new
+user-facing publishing entrypoint.
 
 ## Implemented behavior
 
@@ -30,9 +31,9 @@ Same-name Skills and Bots never participate in identity lookup.
 Reads are limited to the original active human publisher. A new Bot owner or
 friend cannot read the previous publisher's entry; the original publisher can
 read historical intent after transfer, but cannot replay it as a new authorized
-operation. The API-layer authentication and safe response projection are still
-to be implemented. The store's internal records must not be serialized wholesale
-into chat, browser responses or logs.
+operation. The read API below authenticates the human and explicitly projects
+safe fields. The store's internal records must not be serialized wholesale into
+chat, browser responses or logs.
 
 ## Storage and limits
 
@@ -69,12 +70,49 @@ to `users`, so these inert records do not block existing account deletion. Creat
 checks the real rows transactionally; subsequent operations must recheck authority.
 Outbox rows reference the entry with a restrictive foreign key.
 
+## Private status API
+
+`CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED` defaults off; only `1` or `true`
+(case-insensitive, trimmed) enables reads. There is no creation flag or endpoint.
+The handler authenticates an active CatsCo human JWT from one `Authorization:
+Bearer ...` header itself, including a fresh account-state check. It accepts no
+query credentials, API keys, cookie-only sessions, caller UID, query parameters,
+request body or arbitrary source path. A display name is never an identity key.
+
+| Route | Behavior |
+| --- | --- |
+| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `workspaceCreateEnabled: false`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database health check. |
+| `GET /api/skillhub/publications/entries/{entryRequestId}` | When enabled on a supported store, reads the original publisher's record. Missing, wrong-publisher and disabled reads return the same 404. Bot ownership transfer does not grant historical record access to the new owner. |
+
+The entry response contains only `schemaVersion` and `entry` with
+`entryRequestId`, decimal-string `botUid`, `entrypoint`, `state` and UTC
+`createdAt`. It omits request keys, publisher identity, device/body/installation,
+workspace/source references, identity hash, candidates and credentials. The only
+currently supported state is `waiting_runtime`; it means durable intent, not
+capture, validation or publication success. Unknown states fail closed with 503
+until their safe projection is implemented. No Cloud report is fetched here.
+
+Every handler response, including authentication failures, is `private, no-store`
+JSON. Invalid credentials return 401; disabled/non-human accounts 403; malformed
+read transport 400; non-GET methods on known routes 405; throttling 429; unsupported
+storage, unavailable authority/storage or an unknown record format 503. Unknown
+routes/IDs return 404. Errors use stable `publication.*` codes, a generic message
+and (for 503) a server-generated correlation ID logged without raw errors, tokens
+or source data. They are not validation rejects and must not trigger model repair.
+
+Polling is bounded per API process: 60 requests/minute per authenticated account
+with burst 10 (including capabilities), and 12 entry reads/minute per account/entry
+with burst 3. At most 16 entry-store reads run concurrently, each with a five-second
+context deadline; client cancellation propagates to the store. 429 and concurrency
+503 responses supply `Retry-After: 5`. These are local load guards, not a durable
+cross-replica quota. They do not replace deployment-wide request/authentication
+limits. Clients should wait at least five seconds and back off on failures.
+
 ## Deliberately not enabled
 
-There are no HTTP/WebSocket routes, environment flags, production callers or
-dispatchers for this store. Existing workspace buttons, chat publishing, Bot
-binding, model switching and private backup paths are unchanged. The new tables
-do not activate any of them.
+There are no HTTP/WebSocket creators, runtime dispatchers or outbox consumers.
+Existing workspace buttons, chat publishing, Bot binding, model switching and
+private backup paths are unchanged. Enabling status reads does not activate them.
 
 Chat inputs are rejected until a trusted live-turn grant and owner-private topic
 authorization are implemented. The current schema supports only the initial
@@ -90,6 +128,10 @@ Chinese guides and frontend redesign are not part of this change.
 ## Verification
 
 Pure store tests cover bounded inputs, policies and immutable identity fields.
+HTTP tests use real signed JWTs and adapter doubles to cover active-human-only
+access, repeat account checks, privacy/projection, strict routes and transports,
+default-off capabilities, unsupported adapters, poll limits, deadlines and
+concurrent-read bounds. The CI race-sensitive group includes these HTTP tests.
 PostgreSQL integration tests cover persistence across Adapter instances, schema
 reinitialization, private reads, current authority on replay, outbox rollback,
 concurrent duplicate requests, quota races, owner-transfer races, rate limits
@@ -98,13 +140,15 @@ isolated PostgreSQL service with the Go race detector:
 
 ```sh
 go test ./server/store -run SkillHubPublication -count=1
+go test -race ./server -run '^TestSkillHubPublicationRead' -count=1
 # CATS_PG_TEST_DSN must point to a disposable test database.
 go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1 -v
 ```
 
 Without `CATS_PG_TEST_DSN`, database tests skip; this is not evidence of database
-correctness. This change needs no user manual testing because no entrypoint is
-exposed yet. Do not enable Cloud publication switches based on this PR alone.
+correctness. This change needs no user manual testing because no publishing
+entrypoint is exposed yet. Do not enable Cloud publication switches based on this
+PR alone.
 
 Migration verification uses a frozen **relevant-table** baseline from pre-PR620
 main `bf2e938d`: `users` and `bot_config`, plus synthetic owner/Bot rows. This is
