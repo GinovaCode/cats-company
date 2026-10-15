@@ -4178,7 +4178,7 @@ describe('ChatMessage rich file rendering', () => {
       });
 
       const actions = [...container.querySelectorAll('button.v3-artifact-action')];
-      expect(actions.map((button) => button.textContent)).toEqual(['预览', '新页面']);
+      expect(actions.map((button) => button.textContent)).toEqual(['预览', '新页面', '分享']);
 
       const newPage = container.querySelector('button[title="在新页面打开"]');
       expect(newPage).not.toBeNull();

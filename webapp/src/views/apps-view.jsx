@@ -3,15 +3,18 @@ import {
   AppWindow,
   ArrowLeft,
   Bot,
+  Check,
   ExternalLink,
   MoreHorizontal,
   Pencil,
   RefreshCw,
   Search,
+  Share2,
   Star,
   X,
 } from 'lucide-react';
 import { api } from '../api';
+import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import CustomSelect from '../widgets/custom-select';
 import AppMetadataEditor from '../widgets/app-metadata-editor';
 import '../css/apps-view.css';
@@ -145,7 +148,7 @@ function AppCardSkeletons() {
   );
 }
 
-function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onEdit, favorite, onToggleFavorite }) {
+function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onShare, shared, onEdit, favorite, onToggleFavorite }) {
   const id = String(app?.id || app?.url || appTitle(app));
   const title = appTitle(app);
   const iconURL = appIconURL(app) || String(agent?.avatar_url || '').trim();
@@ -174,6 +177,15 @@ function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onEdit, favorite
         </button>
         <button type="button" className="cc-app-card-external" onClick={() => onOpenWindow(app)} disabled={Boolean(openingID)} aria-label={`在新页面打开 ${title}`} title="新页面打开">
           <ExternalLink size={16} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="cc-app-card-external"
+          onClick={() => onShare(app)}
+          aria-label={shared ? `已复制 ${title} 的分享链接` : `复制 ${title} 的分享链接`}
+          title={shared ? '已复制（对方无需账号即可打开）' : '复制分享链接（对方无需账号即可打开）'}
+        >
+          {shared ? <Check size={16} aria-hidden="true" /> : <Share2 size={16} aria-hidden="true" />}
         </button>
       </div>
       {app.can_manage === true && (
@@ -223,7 +235,32 @@ export default function AppsView({ user = null, topicId = '' }) {
     try { localStorage.setItem(`catsco.apps.favorites.${user?.uid || 'guest'}`, JSON.stringify(keys)); } catch { /* Keep favorites available for this session. */ }
   };
   const [editingApp, setEditingApp] = useState(null);
+  const [sharedAppKey, setSharedAppKey] = useState('');
   const appsRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!sharedAppKey) return undefined;
+    const timer = window.setTimeout(() => setSharedAppKey(''), 1500);
+    return () => window.clearTimeout(timer);
+  }, [sharedAppKey]);
+
+  // Share the gateway's own public address, not the viewer URL. The viewer URL
+  // carries this conversation and the application's owner, so a recipient is
+  // either refused or would join a session that is not theirs. The gateway
+  // address needs no identity, so a recipient without an account still opens it.
+  const shareApp = async (app) => {
+    const shareURL = gatewayApplicationShareURL(app);
+    if (!shareURL) {
+      setError('这个应用暂时没有可分享的地址。');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(shareURL);
+      setSharedAppKey(appKey(app));
+    } catch {
+      setError(`复制失败，请手动复制：${shareURL}`);
+    }
+  };
 
   useEffect(() => {
     if (!loading || hasLoaded) {
@@ -411,7 +448,7 @@ export default function AppsView({ user = null, topicId = '' }) {
       {!loading && !listError && visibleApps.length === 0 && <div className="cc-apps-state is-empty"><AppWindow size={24} aria-hidden="true" /><strong>{emptyTitle}</strong><span>{emptyCopy}</span></div>}
       {visibleApps.length > 0 && (
         <div className="cc-apps-grid cc-apps-results">
-          {visibleApps.map((app) => <AppCard key={appKey(app)} app={app} agent={app.sourceAgent} openingID={openingID} onOpen={openApp} onOpenWindow={(nextApp) => openApp(nextApp, 'window')} onEdit={setEditingApp} favorite={favoriteKeys.includes(appKey(app))} onToggleFavorite={toggleFavorite} />)}
+          {visibleApps.map((app) => <AppCard key={appKey(app)} app={app} agent={app.sourceAgent} openingID={openingID} onOpen={openApp} onOpenWindow={(nextApp) => openApp(nextApp, 'window')} onShare={shareApp} shared={sharedAppKey === appKey(app)} onEdit={setEditingApp} favorite={favoriteKeys.includes(appKey(app))} onToggleFavorite={toggleFavorite} />)}
         </div>
       )}
       {editingApp && <AppMetadataEditor key={`${user?.uid}:${editingApp.id}`} app={editingApp} onClose={() => setEditingApp(null)} onSaved={(updated) => {
