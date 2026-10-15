@@ -368,8 +368,9 @@ func (w *publicationDeliveryWorker) acceptResult(client *Client, msg *MsgThinToo
 	code := ""
 	if msg.Error != nil {
 		code = "publication.runtime_unavailable"
-		if _, ok := store.SkillHubPublicationDeliveryOutcome(msg.Error.Code); ok && msg.Error.Code != "" {
-			code = msg.Error.Code
+		runtimeCode := normalizePublicationProbeRequestError(msg.Error.Code)
+		if _, ok := store.SkillHubPublicationDeliveryOutcome(runtimeCode); ok && runtimeCode != "" {
+			code = runtimeCode
 		}
 	} else {
 		result, ok := msg.Result.(map[string]interface{})

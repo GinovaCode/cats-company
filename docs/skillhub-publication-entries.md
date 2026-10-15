@@ -204,9 +204,21 @@ references matching the pending selectors. This is a source-existence/generation
 receipt, **not** a candidate digest, publication approval or bearer credential.
 Unknown fields or mismatches are rejected; controlled local errors use
 `publication.source_missing`, `publication.source_changed`,
-`publication.source_unsafe` or `publication.runtime_unsupported`. Other runtime
-errors become `publication.source_unavailable`; raw messages/files are never sent
-to the browser or persisted. These errors do not trigger model repair.
+`publication.source_unsafe`, `publication.runtime_unsupported` or
+`publication.runtime_timeout`. Runtime `INVALID_REQUEST`, `OWNER_MISMATCH` and
+`DEVICE_MISMATCH` map to `publication.runtime_unsupported`; `REQUEST_EXPIRED`
+maps to `publication.runtime_timeout`. Other runtime errors, including
+`BOT_NOT_ACTIVE`, become `publication.source_unavailable` on this workspace
+admission path; raw messages/files are never sent to the browser or persisted.
+These errors do not trigger model repair.
+
+Background delivery uses the same request-error normalization, with
+`publication.runtime_unavailable` as its fallback. `BOT_NOT_ACTIVE` also covers
+transient workspace switching in XiaoBa, so it remains retryable (`pending`),
+not `needs_user_action`. Retries retain the existing backoff, attempt limit and
+fresh authority/binding checks; this does not authorize switching Bots or
+retrying indefinitely. Invalid request/owner/device errors are terminal, while
+expiry remains retryable as `publication.runtime_timeout`.
 
 After checking authority/binding again and claiming the probe once, CatsCo creates
 the immutable entry plus inert capture outbox using the existing transactional
