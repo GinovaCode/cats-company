@@ -196,6 +196,63 @@ again before future capture/upload; the probe is not a lock on future file conte
 
 ## Deliberately not enabled
 
+### Durable delivery persistence
+
+`store.SkillHubPublicationDeliveryStore` adds an **internal, unwired** source-probe
+delivery ledger to the existing outbox. It is the persistence prerequisite for
+cross-node recovery of an **already accepted** entry, not cross-node/offline
+admission. The PR627 browser protocol above remains same-node and online-only.
+No worker calls this store yet, and no production flag is added or enabled.
+
+An internal scheduler can list at most 32 due entry IDs for one Bot. Claiming an
+ID checks the original actor, current active human/Bot, enabled ownership/body
+binding, immutable device/installation/workspace/local reference, and the current
+durable Bot connection generation. Account/config/generation rows stay locked
+through the short DB mutation. A reconnect can advance generation, but cannot
+substitute any source selector. Neither the caller's observation nor a saved
+record independently authenticates a socket: the future node-local adapter must
+verify its exact Bot socket, body lease and explicit capability immediately before
+dispatch and before accepting a receipt. These methods must never be exposed as
+raw browser/runtime endpoints or called with model-supplied identity.
+
+Each claim persists a random fencing token, node, connection, generation, attempt
+count and a 30-second lease using database time. An active lease cannot be stolen;
+after expiry another authorized node may claim with a new token. Stale, expired,
+wrong-socket or wrong-generation receipts cannot settle a newer attempt. The
+fence protects database receipts only; it is not an upload grant, file-access
+permission or a guarantee of exactly-once external execution.
+
+Only controlled timeout/unavailable results retry, with durable backoff of
+5/10/20/40/80/160/300 seconds. At most eight claims are allowed per entry. Exhaustion
+settles to internal `needs_user_action`, including recovery of a crashed eighth
+attempt. No retry counter reset or automatic new entry is provided. Missing,
+changed or unsafe source and unsupported runtime also require user action;
+unknown/raw errors are rejected, not persisted or sent to a repair model.
+
+A successful result records internal `source_verified` and its timestamp; an
+identical receipt can replay after a lost acknowledgement without extending the
+lease or changing the result. This is only a read-only source receipt. It does
+not capture bytes, consume/delete the original event, issue a grant, upload,
+install or publish. The immutable entry and public status remain `waiting_runtime`.
+Future capture dispatch needs its own explicit transition and fresh authority
+checks; it cannot treat this timestamp as current permission. No account-facing
+delivery-state projection or resume action is wired in this slice.
+
+Migration `000030_skillhub_publication_delivery` mirrors the startup DDL. It adds
+columns/defaults/constraints/indexes without rewriting old identities or Bot
+configuration. Rollback may remove the new columns only when no delivery attempt
+exists, preserving old entries/outbox; once an attempt exists, rollback refuses
+to erase fencing or receipt evidence. Stop consumers and back up before rollback.
+Migration tests use frozen migration 000028 plus the existing relevant-table
+user/Bot fixture and an actual pre-column intent/outbox, not a production dump.
+Empty SQL, historical SQL-first/startup-first, repeated startup/migration, safe
+rollback/reapply and refusal after a delivery attempt are covered.
+
+Integration still requires: durable **pre-probe** admission, authenticated
+node-local dispatch/receipt handling without an owner socket dependency, offline
+resume, owner-visible delivery failures, and the later capture/upload adapter.
+No claim that those paths work follows from database lease tests alone.
+
 There are no snapshot/upload dispatchers or outbox consumers. Existing workspace
 buttons, chat publishing, Bot binding, model switching and private backup paths
 are unchanged. Enabling status reads alone does not activate entry admission.
