@@ -124,7 +124,6 @@ function GatewayApplicationViewer({ params }) {
   }, [params.topicId, params.agentUid, params.artifactId]);
   if (loaded?.browseURL) return (
     <main className="artifact-fullscreen-viewer artifact-fullscreen-browse-only" aria-label="CatsCo 应用查看器">
-      <p role="status">此应用尚未接入 CatsCo 任务，当前只能浏览。</p>
       <iframe className="artifact-fullscreen-viewer-frame" title={loaded.title} src={loaded.browseURL}
         sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals" referrerPolicy="no-referrer" />
     </main>
