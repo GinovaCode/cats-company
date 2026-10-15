@@ -1116,9 +1116,11 @@ export default function MessagesView({
     const label = agentName || `bot ${ownerAgentUid}`;
     feedback.notify({
       tone: 'success',
+      // In place the text went to the conversation on screen, which is a group
+      // as often as not, so naming the bot there would be wrong.
       message: switched
         ? `已切换到与 ${label} 的会话并注入`
-        : `已注入到与 ${label} 的会话`,
+        : '已注入到当前会话',
     });
     return { ok: true };
   };
