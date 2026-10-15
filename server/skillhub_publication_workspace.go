@@ -293,9 +293,10 @@ func (h *Hub) handlePublicationWorkspaceResult(client *Client, msg *MsgThinToolR
 	}
 	if msg.Error != nil {
 		code := "publication.source_unavailable"
-		switch msg.Error.Code {
-		case "publication.source_missing", "publication.source_changed", "publication.source_unsafe", "publication.runtime_unsupported":
-			code = msg.Error.Code
+		runtimeCode := normalizePublicationProbeRequestError(msg.Error.Code)
+		switch runtimeCode {
+		case "publication.source_missing", "publication.source_changed", "publication.source_unsafe", "publication.runtime_unsupported", "publication.runtime_timeout":
+			code = runtimeCode
 		}
 		h.publicationWorkspaceReply(pending, nil, code)
 		return
