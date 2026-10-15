@@ -979,3 +979,232 @@ func TestMergeActivationTurnsFoldsConsecutiveBotOutput(t *testing.T) {
 		t.Fatalf("human turn was displaced: %#v", turns[0])
 	}
 }
+
+// groupRosterAndBotCountTests pins the additive delivery fields a client needs
+// to tell a multi-Agent room from a room that merely has several people.
+//
+// member_count alone cannot: one Agent plus three people and two Agents plus
+// one person are both "more than two members", yet only the second needs
+// coordination. bot_count answers that, and roster answers "who is present and
+// which of them are Agents" — neither is derivable from a message.
+
+func TestGroupDeliveryCarriesBotCountAndRoster(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman, DisplayName: "林"},
+			42: {ID: 42, AccountType: types.AccountBot, DisplayName: "阿码"},
+			43: {ID: 43, AccountType: types.AccountBot, DisplayName: "小文"},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7, DisplayName: "林"},
+			{GroupID: 80, UserID: 42, IsBot: true, DisplayName: "阿码"},
+			{GroupID: 80, UserID: 43, IsBot: true, DisplayName: "小文"},
+		},
+	}
+	hub := NewHub(store, nil)
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(bot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"大家看下"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 27, nil)
+
+	// The delivery fields are asserted independently of the activation verdict:
+	// a two-Agent room with no mention reaches nobody on the deterministic path,
+	// yet every member still receives the message and its roster.
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &delivered)
+	if delivered.Data == nil {
+		t.Fatal("delivered message has no data")
+	}
+	if delivered.Data.MemberCount != 3 {
+		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
+	}
+	if delivered.Data.BotCount != 2 {
+		t.Fatalf("bot_count = %d, want 2", delivered.Data.BotCount)
+	}
+	if len(delivered.Data.Roster) != 3 {
+		t.Fatalf("roster length = %d, want 3: %#v", len(delivered.Data.Roster), delivered.Data.Roster)
+	}
+	byUID := make(map[string]GroupRosterMember, len(delivered.Data.Roster))
+	for _, member := range delivered.Data.Roster {
+		byUID[member.UID] = member
+	}
+	if got := byUID["usr7"]; got.IsBot {
+		t.Fatalf("human member marked as bot: %#v", got)
+	} else if got.Name != "林" {
+		t.Fatalf("human roster name = %q, want 林", got.Name)
+	}
+	if got := byUID["usr42"]; !got.IsBot || got.Name != "阿码" {
+		t.Fatalf("bot roster entry = %#v, want 阿码 marked as bot", got)
+	}
+}
+
+// A room with one Agent and three people has member_count 4 but needs no
+// coordination. This is the case member_count gets wrong, so it is pinned
+// explicitly.
+func TestSingleBotRoomReportsBotCountOneDespiteLargerMemberCount(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			8:  {ID: 8, AccountType: types.AccountHuman},
+			9:  {ID: 9, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 9},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(store, nil)
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(bot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"看下这个"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 27, nil)
+
+	delivered := assertBotActivation(t, bot.send, true)
+	if delivered.Data.MemberCount != 4 {
+		t.Fatalf("member_count = %d, want 4", delivered.Data.MemberCount)
+	}
+	if delivered.Data.BotCount != 1 {
+		t.Fatalf("bot_count = %d, want 1 (a lone bot room needs no coordination)", delivered.Data.BotCount)
+	}
+}
+
+// A silenced member cannot be addressed. The roster keeps it, flagged, so a
+// peer planning a handover can see that naming it will reach nobody rather than
+// mistaking it for an absent member.
+func TestGroupRosterFlagsMutedMemberInsteadOfOmittingIt(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman, DisplayName: "林"},
+			42: {ID: 42, AccountType: types.AccountBot, DisplayName: "阿码"},
+			43: {ID: 43, AccountType: types.AccountBot, DisplayName: "小文"},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7, DisplayName: "林"},
+			{GroupID: 80, UserID: 42, IsBot: true, DisplayName: "阿码"},
+			{GroupID: 80, UserID: 43, IsBot: true, DisplayName: "小文", Muted: true},
+		},
+	}
+	hub := NewHub(store, nil)
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(bot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"大家看下"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 27, nil)
+
+	// Roster content is independent of the activation verdict, so decode
+	// directly: the muted member must still be listed even though it cannot be
+	// activated.
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &delivered)
+	if delivered.Data == nil {
+		t.Fatal("delivered message has no data")
+	}
+	if len(delivered.Data.Roster) != 3 {
+		t.Fatalf("roster length = %d, want 3 (muted member must stay visible): %#v", len(delivered.Data.Roster), delivered.Data.Roster)
+	}
+	for _, member := range delivered.Data.Roster {
+		if member.UID != "usr43" {
+			continue
+		}
+		if !member.Muted {
+			t.Fatalf("muted member not flagged: %#v", member)
+		}
+		return
+	}
+	t.Fatalf("muted member missing from roster: %#v", delivered.Data.Roster)
+}
+
+// The new fields are additive: a group message must still carry member_count
+// unchanged, because clients that predate bot_count decide from it.
+func TestGroupDeliveryKeepsMemberCountUnchangedAlongsideNewFields(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(store, nil)
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(bot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"继续"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 27, nil)
+
+	delivered := assertBotActivation(t, bot.send, true)
+	if delivered.Data.MemberCount != 2 {
+		t.Fatalf("member_count = %d, want 2", delivered.Data.MemberCount)
+	}
+	if delivered.Data.BotCount != 1 {
+		t.Fatalf("bot_count = %d, want 1", delivered.Data.BotCount)
+	}
+}
+
+// A direct message is not a room. Neither the roster nor the bot count belongs
+// on it, and sending them would leak the group's membership into a one-to-one
+// conversation.
+func TestDirectMessageCarriesNoRosterOrBotCount(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+		},
+		friendPairs: map[string]bool{agentPairKey(7, 42): true},
+	}
+	hub := NewHub(store, nil)
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(bot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_7_42",
+		Content: json.RawMessage(`"你好"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(7, "p2p_7_42", 0, payload, 27, nil)
+
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &delivered)
+	if delivered.Data == nil {
+		t.Fatal("delivered message has no data")
+	}
+	if delivered.Data.BotCount != 0 {
+		t.Fatalf("direct message bot_count = %d, want 0", delivered.Data.BotCount)
+	}
+	if len(delivered.Data.Roster) != 0 {
+		t.Fatalf("direct message roster = %#v, want empty", delivered.Data.Roster)
+	}
+}

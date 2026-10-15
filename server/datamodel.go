@@ -272,11 +272,43 @@ type MsgServerData struct {
 	ReplyTo       int                    `json:"reply_to,omitempty"`
 	Mentions      []string               `json:"mentions,omitempty"` // Structured @mention targets (for example ["usr123"] or ["all"]).
 	MemberCount   int                    `json:"member_count,omitempty"`
+	// BotCount is how many members of the group are agents. A client needs it
+	// to tell a multi-agent room from a room that merely has several people:
+	// member_count cannot, and a room with one agent plus three people needs no
+	// coordination while a room with two agents does.
+	//
+	// Additive and optional, so a client that predates it keeps deciding from
+	// member_count exactly as before.
+	BotCount int `json:"bot_count,omitempty"`
+	// Roster lists the group's members so a receiving Agent can tell who is
+	// present and which of them are Agents. A message alone cannot answer that:
+	// a name in the text says nothing about whether the speaker is a person or
+	// an Agent, and member_count carries no names at all.
+	//
+	// Sent on group messages only, and optional, so clients that ignore it are
+	// unaffected.
+	Roster []GroupRosterMember `json:"roster,omitempty"`
 	// Activated tells a bot whether this group message addresses it. Every
 	// member receives the message so bots can read each other's work, so the
 	// receiving bot needs the judgement spelled out instead of inferring it.
 	// Absent on non-group messages and on messages to human members.
 	Activated *bool `json:"activated,omitempty"`
+}
+
+// GroupRosterMember is one entry of the group roster sent with a group
+// message. It carries the name the group shows and whether that member is an
+// Agent, which is what lets a receiving Agent tell a person from a peer without
+// guessing from a display name.
+type GroupRosterMember struct {
+	UID  string `json:"uid"`
+	Name string `json:"name,omitempty"`
+	// IsBot marks an Agent. Sent explicitly rather than inferred, so a person
+	// and an Agent with similar names stay distinguishable.
+	IsBot bool `json:"is_bot,omitempty"`
+	// Muted marks a silenced member. It is included because a silenced member
+	// cannot be addressed, so a peer that plans to hand work over needs to know
+	// that naming it will reach nobody.
+	Muted bool `json:"muted,omitempty"`
 }
 
 type MsgServerPres struct {
