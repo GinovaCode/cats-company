@@ -211,7 +211,9 @@ type MsgSkillMutationGrant struct {
 
 // MsgThinToolRPC carries a direct tool request/result between two connected
 // runtimes. Cats Company only routes this message; tool permissions, argument
-// validity, and execution errors are returned by the target runtime as-is.
+// validity, and execution errors are returned by the target runtime as-is,
+// except the reserved skillhub.publication.* protocol: CatsCo validates and
+// projects those requests/results itself, never forwarding raw private reports.
 type MsgThinToolRPC struct {
 	ID                string                 `json:"id,omitempty"`
 	Type              string                 `json:"type"` // "request" or "result"

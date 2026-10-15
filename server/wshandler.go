@@ -90,6 +90,9 @@ type Hub struct {
 	// sustained outage explains itself once instead of once per message.
 	activationNoticeMu sync.Mutex
 	activationNoticeAt map[int64]time.Time
+
+	publicationWorkspaceEntries bool
+	publicationEntryLimits      *HTTPRateLimiter
 }
 
 // SetGroupActivationResolver installs the group activation judge used by the
@@ -189,6 +192,8 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		taskReaperInterval:  30 * time.Second,
 		botConnectionEpochs: make(map[int64]uint64),
 	}
+	hub.publicationWorkspaceEntries = publicationWorkspaceEntriesEnabled()
+	hub.publicationEntryLimits = NewHTTPRateLimiter()
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
 	}

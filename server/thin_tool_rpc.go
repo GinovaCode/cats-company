@@ -56,6 +56,7 @@ type thinToolRPCPending struct {
 	toolName       string
 	createdAt      time.Time
 	expiresAt      time.Time
+	publication    *publicationWorkspaceProbe
 }
 
 type thinToolRPCRouter struct {
@@ -199,6 +200,10 @@ func (h *Hub) handleThinToolRPC(client *Client, msg *MsgThinToolRPC) {
 }
 
 func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
+	if strings.HasPrefix(strings.TrimSpace(msg.ToolName), "skillhub.publication.") {
+		h.handlePublicationWorkspaceRequest(client, msg)
+		return
+	}
 	if h == nil || h.thinToolRPC == nil {
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusServiceUnavailable, "thin tool rpc unavailable", nil)
 		return
@@ -337,6 +342,10 @@ func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
 	requestID := strings.TrimSpace(msg.RequestID)
 	if requestID == "" {
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusBadRequest, "request_id required", nil)
+		return
+	}
+	if pending, ok := h.thinToolRPC.get(requestID); ok && pending.publication != nil {
+		h.handlePublicationWorkspaceResult(client, msg, pending)
 		return
 	}
 	log.Printf("[thin_tool_rpc] result received: request_id=%s msg_id=%s source_uid=%s source_conn=%s device_id=%s target_owner=%s target_device=%s tool=%s has_error=%t has_result=%t", requestID, msg.ID, formatUID(clientUID(client)), clientConnectionID(client), msg.DeviceID, msg.TargetOwnerUserID, msg.TargetDeviceID, msg.ToolName, msg.Error != nil, msg.Result != nil)
@@ -597,6 +606,10 @@ func (h *Hub) expireThinToolRPCRequests(now time.Time) int {
 }
 
 func (h *Hub) notifyThinToolRPCTimeout(pending thinToolRPCPending) {
+	if pending.publication != nil {
+		h.publicationWorkspaceReply(pending, nil, "publication.runtime_timeout")
+		return
+	}
 	if h == nil || pending.requestID == "" {
 		return
 	}
@@ -644,6 +657,10 @@ func (h *Hub) cancelThinToolRPCRequestsByTargetRoute(route runtimeRoute) int {
 }
 
 func (h *Hub) notifyThinToolRPCTargetReplaced(pending thinToolRPCPending) {
+	if pending.publication != nil {
+		h.publicationWorkspaceReply(pending, nil, "publication.runtime_changed")
+		return
+	}
 	if h == nil || pending.requestID == "" {
 		return
 	}
