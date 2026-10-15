@@ -2,9 +2,9 @@
 
 This is the first implementation slice of the
 [approved three-repository contract](https://github.com/buildsense-ai/catsco-skillhub-cloud/blob/c369cc9d5e956a4c42095ebcbb93b4ac7506e5f0/docs/api/publication-entrypoint-delegation.md).
-It adds a PostgreSQL store for durable **workspace publication intents** and a
-default-off private status API, not publication, delegated credentials or a new
-user-facing publishing entrypoint.
+It adds a PostgreSQL store for durable **workspace publication intents**, a
+default-off private status API and a default-off, source-verified workspace
+entry protocol. It does not upload or publish files or issue delegated credentials.
 
 ## Implemented behavior
 
@@ -17,10 +17,11 @@ The database checks an active human account, an active enabled Bot owned by that
 human, and the Bot's durable body binding. These rows stay read-locked through
 insertion, serializing account disablement, owner transfer and body changes
 against admission. This is necessary but **not sufficient** runtime authorization:
-the future trusted caller must authenticate the human and verify device,
-installation, route generation, workspace generation and local Skill reference
-against current server/runtime facts. Caller-provided UIDs or copied record fields
-are not authority. This store must not be exposed by blindly decoding an HTTP body.
+the workspace protocol authenticates the human and verifies device,
+installation and route generation against server facts, and asks the exact
+runtime to confirm the workspace generation/local Skill reference. Future
+capture/upload consumers must recheck those facts. Caller-provided UIDs or copied
+record fields are not authority. Do not blindly decode HTTP bodies into this store.
 
 Exact `(actor UID, request ID, immutable input)` replay returns the same entry
 without another event or quota charge. A conflicting input is rejected. The
@@ -73,7 +74,8 @@ Outbox rows reference the entry with a restrictive foreign key.
 ## Private status API
 
 `CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED` defaults off; only `1` or `true`
-(case-insensitive, trimmed) enables reads. There is no creation flag or endpoint.
+(case-insensitive, trimmed) enables reads. Workspace creation requires the separate
+flag and protocol below; there is no HTTP creation route.
 The handler authenticates an active CatsCo human JWT from one `Authorization:
 Bearer ...` header itself, including a fresh account-state check. It accepts no
 query credentials, API keys, cookie-only sessions, caller UID, query parameters,
@@ -81,8 +83,9 @@ request body or arbitrary source path. A display name is never an identity key.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `workspaceCreateEnabled: false`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database health check. |
+| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, effective `workspaceCreateEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database or target-runtime health check. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}` | When enabled on a supported store, reads the original publisher's record. Missing, wrong-publisher and disabled reads return the same 404. Bot ownership transfer does not grant historical record access to the new owner. |
+| `GET /api/skillhub/publications/requests/{requestId}` | Same private projection, using the original account-scoped request ID to recover a lost creation response. This does not reauthorize, create, replay or mutate an entry. |
 
 The entry response contains only `schemaVersion` and `entry` with
 `entryRequestId`, decimal-string `botUid`, `entrypoint`, `state` and UTC
@@ -108,20 +111,104 @@ context deadline; client cancellation propagates to the store. 429 and concurren
 cross-replica quota. They do not replace deployment-wide request/authentication
 limits. Clients should wait at least five seconds and back off on failures.
 
+## Workspace source verification and entry admission
+
+This protocol is an integration foundation, not a ready publishing button. Both
+`CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED` and
+`CATSCO_SKILLHUB_PUBLICATION_WORKSPACE_ENTRIES_ENABLED` must be `1`/`true`.
+Both default off. The adapter must implement durable entries, private request-ID
+recovery and durable Bot connection generations; no in-memory generation fallback.
+No production environment is changed by this implementation.
+
+An authenticated, active human on an ordinary owner WebSocket sends a
+`thin_tool_rpc` request with tool `skillhub.publication.createEntry.v1`, an
+account-scoped `request_id` matching `[A-Za-z0-9_-]{8,128}`, the canonical
+`target_owner_user_id` (`usr` plus the actor UID), and `target_device_id`.
+The payload has exactly three string fields:
+
+```json
+{"bot_uid":"42","local_skill_id":"local-skill-1","workspace_generation":"workspace-v1"}
+```
+
+Bot UID is a canonical positive decimal string. Local references are bounded to
+128 characters and validated by the entry contract; paths, URLs, source bytes,
+extra identity fields and caller-provided generations of connections are rejected.
+Chat, Wiki (including an owner Wiki login), service, Bot and Connector initiators
+are not allowed. Friendship and Skill visibility do not authorize publication.
+
+CatsCo checks active actor and Bot, current enabled Bot ownership, the exact
+durable body binding, active registered device, installation, runtime role,
+current Bot-authenticated socket, unexpired body lease and positive durable
+`BotConnectionGeneration`. The durable generation must match this node's accepted
+connection generation. Neither a legacy body nor DeviceID-as-BodyID fallback is
+allowed. A desktop works only when already bound to that Bot through its Bot
+socket, not a generic owner device. No selection invokes Bot switch or rebinding.
+
+The runtime must explicitly advertise `skillhub.publication.sourceProbe.v1`.
+Legacy share capability is not enough. CatsCo sends a fresh server-random probe ID
+with the same three source selectors and a maximum 30-second expiry. The probe is
+read-only: the XiaoBa adapter must verify the scoped local reference and workspace
+generation without executing, repairing, finalizing, copying or uploading the Skill;
+invalid manifest metadata must not be mistaken for an unsafe local source. The
+adapter is not implemented by this CatsCo PR and must not advertise the capability
+before it actually implements those checks. Browser/model callers cannot invoke
+the reserved probe directly through thin-tool RPC.
+
+Only the matching still-current Bot socket can answer the probe. A success result
+has exactly `schema_version: 1`, `local_skill_id` and `workspace_generation`, with
+references matching the pending selectors. This is a source-existence/generation
+receipt, **not** a candidate digest, publication approval or bearer credential.
+Unknown fields or mismatches are rejected; controlled local errors use
+`publication.source_missing`, `publication.source_changed`,
+`publication.source_unsafe` or `publication.runtime_unsupported`. Other runtime
+errors become `publication.source_unavailable`; raw messages/files are never sent
+to the browser or persisted. These errors do not trigger model repair.
+
+After checking authority/binding again and claiming the probe once, CatsCo creates
+the immutable entry plus inert capture outbox using the existing transactional
+store checks. The success result contains only `schema_version: 1`,
+`entry_request_id`, `state: "waiting_runtime"` and `replay`. An accepted RPC ACK
+means only that source verification is pending, not that a durable entry exists.
+There is no candidate snapshot or final Cloud publication in this result.
+
+Admission preserves the original request key for retries. Store conflicts,
+authority denials, rate/storage limits and infrastructure failures are distinct
+`publication.*` errors. On an uncertain admission, lost reply or browser restart,
+first read `/requests/{requestId}` with the original human login. A 404 while work
+is still in flight does not prove it cannot commit: wait/retry with the same key,
+never automatically mint a new intent. Original-publisher history remains readable
+after Bot transfer or runtime reconnect, even when a privileged retry is blocked.
+The read lookup uses the existing account/request unique index and needs no DDL.
+
+Probes are transient, rate limited per process/account (20/minute, burst 3), and
+use existing bounded per-requester/device pending slots. Timeout or socket
+replacement returns a safe error with the browser's original request ID; it does
+not create a durable task. A process crash before admission requires retry. Once
+admission commits, the entry and outbox survive even if its response is lost.
+
+This slice intentionally requires browser and Bot sockets on the **same CatsCo
+node**. Shared-runtime routing to another node fails closed with
+`publication.route_unsupported`, because thin-tool pending replies are node-local.
+It must not be enabled across replicas until durable routing/receipt handling is
+implemented. This is not a change to legacy routing or a promise of cross-node
+or offline intake support. Recheck authority, exact binding and source generation
+again before future capture/upload; the probe is not a lock on future file content.
+
 ## Deliberately not enabled
 
-There are no HTTP/WebSocket creators, runtime dispatchers or outbox consumers.
-Existing workspace buttons, chat publishing, Bot binding, model switching and
-private backup paths are unchanged. Enabling status reads does not activate them.
+There are no snapshot/upload dispatchers or outbox consumers. Existing workspace
+buttons, chat publishing, Bot binding, model switching and private backup paths
+are unchanged. Enabling status reads alone does not activate entry admission.
 
 Chat inputs are rejected until a trusted live-turn grant and owner-private topic
 authorization are implemented. The current schema supports only the initial
 workspace state; later lifecycle changes require explicit schema evolution,
 compare-and-swap and crash-recovery tests, not arbitrary state strings.
 
-The rest of contract stage 1 remains: trusted entry adapters, runtime route
-validation, short-lived scoped grants, authenticated introspection, cancellation
-and commit-permit ordering. Then Cloud and XiaoBa adapters can be connected.
+The rest of contract stage 1 remains: durable cross-node/offline intake, chat
+authorization, short-lived scoped grants, authenticated introspection,
+cancellation and commit-permit ordering. XiaoBa source-probe and capture adapters,
+Cloud upload and the workspace UI still need to be connected and jointly tested.
 Repair conversations, automatic formatting repairs, approvals, model billing,
 Chinese guides and frontend redesign are not part of this change.
 
@@ -146,9 +233,9 @@ go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -coun
 ```
 
 Without `CATS_PG_TEST_DSN`, database tests skip; this is not evidence of database
-correctness. This change needs no user manual testing because no publishing
-entrypoint is exposed yet. Do not enable Cloud publication switches based on this
-PR alone.
+correctness. User manual testing waits for the XiaoBa source-probe adapter and
+workspace button to be connected in an isolated environment. Do not enable Cloud
+publication switches based on this PR alone.
 
 Migration verification uses a frozen **relevant-table** baseline from pre-PR620
 main `bf2e938d`: `users` and `bot_config`, plus synthetic owner/Bot rows. This is

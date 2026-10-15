@@ -24,11 +24,12 @@ var skillHubPublicationEntryID = regexp.MustCompile(`^pubentry_[a-f0-9]{32}$`)
 // authentication errors are private/no-store and never use query credentials.
 // It deliberately has no creation, runtime dispatch or Cloud transport method.
 type SkillHubPublicationReadHandler struct {
-	db      store.Store
-	entries store.SkillHubPublicationEntryStore
-	enabled bool
-	limits  *HTTPRateLimiter
-	reads   chan struct{}
+	db                      store.Store
+	entries                 store.SkillHubPublicationEntryStore
+	enabled                 bool
+	limits                  *HTTPRateLimiter
+	reads                   chan struct{}
+	workspaceEntriesEnabled bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -41,7 +42,11 @@ func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPu
 
 func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicationReadHandler {
 	v := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED"))
-	return NewSkillHubPublicationReadHandler(db, v == "1" || strings.EqualFold(v, "true"))
+	h := NewSkillHubPublicationReadHandler(db, v == "1" || strings.EqualFold(v, "true"))
+	_, generations := db.(store.ConversationTaskGenerationStore)
+	_, recovery := db.(store.SkillHubPublicationEntryRequestReader)
+	h.workspaceEntriesEnabled = publicationWorkspaceEntriesEnabled() && h.entries != nil && generations && recovery
+	return h
 }
 
 // Explicit projection: adding internal fields to the store record cannot expose
@@ -107,7 +112,13 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	path := r.URL.Path
 	capabilities := path == skillHubPublicationPrefix+"/capabilities"
 	id := strings.TrimPrefix(path, skillHubPublicationPrefix+"/entries/")
-	if r.URL.RawPath != "" || (!capabilities && (!strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") || !skillHubPublicationEntryID.MatchString(id))) {
+	byRequest := strings.HasPrefix(path, skillHubPublicationPrefix+"/requests/")
+	valid := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && skillHubPublicationEntryID.MatchString(id)
+	if byRequest {
+		id = strings.TrimPrefix(path, skillHubPublicationPrefix+"/requests/")
+		valid = store.ValidSkillHubPublicationRequestID(id)
+	}
+	if r.URL.RawPath != "" || (!capabilities && !valid) {
 		skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
 		return
 	}
@@ -129,7 +140,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	if capabilities {
 		writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
 			"schemaVersion": 1, "entryReadsEnabled": h.enabled && h.entries != nil,
-			"workspaceCreateEnabled": false, "chatCreateEnabled": false,
+			"workspaceCreateEnabled": h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"minPollIntervalMs": 5000,
 		})
 		return
@@ -142,7 +153,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.storage_unsupported")
 		return
 	}
-	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_reads_entry", Limit: 12, Window: time.Minute, Burst: 3}, actor+":"+id) {
+	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_reads_entry", Limit: 12, Window: time.Minute, Burst: 3}, actor+":"+path) {
 		w.Header().Set("Retry-After", "5")
 		skillHubPublicationReadError(w, http.StatusTooManyRequests, "publication.rate_limited")
 		return
@@ -157,7 +168,18 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	entry, err := h.entries.GetSkillHubPublicationEntry(ctx, claims.UID, id)
+	var entry *store.SkillHubPublicationEntry
+	var err error
+	if byRequest {
+		reader, ok := h.db.(store.SkillHubPublicationEntryRequestReader)
+		if !ok {
+			skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.storage_unsupported")
+			return
+		}
+		entry, err = reader.GetSkillHubPublicationEntryByRequest(ctx, claims.UID, id)
+	} else {
+		entry, err = h.entries.GetSkillHubPublicationEntry(ctx, claims.UID, id)
+	}
 	if errors.Is(err, store.ErrSkillHubPublicationDenied) || errors.Is(err, store.ErrSkillHubPublicationInvalid) {
 		skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
 		return
@@ -172,7 +194,8 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	// Unknown future states must be deliberately mapped, never passed through
 	// as arbitrary strings or mistaken for a successful Cloud publication.
-	if entry.ID != id || entry.State != "waiting_runtime" || entry.Input.Entrypoint != "workspace" || entry.Input.BotUID <= 0 || entry.CreatedAt.IsZero() {
+	identityMatches := (!byRequest && entry.ID == id) || (byRequest && entry.Input.RequestID == id)
+	if !identityMatches || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.State != "waiting_runtime" || entry.Input.Entrypoint != "workspace" || entry.Input.BotUID <= 0 || entry.CreatedAt.IsZero() {
 		skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.record_unavailable")
 		return
 	}

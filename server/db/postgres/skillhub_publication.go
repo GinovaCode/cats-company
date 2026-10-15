@@ -12,6 +12,7 @@ import (
 )
 
 var _ store.SkillHubPublicationEntryStore = (*Adapter)(nil)
+var _ store.SkillHubPublicationEntryRequestReader = (*Adapter)(nil)
 
 const publicationEntryColumns = `entry_id, request_id, actor_uid, bot_uid, entrypoint,
 	device_id, body_id, installation_id, route_generation, workspace_generation,
@@ -144,4 +145,15 @@ func (a *Adapter) GetSkillHubPublicationEntry(ctx context.Context, actorUID int6
 	return scanPublicationEntry(a.db.QueryRowContext(ctx, `SELECT `+publicationEntryColumns+`
 		FROM skillhub_publication_entries WHERE entry_id=$1 AND actor_uid=$2
 		AND EXISTS (SELECT 1 FROM users WHERE id=$2 AND account_type='human' AND state=0)`, id, actorUID))
+}
+
+func (a *Adapter) GetSkillHubPublicationEntryByRequest(ctx context.Context, actorUID int64, requestID string) (*store.SkillHubPublicationEntry, error) {
+	if actorUID <= 0 || !store.ValidSkillHubPublicationRequestID(requestID) {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return scanPublicationEntry(a.db.QueryRowContext(ctx, `SELECT `+publicationEntryColumns+`
+		FROM skillhub_publication_entries WHERE request_id=$1 AND actor_uid=$2
+		AND EXISTS (SELECT 1 FROM users WHERE id=$2 AND account_type='human' AND state=0)`, requestID, actorUID))
 }

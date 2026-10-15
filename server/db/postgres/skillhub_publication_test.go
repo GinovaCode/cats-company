@@ -114,10 +114,16 @@ func TestPostgresSkillHubPublicationPersistence(t *testing.T) {
 	if err != nil || read == nil || read.Input != in {
 		t.Fatalf("read: %+v %v", read, err)
 	}
+	if got, err := reopened.GetSkillHubPublicationEntryByRequest(ctx, in.ActorUID, in.RequestID); err != nil || got == nil || got.ID != e.ID {
+		t.Fatalf("lost response recovery: %+v %v", got, err)
+	}
 	for _, actor := range []int64{other, in.BotUID, 987654} {
 		got, err := reopened.GetSkillHubPublicationEntry(ctx, actor, e.ID)
 		if err != nil || got != nil {
 			t.Fatalf("cross-account read: %+v %v", got, err)
+		}
+		if got, err := reopened.GetSkillHubPublicationEntryByRequest(ctx, actor, in.RequestID); err != nil || got != nil {
+			t.Fatalf("cross-account recovery: %+v %v", got, err)
 		}
 	}
 	changed := in
@@ -142,11 +148,20 @@ func TestPostgresSkillHubPublicationPersistence(t *testing.T) {
 	if got, err := db.GetSkillHubPublicationEntry(ctx, in.ActorUID, e.ID); err != nil || got == nil {
 		t.Fatalf("original history unavailable: %v", err)
 	}
+	if got, err := db.GetSkillHubPublicationEntryByRequest(ctx, in.ActorUID, in.RequestID); err != nil || got == nil {
+		t.Fatalf("history recovery after transfer: %+v %v", got, err)
+	}
 	if _, err := db.db.Exec(`UPDATE users SET state=1 WHERE id=$1`, in.ActorUID); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := db.GetSkillHubPublicationEntry(ctx, in.ActorUID, e.ID); err != nil || got != nil {
 		t.Fatalf("disabled account read: %v %v", got, err)
+	}
+	if got, err := db.GetSkillHubPublicationEntryByRequest(ctx, in.ActorUID, in.RequestID); err != nil || got != nil {
+		t.Fatalf("disabled recovery: %+v %v", got, err)
+	}
+	if _, err := db.GetSkillHubPublicationEntryByRequest(ctx, in.ActorUID, "../invalid"); !errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+		t.Fatalf("invalid recovery key: %v", err)
 	}
 }
 

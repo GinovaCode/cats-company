@@ -45,6 +45,7 @@ const (
 	DeviceCapabilitySkillHubWorkspacePagination DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
 	DeviceGrantSkillHubWorkspaceSync            DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
 	DeviceGrantSkillHubSkillShare               DeviceGrantOperation = "skillhub.localSkill.share"
+	DeviceCapabilitySkillHubPublicationProbe    DeviceGrantOperation = "skillhub.publication.sourceProbe.v1"
 	DeviceGrantSkillHubSkillFinalize            DeviceGrantOperation = "skillhub.localSkill.finalize"
 	DeviceGrantSkillHubSkillDelete              DeviceGrantOperation = "skillhub.localSkill.delete"
 	DeviceGrantSkillHubBotSwitch                DeviceGrantOperation = "skillhub.localBot.switch"
@@ -1020,6 +1021,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantSkillHubWorkspaceGet,
 		DeviceGrantSkillHubWorkspaceApplyDefinition,
 		DeviceCapabilitySkillHubWorkspacePagination,
+		DeviceCapabilitySkillHubPublicationProbe,
 		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,
 		DeviceGrantSkillHubSkillFinalize,

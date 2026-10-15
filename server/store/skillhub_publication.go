@@ -21,6 +21,8 @@ var (
 var publicationRequestID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 var publicationReference = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
+func ValidSkillHubPublicationRequestID(id string) bool { return publicationRequestID.MatchString(id) }
+
 // SkillHubPublicationSource is a locator, not permission to read files. Only a
 // trusted routing layer may construct it after validating the exact Bot/runtime.
 // Never put paths, source bytes, credentials or model text in these fields.
@@ -101,13 +103,20 @@ func (p SkillHubPublicationEntryPolicy) Validate() error {
 	return nil
 }
 
-// SkillHubPublicationEntryStore is optional. The default-off status API can read
-// it; no production creator or dispatcher uses it yet. Unsupported adapters must
-// fail closed, never use an in-memory substitute. Creation atomically saves
-// identity, replay evidence and an inert
-// capture event, with current human/owner/body checks in the same transaction.
+// SkillHubPublicationEntryStore is optional. Default-off workspace admission and
+// status reads use it; no capture dispatcher consumes its events yet. Unsupported
+// adapters must fail closed, never use an in-memory substitute. Creation saves
+// identity, replay evidence and an inert capture event atomically, with current
+// human/owner/body checks in the same transaction.
 // Implementers must also bound database waits; caller deadlines still apply.
 type SkillHubPublicationEntryStore interface {
 	CreateSkillHubPublicationEntry(context.Context, SkillHubPublicationEntryInput, SkillHubPublicationEntryPolicy) (*SkillHubPublicationEntry, bool, error)
 	GetSkillHubPublicationEntry(context.Context, int64, string) (*SkillHubPublicationEntry, error)
+}
+
+// SkillHubPublicationEntryRequestReader recovers a committed intent when its
+// response/entry ID was lost. Like ID reads, this is original-publisher history,
+// not renewed authority, and requires an active human on every read.
+type SkillHubPublicationEntryRequestReader interface {
+	GetSkillHubPublicationEntryByRequest(context.Context, int64, string) (*SkillHubPublicationEntry, error)
 }
