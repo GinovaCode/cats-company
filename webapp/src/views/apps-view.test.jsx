@@ -214,6 +214,40 @@ describe('AppsView', () => {
     expect(JSON.parse(localStorage.getItem('catsco.apps.favorites.7'))).toEqual([]);
   });
 
+  test('copies the gateway public address for sharing, never the conversation-bound viewer URL', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+
+    const shareButton = () => container.querySelector('button[aria-label^="复制 Saturday 演示应用"]');
+    expect(shareButton()).not.toBeNull();
+    await act(async () => { shareButton().click(); });
+
+    // A recipient has no session, so the address must not carry this
+    // conversation or the owning bot.
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = writeText.mock.calls.at(-1)[0];
+    expect(copied).toBe('https://artifact.catsco.cc/saturday-demo/');
+    expect(copied).not.toContain('artifact-viewer');
+    expect(copied).not.toContain('topic');
+    expect(copied).not.toContain('agent');
+
+    // The card confirms in place instead of navigating anywhere.
+    expect(container.querySelector('button[aria-label^="已复制 Saturday 演示应用"]')).not.toBeNull();
+  });
+
+  test('surfaces a copy failure with the address so the user can copy it manually', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('clipboard denied'));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    await act(async () => { container.querySelector('button[aria-label^="复制 Saturday 演示应用"]').click(); });
+
+    expect(container.textContent).toContain('https://artifact.catsco.cc/saturday-demo/');
+    expect(container.querySelector('button[aria-label^="已复制"]')).toBeNull();
+  });
+
   test('saves shared metadata, uploads an icon and updates the card without launching the app', async () => {
     mocks.uploadFile.mockResolvedValue({ url: '/uploads/icon.png' });
     mocks.updateArtifactApp.mockResolvedValue({ id: 'saturday-demo', title: '订单工作台', description: '共享订单', icon_url: '/uploads/icon.png', can_manage: true });
