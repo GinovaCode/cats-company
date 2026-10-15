@@ -1175,6 +1175,71 @@ describe('compose channel (SDK side)', () => {
     expect(TYPES.composeAck).toBe('catsco.artifact.compose.ack.v1');
   });
 
+  it('reaches the live instance through instance() once the host bootstraps it', () => {
+    // This is the only path an application has: the gateway creates the
+    // instance itself, so the application never calls create() and cannot
+    // guess the host origin either (host and application are cross-origin).
+    const { sdk } = createComposeSdk([]);
+    connect();
+
+    const reached = window.CatsCoAnnotations.instance();
+    expect(reached).not.toBeNull();
+    expect(reached).toBe(sdk);
+    expect(typeof reached.proposeCompose).toBe('function');
+  });
+
+  it('returns null from instance() when no instance is live', () => {
+    expect(window.CatsCoAnnotations.instance()).toBeNull();
+  });
+
+  it('refuses to pick a side when several instances are live', () => {
+    // Multi-instance documents are supported; with more than one live instance
+    // there is no unambiguous answer, so instance() declines instead of
+    // guessing which one the caller meant.
+    const first = createComposeSdk([]);
+    const second = createComposeSdk([]);
+    expect(window.CatsCoAnnotations.instance()).toBeNull();
+    first.sdk.dispose();
+    second.sdk.dispose();
+  });
+
+  it('returns null from instance() after dispose', () => {
+    const { sdk } = createComposeSdk([]);
+    connect();
+    expect(window.CatsCoAnnotations.instance()).toBe(sdk);
+    sdk.dispose();
+    expect(window.CatsCoAnnotations.instance()).toBeNull();
+  });
+
+  it('lets the application register the ack handler on the bootstrapped instance', () => {
+    // A bootstrapped instance is created without config, so onComposeAck has to
+    // be settable afterwards or the application would never see the outcome.
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+
+    const seen = [];
+    sdk.onComposeAck((result) => seen.push(result));
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sendComposeAck(requestId, { accepted: true, reason: '' });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ accepted: true });
+  });
+
+  it('lets the ack handler be cleared with a non-function', () => {
+    const { sdk, posted } = createComposeSdk([]);
+    connect();
+
+    const seen = [];
+    sdk.onComposeAck((result) => seen.push(result));
+    sdk.onComposeAck(null);
+    sdk.proposeCompose({ text: 'hello' });
+    const { request_id: requestId } = composeMessages(posted)[0];
+    expect(() => sendComposeAck(requestId, { accepted: true })).not.toThrow();
+    expect(seen).toHaveLength(0);
+  });
+
   it('posts the text verbatim under the bridge contract with the live session', () => {
     const { sdk, posted } = createComposeSdk([]);
     connect();

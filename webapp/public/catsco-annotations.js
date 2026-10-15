@@ -1365,6 +1365,12 @@
         }
       },
       mode() { return state.mode; },
+      // The gateway bootstraps the instance itself (the application never calls
+      // create()), so the ack callback cannot be supplied up front. Let the
+      // application register it on the instance it got from instance().
+      onComposeAck(handler) {
+        composeAckHandler = typeof handler === 'function' ? handler : null;
+      },
       proposeCompose: proposeCompose,
       dispose() {
         if (state.disposed) return;
@@ -1424,6 +1430,23 @@
   window.CatsCoAnnotations = {
     create: createConfigured,
     bootstrapAttribute: bootstrapAttribute,
+    // The gateway bootstraps the instance for a framed application, so the
+    // application never calls create() and has no other way to reach the live
+    // instance. Without this the compose channel is unreachable from the
+    // application side: it cannot guess the host origin either, because the
+    // host runs on a different domain than the application.
+    instance() {
+      // The gateway bootstraps the instance, which registers it as the
+      // singleton. An application that called create() itself is not the
+      // singleton, so fall back to the sole live instance — unambiguous, and
+      // null when several exist (multi-instance documents are supported).
+      if (singleton && liveInstances.has(singleton)) {
+        return liveInstances.get(singleton).disposed ? null : singleton;
+      }
+      if (liveInstances.size !== 1) return null;
+      var only = Array.from(liveInstances.keys())[0];
+      return liveInstances.get(only).disposed ? null : only;
+    },
     dispose() {
       bootstrapStopped = true;
       stopBootstrap();
