@@ -70,6 +70,11 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run 'TestPostgres(AdminUserSearch|StoreContract|CloudWorkerDeploymentContract|CommercialPlanManagement|CommercialPaymentContract|CommercialAdjustmentContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack|CommercialRetireV4FlashMigrationPreservesManualQuotaAndRollsBack|CommercialFreeImageModelsMigrationGrantsAndRollsBack|CommercialAutoRenewConfigAndRuns|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|CommercialImageModels|CommercialInviteRedeemerUIDs|ArtifactRuntimeEventSequenceFollowsCommitOrder|ArtifactAppMetadataPersistence)' -count=1 -v
 
+      - name: Test PostgreSQL SkillHub publication entries
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1 -v
+
       - name: Test MySQL Artifact Runtime and application metadata
         env:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
