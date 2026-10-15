@@ -265,7 +265,16 @@ func (w *publicationDeliveryWorker) sweep() {
 				Payload: map[string]interface{}{"bot_uid": strconv.FormatInt(binding.BotUID, 10), "local_skill_id": source.LocalSkillID, "workspace_generation": source.WorkspaceGeneration}}}
 			data, err := json.Marshal(msg)
 			// A full Bot send queue must not disconnect it or block model switching.
-			if err != nil || !target.trySend(data) {
+			// A slow binding lookup may overlap timeout settlement. Do not send a
+			// probe already expired/claimed by the independent timeout worker.
+			w.mu.Lock()
+			active := w.pending[p.id] == p && !p.processing && time.Now().Before(p.deadline) && w.ctx.Err() == nil
+			sent := false
+			if active && err == nil {
+				sent = target.trySend(data)
+			}
+			w.mu.Unlock()
+			if active && !sent {
 				w.queueFailure(p, "publication.runtime_unavailable")
 			}
 		}
