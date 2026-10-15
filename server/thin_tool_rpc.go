@@ -327,6 +327,16 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 }
 
 func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
+	// Reserved background receipts never use the requester-bound legacy router
+	// or its logs (including unknown/late IDs after process restart).
+	if strings.HasPrefix(strings.TrimSpace(msg.RequestID), publicationDeliveryRequestPrefix) {
+		if h == nil || h.publicationDelivery == nil {
+			publicationDeliveryAck(client, msg.ID, http.StatusServiceUnavailable)
+		} else {
+			h.publicationDelivery.acceptResult(client, msg)
+		}
+		return
+	}
 	if h == nil || h.thinToolRPC == nil {
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusServiceUnavailable, "thin tool rpc unavailable", nil)
 		return

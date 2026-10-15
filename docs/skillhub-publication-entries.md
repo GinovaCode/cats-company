@@ -1,16 +1,18 @@
 # SkillHub publication entry persistence
 
-This is the first implementation slice of the
+This implements staged CatsCo foundations of the
 [approved three-repository contract](https://github.com/buildsense-ai/catsco-skillhub-cloud/blob/c369cc9d5e956a4c42095ebcbb93b4ac7506e5f0/docs/api/publication-entrypoint-delegation.md).
 It adds a PostgreSQL store for durable **workspace publication intents**, a
 default-off private status API and a default-off, source-verified workspace
-entry protocol. It does not upload or publish files or issue delegated credentials.
+entry protocol, plus opt-in durable background source probing. It does not upload
+or publish files or issue delegated credentials.
 
 ## Implemented behavior
 
 The optional `store.SkillHubPublicationEntryStore` creates an immutable entry and
-a reference-only `capture_candidate` outbox row in one transaction. No worker
-consumes this event yet. Creation always returns `waiting_runtime`, never a claim
+a reference-only `capture_candidate` outbox row in one transaction. The optional
+worker below can lease it for read-only source probing, not capture. Creation
+always returns `waiting_runtime`, never a claim
 that a file was captured, validated, uploaded or published.
 
 The database checks an active human account, an active enabled Bot owned by that
@@ -194,15 +196,16 @@ implemented. This is not a change to legacy routing or a promise of cross-node
 or offline intake support. Recheck authority, exact binding and source generation
 again before future capture/upload; the probe is not a lock on future file content.
 
-## Deliberately not enabled
+## Durable background source verification
 
-### Durable delivery persistence
-
-`store.SkillHubPublicationDeliveryStore` adds an **internal, unwired** source-probe
+`store.SkillHubPublicationDeliveryStore` adds an **internal** source-probe
 delivery ledger to the existing outbox. It is the persistence prerequisite for
 cross-node recovery of an **already accepted** entry, not cross-node/offline
 admission. The PR627 browser protocol above remains same-node and online-only.
-No worker calls this store yet, and no production flag is added or enabled.
+The worker is gated by `CATSCO_SKILLHUB_PUBLICATION_DELIVERY_ENABLED` AND both
+existing read/admission flags. All default off; no deployment configuration is
+changed. PostgreSQL entry/delivery/generation interfaces and the scoped runtime
+lister are required; unsupported adapters do not fall back to memory.
 
 An internal scheduler can list at most 32 due entry IDs for one Bot. Claiming an
 ID checks the original actor, current active human/Bot, enabled ownership/body
@@ -210,8 +213,8 @@ binding, immutable device/installation/workspace/local reference, and the curren
 durable Bot connection generation. Account/config/generation rows stay locked
 through the short DB mutation. A reconnect can advance generation, but cannot
 substitute any source selector. Neither the caller's observation nor a saved
-record independently authenticates a socket: the future node-local adapter must
-verify its exact Bot socket, body lease and explicit capability immediately before
+record independently authenticates a socket: the node-local worker verifies
+the exact Bot socket, body lease and explicit capability immediately before
 dispatch and before accepting a receipt. These methods must never be exposed as
 raw browser/runtime endpoints or called with model-supplied identity.
 
@@ -248,12 +251,59 @@ user/Bot fixture and an actual pre-column intent/outbox, not a production dump.
 Empty SQL, historical SQL-first/startup-first, repeated startup/migration, safe
 rollback/reapply and refusal after a delivery attempt are covered.
 
-Integration still requires: durable **pre-probe** admission, authenticated
-node-local dispatch/receipt handling without an owner socket dependency, offline
-resume, owner-visible delivery failures, and the later capture/upload adapter.
-No claim that those paths work follows from database lease tests alone.
+### Scheduling and receipts
 
-There are no snapshot/upload dispatchers or outbox consumers. Existing workspace
+The server starts this worker only after choosing its final Hub and cancels it
+on shutdown. A startup sweep and five-second ticks consider only locally
+connected, registered Bot runtimes. Each sweep rotates through at most 16 Bots,
+fetches at most four due IDs per runtime, and admits at most eight probes; each
+node retains at most 32 pending probes. SQL filters the exact owner/Bot/device/
+body/installation **before LIMIT**, so obsolete installations cannot starve
+current work. Offline or unsupported runtimes consume no new claims. A process
+restart or a move to another CatsCo node recovers accepted work from PostgreSQL
+after the previous lease expires, using the same immutable source binding and
+the newly verified durable connection generation. No Owner socket is required.
+
+Dispatch uses the existing read-only `sourceProbe.v1` contract and a fresh random
+`pubdelivery_` wire ID, separate from the database fence token. The token and
+entry ID are not sent to the runtime. A second binding check runs after claiming
+and immediately before local delivery. No source selectors are forwarded through
+the shared-runtime relay. The socket queue is nonblocking; background backpressure
+does not disconnect a Bot or perform database work on its WebSocket read loop.
+
+Reserved receipt IDs bypass the legacy requester-bound router and its generic
+logs, including late/unknown IDs. Only the exact registered Bot connection can
+enqueue a receipt. The strict three-field schema and optional routing headers
+must match; mixed/error payloads cannot claim success. Raw messages are discarded,
+unknown errors become retryable runtime-unavailable, and only normalized outcomes
+enter a bounded queue served by two workers. Fresh runtime binding checks and
+the transactional owner/generation/fence checks precede durable settlement.
+Concurrent receipts enqueue once; overload returns a safe acknowledgement without
+consuming the pending receipt. After completion, a duplicate wire response may
+return 404; it cannot repeat work or create another entry.
+
+The probe deadline is five seconds before the 30-second DB lease deadline, leaving
+time to persist timeouts. A one-second sweep queues expired probes independently
+of scheduling; receipt DB calls have five-second contexts. If a write fails or its
+outcome is uncertain, the worker never fabricates success or creates a new intent:
+a committed result remains durable, otherwise lease expiry allows bounded retry.
+Only the read-only probe may be retried; the fence is not an exactly-once guarantee
+for future side effects. Existing authority lookup APIs remain synchronous in
+the background workers, never in the WebSocket receipt admission path.
+
+The real-PostgreSQL dispatcher test uses two independent Hubs and a synthetic wire
+peer: it covers owner absence, node loss, lease recovery, stale replies, immutable
+intent and obsolete-device starvation. It is not a live XiaoBa or Redis deployment
+test. XiaoBa still must implement and explicitly advertise the new capability.
+
+## Remaining integration
+
+Durable **pre-probe** admission, owner-visible delivery failures/resume, and the
+later capture/upload adapter remain required. Initial browser submission is still
+same-node and online-only. The worker resumes already accepted requests, not new
+offline requests. No production switch should be enabled on these tests alone.
+
+There are no snapshot/upload dispatchers. Existing workspace
 buttons, chat publishing, Bot binding, model switching and private backup paths
 are unchanged. Enabling status reads alone does not activate entry admission.
 

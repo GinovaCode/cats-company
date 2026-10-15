@@ -50,3 +50,23 @@ func TestSkillHubPublicationDeliveryRetryPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillHubPublicationRuntimeSelector(t *testing.T) {
+	s := SkillHubPublicationRuntimeSelector{ActorUID: 1, BotUID: 2, DeviceID: "device", BodyID: "body", InstallationID: "install"}
+	if s.Validate() != nil {
+		t.Fatal("valid selector rejected")
+	}
+	for _, change := range []func(*SkillHubPublicationRuntimeSelector){
+		func(s *SkillHubPublicationRuntimeSelector) { s.ActorUID = 0 },
+		func(s *SkillHubPublicationRuntimeSelector) { s.BotUID = s.ActorUID },
+		func(s *SkillHubPublicationRuntimeSelector) { s.DeviceID = "" },
+		func(s *SkillHubPublicationRuntimeSelector) { s.BodyID = "/root/private" },
+		func(s *SkillHubPublicationRuntimeSelector) { s.InstallationID = strings.Repeat("x", 129) },
+	} {
+		bad := s
+		change(&bad)
+		if bad.Validate() == nil {
+			t.Fatal("invalid selector accepted")
+		}
+	}
+}

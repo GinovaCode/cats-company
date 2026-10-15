@@ -302,6 +302,9 @@ func main() {
 		hub = server.NewHubWithRuntime(db, rateLimiter, redisRuntime, envString("CATSCO_NODE_ID"))
 	}
 	go hub.Run()
+	publicationCtx, stopPublicationDelivery := context.WithCancel(context.Background())
+	defer stopPublicationDelivery()
+	go hub.RunPublicationDeliveries(publicationCtx)
 
 	server.SetBotStats(hub.BotStats())
 
@@ -1167,6 +1170,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down gracefully...")
+	stopPublicationDelivery()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

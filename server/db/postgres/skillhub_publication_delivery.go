@@ -12,15 +12,33 @@ import (
 )
 
 var _ store.SkillHubPublicationDeliveryStore = (*Adapter)(nil)
+var _ store.SkillHubPublicationRuntimeDeliveryLister = (*Adapter)(nil)
 
 // This is an internal scheduler lookup, not an account-facing listing API.
 // It returns references only; every claim independently checks live authority.
 func (a *Adapter) ListSkillHubPublicationDeliveries(ctx context.Context, botUID int64, limit int) ([]string, error) {
+	return a.listPublicationDeliveries(ctx, botUID, limit, nil)
+}
+
+func (a *Adapter) ListSkillHubPublicationRuntimeDeliveries(ctx context.Context, s store.SkillHubPublicationRuntimeSelector, limit int) ([]string, error) {
+	if s.Validate() != nil {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	return a.listPublicationDeliveries(ctx, s.BotUID, limit, &s)
+}
+
+func (a *Adapter) listPublicationDeliveries(ctx context.Context, botUID int64, limit int, selector *store.SkillHubPublicationRuntimeSelector) ([]string, error) {
 	if botUID <= 0 || limit < 1 || limit > 32 {
 		return nil, store.ErrSkillHubPublicationInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	filter := ""
+	args := []any{botUID, limit}
+	if selector != nil {
+		filter = ` AND e.actor_uid=$3 AND e.device_id=$4 AND e.body_id=$5 AND e.installation_id=$6`
+		args = append(args, selector.ActorUID, selector.DeviceID, selector.BodyID, selector.InstallationID)
+	}
 	rows, err := a.db.QueryContext(ctx, `SELECT o.entry_id FROM skillhub_publication_outbox o
 		JOIN skillhub_publication_entries e ON e.entry_id=o.entry_id
 		JOIN users actor ON actor.id=e.actor_uid AND actor.account_type='human' AND actor.state=0
@@ -29,7 +47,7 @@ func (a *Adapter) ListSkillHubPublicationDeliveries(ctx context.Context, botUID 
 		WHERE e.bot_uid=$1 AND o.kind='capture_candidate'
 		AND ((o.delivery_state='pending' AND o.delivery_attempts<8 AND o.next_attempt_at<=clock_timestamp())
 		OR (o.delivery_state='leased' AND o.lease_until<=clock_timestamp()))
-		ORDER BY e.created_at, e.entry_id LIMIT $2`, botUID, limit)
+		`+filter+` ORDER BY e.created_at, e.entry_id LIMIT $2`, args...)
 	if err != nil {
 		return nil, err
 	}

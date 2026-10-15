@@ -104,7 +104,8 @@ func (p SkillHubPublicationEntryPolicy) Validate() error {
 }
 
 // SkillHubPublicationEntryStore is optional. Default-off workspace admission and
-// status reads use it; no capture dispatcher consumes its events yet. Unsupported
+// status reads use it; opt-in source probing leases its events, but there is no
+// capture/upload dispatcher yet. Unsupported
 // adapters must fail closed, never use an in-memory substitute. Creation saves
 // identity, replay evidence and an inert capture event atomically, with current
 // human/owner/body checks in the same transaction.

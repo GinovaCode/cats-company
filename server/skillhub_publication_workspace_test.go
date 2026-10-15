@@ -93,13 +93,21 @@ type publicationWorkspaceFixture struct {
 }
 
 func newPublicationWorkspaceFixture(t *testing.T) *publicationWorkspaceFixture {
+	return newPublicationWorkspaceFixtureWithStore(t, nil)
+}
+
+func newPublicationWorkspaceFixtureWithStore(t *testing.T, wrap func(*publicationWorkspaceTestStore) store.Store) *publicationWorkspaceFixture {
 	t.Helper()
 	db := &publicationWorkspaceTestStore{
 		users:  map[int64]*types.User{7: {ID: 7, AccountType: types.AccountHuman}, 42: {ID: 42, AccountType: types.AccountBot}},
 		config: types.BotConfig{UserID: 42, OwnerID: 7, Enabled: true, BodyID: "body-42"}, generation: 1,
 		entries: map[string]*store.SkillHubPublicationEntry{},
 	}
-	h := NewHub(db, nil)
+	var backend store.Store = db
+	if wrap != nil {
+		backend = wrap(db)
+	}
+	h := NewHub(backend, nil)
 	h.publicationWorkspaceEntries = true
 	owner := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 32)}
 	runtime := &Client{uid: 42, accountType: types.AccountBot, bodyID: "body-42", installationID: "install-42", send: make(chan []byte, 32)}
