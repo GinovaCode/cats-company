@@ -1055,12 +1055,14 @@ export default function MessagesView({
   const artifactComposeInjectRef = useRef(null);
 
   // Gateway application -> conversation injection. The application hands over a
-  // free-form string and nothing else; this decides where it goes. The text lands
-  // in the conversation the user is looking at, because that is where they expect
-  // it — but only while that conversation actually contains the bot that owns the
-  // application, since the files the application refers to live on that bot's
-  // machine. Otherwise we open the owner's own conversation first, so the user
-  // sees where the message landed.
+  // free-form string and nothing else; this decides where it goes.
+  //
+  // In place when the application was opened in the conversation on screen, and
+  // otherwise into the owning bot's own conversation. The open binding already
+  // answers this: it records the conversation the application was opened in, and
+  // the platform only issues one after checking that this bot is reachable from
+  // that conversation (for a group, that it is a current member). The annotation
+  // channel sends through the same binding, so both channels agree on the target.
   artifactComposeInjectRef.current = async (text, binding) => {
     const ownerAgentUid = Number(binding?.agentUid || 0);
     const appId = String(binding?.appId || '');
@@ -1068,21 +1070,15 @@ export default function MessagesView({
 
     const currentTopic = String(activeTopicRef.current || '');
     const currentAgent = availableAgents.find((agent) => agent.topic_id === currentTopic) || null;
-    const currentAgentUid = Number(currentAgent?.uid || currentAgent?.id || 0);
 
-    let topicId = currentTopic;
+    let topicId = composeInjectionTopic({
+      bindingTopic: binding?.openBinding?.topic_id,
+      currentTopic,
+    });
     let switched = false;
     let agentName = currentAgent?.display_name || currentAgent?.name || '';
 
-    const belongsToCurrent = composeTargetsCurrentConversation({
-      ownerAgentUid,
-      currentTopic,
-      currentAgentUid,
-      isGroup,
-      memberUIDs: members.map((member) => member?.user_id),
-    });
-
-    if (!belongsToCurrent) {
+    if (!topicId) {
       let opened = null;
       try {
         opened = await api.openAgent(ownerAgentUid);
@@ -8547,29 +8543,20 @@ function parseUid(uidStr) {
   return parseInt(normalized, 10) || 0;
 }
 
-// Where a gateway application's injected text should land. The user is looking at
-// a conversation, so that is where the text goes — but only if the bot that owns
-// the application is reachable from it, since the files the application refers to
-// live on that bot's machine. A group qualifies when the owner is one of its
-// members; a one-to-one conversation qualifies when it is with the owner. Anything
-// else (no conversation open, or a conversation without the owner) falls back to
-// the owner's own conversation.
-export function composeTargetsCurrentConversation({
-  ownerAgentUid,
-  currentTopic,
-  currentAgentUid,
-  isGroup,
-  memberUIDs = [],
-}) {
-  if (!ownerAgentUid || !currentTopic) return false;
-  // A one-to-one conversation with the owner. `availableAgents` only maps direct
-  // conversations to their topic, so a group never matches here.
-  if (sameUID(currentAgentUid, ownerAgentUid)) return true;
-  // A group that lists the owner among its members.
-  if (isGroup) {
-    return memberUIDs.some((uid) => sameUID(uid, ownerAgentUid));
-  }
-  return false;
+// Where a gateway application's injected text lands: in place when the
+// application was opened in the conversation now on screen, otherwise in the
+// owning bot's own conversation. Returns '' to mean "fall back".
+//
+// The open binding is the same source the annotation channel sends through, so
+// both channels agree. It records the conversation the application was opened
+// in, and the platform only issues one after checking the bot is reachable from
+// that conversation — for a group, that it is a current member — so an in-place
+// send can never reach a bot the conversation does not contain.
+export function composeInjectionTopic({ bindingTopic, currentTopic }) {
+  const bound = String(bindingTopic || '').trim();
+  const current = String(currentTopic || '').trim();
+  if (bound && bound === current) return bound;
+  return '';
 }
 
 function sameUID(left, right) {

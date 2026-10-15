@@ -308,7 +308,7 @@ vi.mock('../api', () => ({
 import MessagesView, {
   canonicalizeStructuredMentionText,
   collectStructuredMentionTargets,
-  composeTargetsCurrentConversation,
+  composeInjectionTopic,
   gatewayAppsAsArtifacts,
   mergeArtifactSources,
   mergeOwnServerEcho,
@@ -529,80 +529,54 @@ function dispatchFrameMessage(source, origin, data) {
 }
 
 describe('gateway application injection target', () => {
-  const owner = 365;
-
-  it('lands in the group the user is looking at when the owner bot is a member', () => {
-    // The reported case: the application is opened from a group that contains the
-    // owning bot, so the text must stay in that group instead of jumping to a
-    // one-to-one conversation with the bot.
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner,
+  it('injects in place when the application was opened in the conversation on screen', () => {
+    // The reported case: the application is opened from a group, so the binding
+    // names that group and the text stays there.
+    expect(composeInjectionTopic({
+      bindingTopic: 'grp_4133',
       currentTopic: 'grp_4133',
-      currentAgentUid: 0,
-      isGroup: true,
-      memberUIDs: ['usr116', 'usr365'],
-    })).toBe(true);
+    })).toBe('grp_4133');
   });
 
-  it('lands in a one-to-one conversation with the owner bot', () => {
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner,
+  it('injects in place in a one-to-one conversation with the owning bot', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: 'p2p_116_365',
       currentTopic: 'p2p_116_365',
-      currentAgentUid: owner,
-      isGroup: false,
-      memberUIDs: [],
-    })).toBe(true);
+    })).toBe('p2p_116_365');
   });
 
-  it('leaves a group that does not contain the owner bot', () => {
-    // A group without the owner cannot reach the files the application refers to,
-    // so the text has to go to the owner's own conversation instead.
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner,
-      currentTopic: 'grp_80',
-      currentAgentUid: 0,
-      isGroup: true,
-      memberUIDs: ['usr116', 'usr42'],
-    })).toBe(false);
-  });
-
-  it('leaves a one-to-one conversation with a different bot', () => {
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner,
+  it('falls back when the user has moved to another conversation', () => {
+    // The binding still names where the application was opened, but the user is
+    // looking somewhere else now, so the text must go to the owner's own
+    // conversation rather than into whatever happens to be on screen.
+    expect(composeInjectionTopic({
+      bindingTopic: 'grp_4133',
       currentTopic: 'p2p_116_42',
-      currentAgentUid: 42,
-      isGroup: false,
-      memberUIDs: [],
-    })).toBe(false);
+    })).toBe('');
   });
 
-  it('leaves when no conversation is open or the owner is unknown', () => {
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner, currentTopic: '', currentAgentUid: 0, isGroup: false, memberUIDs: [],
-    })).toBe(false);
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: 0, currentTopic: 'grp_4133', currentAgentUid: 0, isGroup: true, memberUIDs: ['usr365'],
-    })).toBe(false);
+  it('falls back when no conversation is open', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: 'grp_4133',
+      currentTopic: '',
+    })).toBe('');
   });
 
-  it('matches the owner regardless of uid formatting', () => {
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner,
-      currentTopic: 'p2p_116_365',
-      currentAgentUid: 'usr365',
-      isGroup: false,
-      memberUIDs: [],
-    })).toBe(true);
-    expect(composeTargetsCurrentConversation({
-      ownerAgentUid: owner,
+  it('falls back when the binding carries no conversation', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: '',
       currentTopic: 'grp_4133',
-      currentAgentUid: 0,
-      isGroup: true,
-      memberUIDs: ['usr365'],
-    })).toBe(true);
+    })).toBe('');
+    expect(composeInjectionTopic({ bindingTopic: undefined, currentTopic: undefined })).toBe('');
+  });
+
+  it('ignores surrounding whitespace when comparing conversations', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: ' grp_4133 ',
+      currentTopic: 'grp_4133',
+    })).toBe('grp_4133');
   });
 });
-
 describe('structured composer mention provenance', () => {
   it('does not promote hand-typed uid-like text into structured targets', () => {
     expect(collectStructuredMentionTargets('@usr42 请处理', [])).toEqual([]);
