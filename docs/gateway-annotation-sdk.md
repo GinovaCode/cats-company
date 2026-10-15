@@ -129,7 +129,7 @@ host.proposeCompose('直接传字符串也可以');
 ```
 
 - **只有一个业务字段 `text`**：没有模板、没有 files 数组、不做 trim（原样传递）。空字符串或全空白在 SDK 侧本地拒绝并返回 `false`。
-- **不自设长度上限**：正文的真正边界是平台自己的 WebSocket 帧上限（64 KiB，`server/wspump.go`）。SDK 与宿主都不额外加码，避免误伤正常长文本。
+- **不自设长度上限**：SDK 与宿主都不额外加码，避免误伤正常长文本。这条路径**没有应用层长度校验**：宿主经 `api.sendMessage` 走 REST（`POST /api/messages/send`），服务端 `normalizeMessageRequest` 只校验正文非空；外层边界是 nginx 的 `client_max_body_size`，存储侧是 Postgres `TEXT`。WS 的 64 KiB 帧上限与此无关 —— 这条路不发 WS。
 - 返回 `false` 只表示「没能交出去」（未连接 / 载荷不合法）；真正结果通过 `onComposeAck` 异步回来：`{ accepted, reason }`。
 - **回执不含会话 id**：应用在跨域 iframe 里没有平台 API 访问能力，拿到会话 id 也无从使用，所以成功/失败就是全部契约。
 - 信封的 `contract_version` 复用 `catsco.gateway-annotation-bridge.v1`（宿主先校验信封再看 type，另起一个 contract 名会让消息被静默丢弃）。
