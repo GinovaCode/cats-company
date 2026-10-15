@@ -15,6 +15,7 @@ import {
   Image as ImageIcon,
   ListFilter,
   Plus,
+  Share2,
   RefreshCw,
   RotateCcw,
   Tag,
@@ -1214,27 +1215,30 @@ export default function CloudArtifactsPanel({
                         </p>
                       </div>
                     </button>
-                    <button
-                      type="button"
-                      className="cloud-artifact-open-external"
-                      aria-label={'在新页面打开 ' + (app?.title || app?.id || '')}
-                      onClick={() => openGatewayApp(app, 'window')}
-                    >
-                      新页面打开
-                    </button>
-                    <button
-                      type="button"
-                      className="cloud-artifact-open-external"
-                      aria-label={copiedShareID === app?.id
-                        ? '已复制 ' + (app?.title || app?.id || '') + ' 的分享链接'
-                        : '复制 ' + (app?.title || app?.id || '') + ' 的分享链接'}
-                      title={copiedShareID === app?.id
-                        ? '已复制（对方无需账号即可打开）'
-                        : '复制分享链接（对方无需账号即可打开）'}
-                      onClick={() => copyGatewayShareURL(app)}
-                    >
-                      {copiedShareID === app?.id ? '已复制' : '复制链接'}
-                    </button>
+                    <div className="cloud-artifact-actions">
+                      <button
+                        type="button"
+                        aria-label={'在新页面打开 ' + (app?.title || app?.id || '')}
+                        title="在新页面打开"
+                        onClick={() => openGatewayApp(app, 'window')}
+                      >
+                        <ExternalLink size={17} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={copiedShareID === app?.id
+                          ? '已复制 ' + (app?.title || app?.id || '') + ' 的分享链接'
+                          : '复制 ' + (app?.title || app?.id || '') + ' 的分享链接'}
+                        title={copiedShareID === app?.id
+                          ? '已复制（对方无需账号即可打开）'
+                          : '复制分享链接（对方无需账号即可打开）'}
+                        onClick={() => copyGatewayShareURL(app)}
+                      >
+                        {copiedShareID === app?.id
+                          ? <Check size={17} aria-hidden="true" />
+                          : <Share2 size={17} aria-hidden="true" />}
+                      </button>
+                    </div>
                   </article>
                 );
               })}

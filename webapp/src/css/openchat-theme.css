@@ -1438,8 +1438,7 @@ body {
   border-bottom: 1px solid var(--v3-border);
 }
 
-.cloud-artifacts-gateway-viewer-bar button,
-.cloud-artifact-open-external {
+.cloud-artifacts-gateway-viewer-bar button {
   flex: 0 0 auto;
   padding: 6px 12px;
   border: 1px solid transparent;
@@ -1451,14 +1450,12 @@ body {
   cursor: pointer;
 }
 
-.cloud-artifacts-gateway-viewer-bar button:hover,
-.cloud-artifact-open-external:hover {
+.cloud-artifacts-gateway-viewer-bar button:hover {
   color: var(--v3-text-main);
   background: var(--v3-bg-message-hover);
 }
 
-.cloud-artifacts-gateway-viewer-bar button:focus-visible,
-.cloud-artifact-open-external:focus-visible {
+.cloud-artifacts-gateway-viewer-bar button:focus-visible {
   outline: 2px solid var(--v3-primary);
   outline-offset: 2px;
 }
@@ -1478,10 +1475,6 @@ body {
   margin: 6px 2px 0;
   font-size: 12px;
   color: var(--v3-text-muted);
-}
-
-.cloud-artifact-open-external {
-  margin-left: 4px;
 }
 
 /* Review card for messages carrying gateway_annotations metadata. */
