@@ -1395,6 +1395,10 @@
         window.removeEventListener('resize', onCaptureEnvironmentChanged);
         unregisterInstance(onUrlChanged);
         state.session = null;
+        // Drop any in-flight compose bookkeeping: after dispose the instance no
+        // longer listens, so a late ack could never be matched anyway, and the
+        // map would otherwise pin request ids for the life of the page.
+        state.composeRequests.clear();
         liveInstances.delete(instance);
         if (singleton === instance) {
           singleton = null;

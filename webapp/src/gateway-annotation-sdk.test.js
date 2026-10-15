@@ -1330,6 +1330,22 @@ describe('compose channel (SDK side)', () => {
     expect(() => sendComposeAck(requestId, { accepted: true })).not.toThrow();
   });
 
+  it('drops compose bookkeeping on dispose: a late ack is never delivered', () => {
+    const acks = [];
+    const { sdk, posted } = createComposeSdk(acks);
+    connect();
+
+    expect(sdk.proposeCompose({ text: 'hello' })).toBe(true);
+    const { request_id: requestId } = composeMessages(posted)[0];
+    sdk.dispose();
+
+    // The instance stopped listening, so the pending request must not resolve
+    // and must not be kept around.
+    sendComposeAck(requestId, { accepted: true });
+    expect(acks).toHaveLength(0);
+    expect(sdk.proposeCompose({ text: 'after dispose' })).toBe(false);
+  });
+
   it('does not disturb the annotation handshake', () => {
     const { sdk, posted } = createComposeSdk([]);
     connect();
