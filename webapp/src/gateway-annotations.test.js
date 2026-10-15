@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  ARTIFACT_COMPOSE_ACK_TYPE,
+  ARTIFACT_COMPOSE_TYPE,
   GATEWAY_ANNOTATION_BRIDGE_CONTRACT,
   GATEWAY_ANNOTATIONS_CONTRACT,
   GATEWAY_HOST_CONNECT_TYPE,
@@ -7,6 +9,7 @@ import {
   GATEWAY_SDK_READY_TYPE,
   GATEWAY_SDK_TARGET_TYPE,
   createGatewayAnnotationHost,
+  normalizeArtifactCompose,
   normalizeGatewayAnnotationSelection,
   normalizeGatewayAnnotations,
   normalizeGatewayScreenshotResult,
@@ -990,5 +993,213 @@ describe('session lifecycle (reload / stale binding / gated targets)', () => {
       source: h.contentWindow,
     });
     expect(callbacks.onSelection).toHaveBeenCalledTimes(1); // revision-less target accepted
+  });
+});
+
+
+describe('normalizeArtifactCompose', () => {
+  it('accepts any non-empty string, including multi-line text', () => {
+    expect(normalizeArtifactCompose({ text: 'a' })).toEqual({ text: 'a' });
+    expect(normalizeArtifactCompose({ text: 'line1\nline2' })).toEqual({ text: 'line1\nline2' });
+  });
+
+  it('keeps the text verbatim: no trimming, no length cap, no template', () => {
+    const text = '  \u524d\u540e\u6709\u7a7a\u683c  ';
+    expect(normalizeArtifactCompose({ text })).toEqual({ text });
+    const long = 'x'.repeat(50000);
+    expect(normalizeArtifactCompose({ text: long })).toEqual({ text: long });
+  });
+
+  it('rejects empty, whitespace-only, and non-string text', () => {
+    expect(normalizeArtifactCompose({ text: '' })).toBeNull();
+    expect(normalizeArtifactCompose({ text: '   \n  ' })).toBeNull();
+    expect(normalizeArtifactCompose({ text: 42 })).toBeNull();
+    expect(normalizeArtifactCompose({})).toBeNull();
+  });
+
+  it('rejects non-object payloads', () => {
+    expect(normalizeArtifactCompose(null)).toBeNull();
+    expect(normalizeArtifactCompose('text')).toBeNull();
+    expect(normalizeArtifactCompose(['text'])).toBeNull();
+  });
+});
+
+describe('compose channel (application -> conversation)', () => {
+  const composeAcks = (h) => h.posted
+    .filter((p) => p.message.type === ARTIFACT_COMPOSE_ACK_TYPE)
+    .map((p) => p.message);
+
+  function composeMessage(connect, text, overrides = {}) {
+    return {
+      type: ARTIFACT_COMPOSE_TYPE,
+      contract_version: BRIDGE,
+      session_id: connect.session_id,
+      request_id: 'req-1',
+      text,
+      ...overrides,
+    };
+  }
+
+  function sendCompose(h, connect, text, overrides = {}) {
+    h.handleWindowMessage({
+      data: composeMessage(connect, text, overrides),
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+  }
+
+  it('hands the text and the binding to the consumer, then acks acceptance', async () => {
+    const onCompose = vi.fn(() => ({ ok: true }));
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, '\u5e2e\u6211\u628a\u8fd9\u4efd\u5468\u62a5\u6539\u6210\u7ed9\u5ba2\u6237\u770b\u7684\u7248\u672c');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCompose).toHaveBeenCalledTimes(1);
+    expect(onCompose.mock.calls[0][0]).toBe('\u5e2e\u6211\u628a\u8fd9\u4efd\u5468\u62a5\u6539\u6210\u7ed9\u5ba2\u6237\u770b\u7684\u7248\u672c');
+    expect(onCompose.mock.calls[0][1]).toMatchObject({ appId: 'board', agentUid: 101 });
+
+    const acks = composeAcks(h);
+    expect(acks).toHaveLength(1);
+    expect(acks[0]).toMatchObject({
+      accepted: true,
+      reason: '',
+      request_id: 'req-1',
+      contract_version: BRIDGE,
+      session_id: connect.session_id,
+    });
+  });
+
+  it('never puts a conversation id in the ack: the frame cannot act on one', async () => {
+    const { h, host, callbacks } = setup({ callbacks: { onCompose: () => ({ ok: true }) } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, 'hello');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const [ack] = composeAcks(h);
+    expect(ack).toBeDefined();
+    expect(Object.keys(ack)).not.toContain('topic_id');
+    expect(JSON.stringify(ack)).not.toContain('topic');
+  });
+
+  it('refuses an empty or whitespace-only text with a reason', async () => {
+    const onCompose = vi.fn();
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, '   ');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCompose).not.toHaveBeenCalled();
+    expect(composeAcks(h)[0]).toMatchObject({ accepted: false, reason: 'empty_text' });
+  });
+
+  it('relays a consumer refusal verbatim so the application can explain it', async () => {
+    const onCompose = vi.fn(() => ({ ok: false, reason: 'agent_forbidden' }));
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, 'hello');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(composeAcks(h)[0]).toMatchObject({ accepted: false, reason: 'agent_forbidden' });
+  });
+
+  it('awaits an async consumer before acking', async () => {
+    let settle;
+    const onCompose = vi.fn(() => new Promise((resolve) => { settle = resolve; }));
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, 'hello');
+    await Promise.resolve();
+    expect(composeAcks(h)).toHaveLength(0); // still in flight
+
+    settle({ ok: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(composeAcks(h)[0]).toMatchObject({ accepted: true });
+  });
+
+  it('reports a throwing consumer as a send failure instead of breaking the dispatcher', async () => {
+    const onCompose = vi.fn(() => { throw new Error('boom'); });
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, 'hello');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(composeAcks(h)[0]).toMatchObject({ accepted: false, reason: 'send_failed' });
+  });
+
+  it('refuses a compose before the handshake completed', async () => {
+    const onCompose = vi.fn();
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    expect(host.connect()).toBe(true);
+    const connect = h.connectMessage();
+
+    sendCompose(h, connect, 'hello');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCompose).not.toHaveBeenCalled();
+    expect(composeAcks(h)[0]).toMatchObject({ accepted: false, reason: 'not_connected' });
+  });
+
+  it('drops a compose carrying a stale session token', async () => {
+    const onCompose = vi.fn(() => ({ ok: true }));
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    sendCompose(h, connect, 'forged', { session_id: 'catsco_not_the_real_token' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCompose).not.toHaveBeenCalled();
+    expect(composeAcks(h)).toHaveLength(0);
+  });
+
+  it('drops a compose from a foreign origin', async () => {
+    const onCompose = vi.fn(() => ({ ok: true }));
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    const connect = connectReady(h, host, callbacks);
+
+    h.handleWindowMessage({
+      data: composeMessage(connect, 'forged'),
+      origin: 'https://evil.example.com',
+      source: h.contentWindow,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCompose).not.toHaveBeenCalled();
+    expect(composeAcks(h)).toHaveLength(0);
+  });
+
+  it('exposes compose() on the host handle for programmatic use', async () => {
+    const onCompose = vi.fn(() => ({ ok: true }));
+    const { h, host, callbacks } = setup({ callbacks: { onCompose } });
+    connectReady(h, host, callbacks);
+
+    host.compose('from the host');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onCompose).toHaveBeenCalledTimes(1);
+    expect(onCompose.mock.calls[0][0]).toBe('from the host');
+  });
+
+  it('leaves the annotation channel untouched', () => {
+    const { h, host, callbacks } = setup({ callbacks: { onCompose: () => ({ ok: true }) } });
+    connectReady(h, host, callbacks);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+    expect(host.readyCapabilities()).toEqual(['element', 'text', 'region']);
   });
 });

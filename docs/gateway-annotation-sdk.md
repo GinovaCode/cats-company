@@ -95,7 +95,7 @@ import {
 </script>
 ```
 
-返回 `{ dispose(), setRevision(next), mode() }`（`setRevision` 在 page 实际变化时走与导航相同的文档失效路径：清空 hover/拖拽/选区态并重挂 mode 提示，旧 revision 下的拖拽不得以新 revision 发布；未变化时仅上报 page）：
+返回 `{ dispose(), setRevision(next), mode(), proposeCompose(text) }`（`setRevision` 在 page 实际变化时走与导航相同的文档失效路径：清空 hover/拖拽/选区态并重挂 mode 提示，旧 revision 下的拖拽不得以新 revision 发布；未变化时仅上报 page）：
 
 - 自动响应宿主 `connect.v1`（校验 `event.origin === parentOrigin` 且 `event.source === window.parent`），回 `ready.v1`；每次新 connect 重绑到最新 session。
 - `mode.v1` 切换显式选择态；`off` 完全恢复普通页面交互（overlay 移除、拦截监听不消费事件）。
@@ -114,6 +114,34 @@ SDK 上报的 selection **没有 body**（评论由宿主 composer 填写）。�
 `{id, kind, label, body, target}` 组装进 `metadata.gateway_annotations` 并调用
 `normalizeGatewayAnnotations` 校验；通过后随正常消息发出（HTTP/WS 同一路径，
 服务端按 `docs/gateway-annotation-backend.md` 授权并 canonical 落库）。
+
+### 4.1 compose 通道（应用主动注入一段文本）
+
+标注是「用户在应用里选中 → 附到消息上」；compose 是反方向：「应用交出一段自由文本 → 直接进入会话」。
+两者共用同一条宿主桥（同一 contract、同一 session token、同一 origin/source 校验），只多一个消息类型。
+
+应用侧：
+
+```js
+const host = window.CatsCoAnnotations.create({ parentOrigin, onComposeAck: ({ accepted, reason }) => {} });
+host.proposeCompose({ text: '帮我把这份周报改成给客户看的版本\n\n产出：/opt/app/deliverables/weekly.xlsx' });
+host.proposeCompose('直接传字符串也可以');
+```
+
+- **只有一个业务字段 `text`**：没有模板、没有 files 数组、不做 trim（原样传递）。空字符串或全空白在 SDK 侧本地拒绝并返回 `false`。
+- **不自设长度上限**：SDK 与宿主都不额外加码，避免误伤正常长文本。这条路径**没有应用层长度校验**：宿主经 `api.sendMessage` 走 REST（`POST /api/messages/send`），服务端 `normalizeMessageRequest` 只校验正文非空；外层边界是 nginx 的 `client_max_body_size`，存储侧是 Postgres `TEXT`。WS 的 64 KiB 帧上限与此无关 —— 这条路不发 WS。
+- 返回 `false` 只表示「没能交出去」（未连接 / 载荷不合法）；真正结果通过 `onComposeAck` 异步回来：`{ accepted, reason }`。
+- **回执不含会话 id**：应用在跨域 iframe 里没有平台 API 访问能力，拿到会话 id 也无从使用，所以成功/失败就是全部契约。
+- 信封的 `contract_version` 复用 `catsco.gateway-annotation-bridge.v1`（宿主先校验信封再看 type，另起一个 contract 名会让消息被静默丢弃）。
+
+宿主侧：`createGatewayAnnotationHost({ ..., onCompose(text, binding) })`。回调收到文本与该绑定的身份
+（`appId` / `agentUid`），返回 `{ ok, reason }` 或 Promise。宿主据此决定发到哪个会话并发送：
+
+- **注入目标永远是「该应用所属 bot 的会话」**，因为应用引用的文件在那个 bot 的机器上，只有它能读到。
+- 当前会话就是这个 bot → 直接发；否则先 `api.openAgent(ownerUid)` 建会话、切过去再发。
+- 失败原因（`agent_forbidden` / `not_logged_in` / `open_failed` / `send_failed`）原样回给应用，宿主同时给出用户可见提示。
+- 消息带来源标记 `metadata: { app_id, agent_uid }`，供后续回溯「这条是哪个应用注入的」。
+- 宿主 handle 上也暴露 `host.compose(text)` 供程序化调用。
 
 ## 5. 测试
 
