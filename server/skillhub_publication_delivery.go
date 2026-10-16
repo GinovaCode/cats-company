@@ -56,11 +56,15 @@ type publicationDeliveryWorker struct {
 }
 
 func newPublicationDeliveryWorkerFromEnv(h *Hub) *publicationDeliveryWorker {
-	v := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DELIVERY_ENABLED"))
-	if !publicationWorkspaceEntriesEnabled() || (v != "1" && !strings.EqualFold(v, "true")) {
+	if !publicationDeliveryEnabled() {
 		return nil
 	}
 	return newPublicationDeliveryWorker(h)
+}
+
+func publicationDeliveryEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DELIVERY_ENABLED"))
+	return publicationWorkspaceEntriesEnabled() && (v == "1" || strings.EqualFold(v, "true"))
 }
 
 func newPublicationDeliveryWorker(h *Hub) *publicationDeliveryWorker {

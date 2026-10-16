@@ -93,6 +93,7 @@ type Hub struct {
 
 	publicationWorkspaceEntries bool
 	publicationEntryLimits      *HTTPRateLimiter
+	publicationAdmissions       chan struct{}
 	publicationDelivery         *publicationDeliveryWorker
 }
 
@@ -195,6 +196,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	}
 	hub.publicationWorkspaceEntries = publicationWorkspaceEntriesEnabled()
 	hub.publicationEntryLimits = NewHTTPRateLimiter()
+	hub.publicationAdmissions = make(chan struct{}, 16)
 	hub.publicationDelivery = newPublicationDeliveryWorkerFromEnv(hub)
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
