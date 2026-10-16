@@ -1,6 +1,6 @@
 # Shimo browser worker
 
-This internal CatsCo service owns interactive Shimo login and read-only browser sessions. It never receives a CatsCo user ID, agent ID, task message, password, verification code, or actor token. CatsCo identifies a session with an opaque HMAC binding.
+This internal CatsCo service owns interactive Shimo login and browser sessions for reads and separately authorized native-sheet writes. It never receives a CatsCo user ID, agent ID, task message, password, verification code, or actor token. CatsCo identifies a session with an opaque HMAC binding.
 
 ## Runtime flow
 
@@ -8,7 +8,24 @@ This internal CatsCo service owns interactive Shimo login and read-only browser 
 2. The Worker starts a temporary Chromium context and returns a random `/shimo-login/{token}/` URL.
 3. The user operates the isolated Shimo page directly in a live canvas. A same-origin WebSocket streams frames and forwards pointer (including double-click), keyboard, paste, Chinese IME, and wheel input; recoverable input validation errors are shown inline without ending the login attempt. The older HTTP screenshot endpoints remain as a connection fallback. QR login works by opening the WeChat option and scanning the displayed code.
 4. The Worker detects `https://shimo.im/lizard-api/users/me`, exports Playwright storage state, encrypts it with AES-256-GCM, and closes the login browser.
-5. Every read creates a fresh headless browser context from that user's encrypted state.
+5. Every read or write creates a fresh headless browser context from that user's encrypted state.
+
+## Native-sheet writes
+
+Writes are available only through the separately allowlisted writer capability. Exact updates
+reread the requested cells before and after the write. Because Shimo trims leading and trailing
+blank rows and columns, the write path recursively subdivides an ambiguous response until each
+value has an absolute coordinate; if the bounded probe budget is exhausted, it refuses the write
+instead of guessing. Append planning likewise locates the first populated row before scanning to
+the first blank row.
+
+Shimo's official values API defines `POST /sheets/values` as an exact-range update and
+`PUT /sheets/values` as an append that searches for the table tail inside the supplied range.
+The worker therefore passes the normalized continuous-table anchor to PUT, then rereads the exact
+target range. An entirely blank anchor is initialized with an exact POST.
+
+- Update API: https://shimo-sdk.apifox.cn/api-334628363
+- Append API: https://shimo-sdk.apifox.cn/api-334628364
 
 The login URL is a bearer secret. It expires after ten minutes, is excluded from referrers and caches, and must never be logged by reverse proxies.
 

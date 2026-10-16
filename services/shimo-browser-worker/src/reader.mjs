@@ -275,6 +275,85 @@ export async function fetchRangeValues(context, fileId, sheetName, cellRange, { 
   return payload.values;
 }
 
+// The values endpoint trims leading/trailing blank rows and columns and does not
+// return the surviving range coordinates. That shape is fine for ordinary
+// reads, whose contract is an ordered list of rows, but it cannot be aligned to
+// an absolute A1 range for a write precondition. Exact write reads therefore
+// subdivide an ambiguous response until every returned value has an unambiguous
+// coordinate. Dense ranges still take one request; sparse ranges fail closed
+// once the bounded probe budget is exhausted instead of guessing coordinates.
+export const MAX_EXACT_WRITE_READS = 512;
+
+function rangeForCoordinates(startColumn, startRow, endColumn, endRow) {
+  return columnLabel(startColumn) + startRow + ':' + columnLabel(endColumn) + endRow;
+}
+
+function hasExactShape(values, height, width) {
+  return values.length === height && values.every(row => row.length === width);
+}
+
+function containsNonEmptyValue(values) {
+  return values.some(row => row.some(value => value !== undefined && value !== null && value !== ''));
+}
+
+export async function fetchExactRangeValues(context, fileId, sheetName, cellRange, {
+  timeoutMs,
+  maxRequests = MAX_EXACT_WRITE_READS,
+} = {}) {
+  const requested = parseA1Range(cellRange);
+  const height = requested.endRow - requested.startRow + 1;
+  const width = requested.endColumn - requested.startColumn + 1;
+  const result = Array.from({ length: height }, () => Array(width).fill(''));
+  let requests = 0;
+
+  const read = async (startColumn, startRow, endColumn, endRow) => {
+    requests += 1;
+    if (requests > maxRequests) {
+      throw new ShimoWorkerError(
+        'EXACT_READ_TOO_COMPLEX',
+        `目标范围包含较多空白边界，精确定位超过 ${maxRequests} 次读取；请把写入范围拆小后重新预览。`,
+        400,
+      );
+    }
+    const range = rangeForCoordinates(startColumn, startRow, endColumn, endRow);
+    const values = await fetchRangeValues(context, fileId, sheetName, range, { timeoutMs });
+    if (!containsNonEmptyValue(values)) return;
+
+    const subHeight = endRow - startRow + 1;
+    const subWidth = endColumn - startColumn + 1;
+    if (hasExactShape(values, subHeight, subWidth)) {
+      for (let rowOffset = 0; rowOffset < subHeight; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < subWidth; columnOffset += 1) {
+          const value = values[rowOffset][columnOffset];
+          result[startRow - requested.startRow + rowOffset][startColumn - requested.startColumn + columnOffset]
+            = value === undefined || value === null ? '' : value;
+        }
+      }
+      return;
+    }
+
+    if (subHeight === 1 && subWidth === 1) {
+      const value = values[0]?.[0];
+      result[startRow - requested.startRow][startColumn - requested.startColumn]
+        = value === undefined || value === null ? '' : value;
+      return;
+    }
+
+    if (subHeight >= subWidth && subHeight > 1) {
+      const middleRow = Math.floor((startRow + endRow) / 2);
+      await read(startColumn, startRow, endColumn, middleRow);
+      await read(startColumn, middleRow + 1, endColumn, endRow);
+      return;
+    }
+    const middleColumn = Math.floor((startColumn + endColumn) / 2);
+    await read(startColumn, startRow, middleColumn, endRow);
+    await read(middleColumn + 1, startRow, endColumn, endRow);
+  };
+
+  await read(requested.startColumn, requested.startRow, requested.endColumn, requested.endRow);
+  return { values: result, requests };
+}
+
 function matrixForRange(values, cellRange) {
   const parsed = parseA1Range(cellRange);
   const height = parsed.endRow - parsed.startRow + 1;
@@ -340,9 +419,46 @@ export async function inspectAppendPosition(context, fileId, sheetName, cellRang
   if (plan.truncated) {
     throw new ShimoWorkerError('RANGE_TOO_LARGE', '追加定位范围过大，请缩小到连续数据区域。', 400);
   }
-  let appendAfterRow = parsed.startRow - 1;
   let requests = 0;
+  const readContainsValue = async (startRow, endRow) => {
+    const range = rangeForCoordinates(parsed.startColumn, startRow, parsed.endColumn, endRow);
+    const values = await fetchRangeValues(context, fileId, sheetName, range);
+    requests += 1;
+    return containsNonEmptyValue(values);
+  };
+
+  // Locate the first populated row without relying on the row offset of a
+  // trimmed response. Range non-emptiness survives trimming, so a bounded
+  // binary search gives us an absolute row number.
+  let firstDataRow = null;
   for (const band of plan.bands) {
+    if (!await readContainsValue(band.start_row, band.end_row)) continue;
+    let low = band.start_row;
+    let high = band.end_row;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (await readContainsValue(low, middle)) high = middle;
+      else low = middle + 1;
+    }
+    firstDataRow = low;
+    break;
+  }
+
+  if (firstDataRow === null) {
+    return {
+      inspected_at: new Date().toISOString(), requested_range: cellRange,
+      first_data_row: null, append_after_row: parsed.startRow - 1,
+      append_anchor_range: cellRange, requests, source_kind: 'native_sheet',
+    };
+  }
+
+  let appendAfterRow = firstDataRow - 1;
+  const scanRange = rangeForCoordinates(parsed.startColumn, firstDataRow, parsed.endColumn, parsed.endRow);
+  const scanPlan = planRowBands(scanRange);
+  for (const band of scanPlan.bands) {
+    // A later disconnected block must not move the tail past the first blank
+    // row. Check the first row separately before reading the whole band.
+    if (!await readContainsValue(band.start_row, band.start_row)) break;
     const rows = await fetchRangeValues(context, fileId, sheetName, band.range);
     requests += 1;
     const bandHeight = band.end_row - band.start_row + 1;
@@ -350,7 +466,9 @@ export async function inspectAppendPosition(context, fileId, sheetName, cellRang
       if (rowIsEmpty(rows[offset], width)) {
         return {
           inspected_at: new Date().toISOString(), requested_range: cellRange,
-          append_after_row: appendAfterRow, requests, source_kind: 'native_sheet',
+          first_data_row: firstDataRow, append_after_row: appendAfterRow,
+          append_anchor_range: rangeForCoordinates(parsed.startColumn, firstDataRow, parsed.endColumn, parsed.endRow),
+          requests, source_kind: 'native_sheet',
         };
       }
       appendAfterRow = band.start_row + offset;
@@ -358,7 +476,9 @@ export async function inspectAppendPosition(context, fileId, sheetName, cellRang
   }
   return {
     inspected_at: new Date().toISOString(), requested_range: cellRange,
-    append_after_row: appendAfterRow, requests, source_kind: 'native_sheet',
+    first_data_row: firstDataRow, append_after_row: appendAfterRow,
+    append_anchor_range: rangeForCoordinates(parsed.startColumn, firstDataRow, parsed.endColumn, parsed.endRow),
+    requests, source_kind: 'native_sheet',
   };
 }
 
@@ -778,7 +898,7 @@ export class PlaywrightShimoEngine {
     validateWriteMatrix(cellRange, values);
     return this.withContext(storageState, async context => {
       await this.assertNativeSheetWritable(context, url);
-      const current = matrixForRange(await fetchRangeValues(context, fileId, sheetName, cellRange), cellRange);
+      const current = (await fetchExactRangeValues(context, fileId, sheetName, cellRange)).values;
       const expected = matrixForRange(expectedValues, cellRange);
       const desired = matrixForRange(values, cellRange);
       if (matricesEqual(current, desired)) {
@@ -791,7 +911,7 @@ export class PlaywrightShimoEngine {
         throw new ShimoWorkerError('PRECONDITION_FAILED', '目标单元格在确认后已发生变化；已停止写入，请重新生成预览。', 409);
       }
       await writeRangeValues(context, 'update', fileId, sheetName, cellRange, values);
-      const after = matrixForRange(await fetchRangeValues(context, fileId, sheetName, cellRange), cellRange);
+      const after = (await fetchExactRangeValues(context, fileId, sheetName, cellRange)).values;
       if (!matricesEqual(after, desired)) {
         throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受写入，但回读结果与计划不一致；请人工检查目标范围。', 502);
       }
@@ -826,7 +946,7 @@ export class PlaywrightShimoEngine {
       const position = await inspectAppendPosition(context, fileId, sheetName, cellRange);
       const desired = matrixForRange(values, targetRange);
       if (position.append_after_row !== expectedAppendAfterRow) {
-        const existingTarget = matrixForRange(await fetchRangeValues(context, fileId, sheetName, targetRange), targetRange);
+        const existingTarget = (await fetchExactRangeValues(context, fileId, sheetName, targetRange)).values;
         if (matricesEqual(existingTarget, desired)) {
           return {
             written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
@@ -836,8 +956,16 @@ export class PlaywrightShimoEngine {
         }
         throw new ShimoWorkerError('PRECONDITION_FAILED', '表格末尾在确认后已发生变化；已停止追加，请重新生成预览。', 409);
       }
-      await writeRangeValues(context, 'append', fileId, sheetName, cellRange, values);
-      const after = matrixForRange(await fetchRangeValues(context, fileId, sheetName, targetRange), targetRange);
+      // Shimo documents PUT as an append operation whose range is the table
+      // search anchor. Start that anchor at the first populated row we found,
+      // so leading blank rows cannot change the upstream table boundary. An
+      // entirely blank anchor is initialized with an exact POST instead.
+      if (position.first_data_row === null) {
+        await writeRangeValues(context, 'update', fileId, sheetName, targetRange, values);
+      } else {
+        await writeRangeValues(context, 'append', fileId, sheetName, position.append_anchor_range, values);
+      }
+      const after = (await fetchExactRangeValues(context, fileId, sheetName, targetRange)).values;
       if (!matricesEqual(after, desired)) {
         throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受追加，但回读结果与计划不一致；请人工检查目标范围。', 502);
       }

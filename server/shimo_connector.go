@@ -25,7 +25,7 @@ import (
 const (
 	shimoConnectorAudience = "catsco-shimo-connector"
 	shimoConnectorIssuer   = "catscompany"
-	shimoConnectorRevision = "catsco-shimo-v2"
+	shimoConnectorRevision = "catsco-shimo-mvp-1"
 	shimoReadCapability    = "shimo:connect shimo:read"
 	shimoWriteCapability   = "shimo:connect shimo:read shimo:write"
 	defaultShimoAttemptTTL = 5 * time.Minute

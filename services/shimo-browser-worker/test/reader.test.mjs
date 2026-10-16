@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
-  downloadUploadedFileBytes, fetchRangeValues, htmlShellVerdict, inspectAppendPosition, loadUploadedWorkbook, looksLikeAccessDeniedPage,
+  downloadUploadedFileBytes, fetchExactRangeValues, fetchRangeValues, htmlShellVerdict, inspectAppendPosition, loadUploadedWorkbook, looksLikeAccessDeniedPage,
   looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
   MAX_UPLOADED_WINDOW_CELLS, PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, sliceXlsxGrid,
   UNREADABLE_DOCUMENT_MESSAGE,
@@ -360,7 +360,68 @@ test('追加定位按连续数据的第一处空行计算，不会越过中间�
   };
   const result = await inspectAppendPosition(context, 'FileId', '工作表1', 'A1:B5');
   assert.equal(result.append_after_row, 2);
-  assert.equal(result.requests, 1);
+  assert.ok(result.requests >= 2);
+});
+
+function trimmedGridContext(grid) {
+  const isBlank = value => value === undefined || value === null || value === '';
+  return {
+    request: {
+      async get(endpoint) {
+        const apiRange = decodeURIComponent(new URL(endpoint).searchParams.get('range'));
+        const cellRange = apiRange.slice(apiRange.lastIndexOf('!') + 1);
+        const parsed = parseA1Range(cellRange);
+        const rows = [];
+        for (let row = parsed.startRow; row <= parsed.endRow; row += 1) {
+          const values = [];
+          for (let column = parsed.startColumn; column <= parsed.endColumn; column += 1) {
+            values.push(grid[row - 1]?.[column - 1] ?? '');
+          }
+          rows.push(values);
+        }
+        while (rows.length && rows[0].every(isBlank)) rows.shift();
+        while (rows.length && rows.at(-1).every(isBlank)) rows.pop();
+        if (rows.length) {
+          while (rows[0].length && rows.every(row => isBlank(row[0]))) rows.forEach(row => row.shift());
+          while (rows[0].length && rows.every(row => isBlank(row.at(-1)))) rows.forEach(row => row.pop());
+        }
+        const payload = { values: rows };
+        return {
+          status: () => 200, ok: () => true,
+          text: async () => JSON.stringify(payload), json: async () => payload,
+        };
+      },
+    },
+  };
+}
+
+test('写入精确读取能还原被石墨裁掉的前导空行和空列', async () => {
+  const context = trimmedGridContext([
+    ['', ''],
+    ['', '旧客户'],
+  ]);
+  const result = await fetchExactRangeValues(context, 'FileId', '项目表', 'A1:B2');
+  assert.deepEqual(result.values, [['', ''], ['', '旧客户']]);
+  assert.ok(result.requests > 1);
+});
+
+test('追加定位在前导空行后找到真实连续表尾', async () => {
+  const context = trimmedGridContext([
+    ['', ''],
+    ['', ''],
+    ['', ''],
+    ['', ''],
+    ['日期', '客户'],
+    ['2026-10-15', 'A'],
+    ['2026-10-16', 'B'],
+    ['', ''],
+    ['later', '不会越过空行'],
+    ['', ''],
+  ]);
+  const result = await inspectAppendPosition(context, 'FileId', '项目表', 'A1:B10');
+  assert.equal(result.first_data_row, 5);
+  assert.equal(result.append_after_row, 7);
+  assert.equal(result.append_anchor_range, 'A5:B10');
 });
 
 const contextReturning = (status, body) => ({
@@ -484,6 +545,27 @@ test('范围更新先核对旧值，写后回读，并可幂等重试', async ()
   assert.equal(repeated.already_applied, true);
 });
 
+test('范围更新在首行首列为空时仍按绝对坐标完成前置检查与回读', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户', tabs: ['项目表'] });
+  const grid = [['', ''], ['', '旧客户']];
+  const request = trimmedGridContext(grid).request;
+  let postCalls = 0;
+  request.post = async (endpoint, options) => {
+    postCalls += 1;
+    assert.equal(options.data.range, '项目表!A1:B2');
+    grid.splice(0, 2, ...options.data.resource.values.map(row => [...row]));
+    return { status: () => 204, ok: () => true, text: async () => '' };
+  };
+  const result = await engineFor(page, request).updateSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B2',
+    [['', ''], ['', '新客户']], [['', ''], ['', '旧客户']],
+  );
+  assert.equal(result.verified, true);
+  assert.equal(result.already_applied, false);
+  assert.equal(postCalls, 1);
+  assert.deepEqual(grid, [['', ''], ['', '新客户']]);
+});
+
 test('范围更新发现预览后的并发修改时停止写入', async () => {
   const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
   const changed = { values: [['同事刚改的客户', 8800]] };
@@ -521,6 +603,30 @@ test('追加按预览位置写入并回读目标行', async () => {
     {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B5', appended.values, 2,
   );
   assert.equal(result.written_range, 'A3:B3');
+  assert.equal(result.verified, true);
+  assert.equal(result.already_applied, false);
+  assert.equal(putCalls, 1);
+});
+
+test('追加会把 PUT 锚点规范到前导空行后的第一条数据', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '日期 客户', tabs: ['项目表'] });
+  const grid = [
+    ['', ''], ['', ''], ['', ''], ['', ''],
+    ['日期', '客户'], ['2026-10-15', 'A'], ['2026-10-16', 'B'],
+    ['', ''], ['', ''], ['', ''],
+  ];
+  const request = trimmedGridContext(grid).request;
+  let putCalls = 0;
+  request.put = async (endpoint, options) => {
+    putCalls += 1;
+    assert.equal(options.data.range, '项目表!A5:B10');
+    grid[7] = [...options.data.resource.values[0]];
+    return { status: () => 204, ok: () => true, text: async () => '' };
+  };
+  const result = await engineFor(page, request).appendSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B10', [['2026-10-17', 'C']], 7,
+  );
+  assert.equal(result.written_range, 'A8:B8');
   assert.equal(result.verified, true);
   assert.equal(result.already_applied, false);
   assert.equal(putCalls, 1);
