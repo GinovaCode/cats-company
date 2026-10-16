@@ -9871,9 +9871,11 @@ describe('MessagesView composer draft isolation', () => {
       expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
     });
 
-    it('opens the application in a new page, carrying this conversation', async () => {
-      // The handoff has to name the conversation and the owning bot, or the tab
-      // it opens lands as a guest on the wrong session.
+    it('opens the application in a new page at its own address', async () => {
+      // A new tab must not carry the hosted viewer URL: that address names this
+      // conversation and the owning bot, which is wrong to show in an address bar
+      // and wrong to hand to anyone else. The tab asks for a launch first, so the
+      // application still learns who opened it, and falls back to its own address.
       api.getMessages.mockResolvedValue({
         messages: [{
           id: 723,
@@ -9897,10 +9899,15 @@ describe('MessagesView composer draft isolation', () => {
       });
       api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
       api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
+      api.requestArtifactLaunch.mockResolvedValue({
+        launch_url: 'https://artifact.catsco.cc/_launch/code-9?next=/mario-test/',
+      });
 
       const opened = [];
       const openSpy = vi.spyOn(window, 'open').mockImplementation((url) => {
-        opened.push(String(url));
+        // The blank claim comes first, while the click is still the active
+        // gesture; the destination is filled in once the launch answers.
+        if (String(url)) opened.push(String(url));
         return null;
       });
 
@@ -9921,12 +9928,12 @@ describe('MessagesView composer draft isolation', () => {
       }
 
       expect(opened).toHaveLength(1);
-      const viewerURL = new URL(opened[0]);
-      expect(viewerURL.pathname).toBe('/artifact-viewer');
-      expect(viewerURL.searchParams.get('mode')).toBe('gateway');
-      expect(viewerURL.searchParams.get('topic')).toBe('p2p_1_440');
-      expect(viewerURL.searchParams.get('agent')).toBe('440');
-      expect(viewerURL.searchParams.get('artifact')).toBe('mario-test');
+      // The tab redeems a launch, which lands it on the application's own address
+      // with the visitor's identity already established.
+      expect(opened[0]).toBe('https://artifact.catsco.cc/_launch/code-9?next=/mario-test/');
+      expect(opened[0]).not.toContain('artifact-viewer');
+      // The launch names this conversation, so the tab it opens is not a stranger.
+      expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
       // The sidebar must not be opened as a side effect of the handoff.
       expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
     });

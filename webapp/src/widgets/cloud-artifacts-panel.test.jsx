@@ -842,7 +842,9 @@ describe('CloudArtifactsPanel', () => {
         .find((button) => button.textContent === '新页面打开').click();
       await Promise.resolve();
     });
-    expect(openSpy).toHaveBeenCalledWith(`${window.location.origin}/artifact-viewer?mode=gateway&topic=p2p_7_440&agent=440&artifact=saturday-demo`, '_blank', 'noopener,noreferrer');
+    // A new tab opens the application's own address, never the hosted viewer:
+    // the viewer URL would carry this conversation into the address bar.
+    expect(openSpy).toHaveBeenCalledWith('https://artifact.catsco.cc/saturday-demo/', '_blank', 'noopener,noreferrer');
 
     // Going back returns to the list.
     await act(async () => {
@@ -900,19 +902,20 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(loadedBinding.signal.aborted).toBe(false);
 
-    // The new page owns its launch; never copy the sidebar's single-use code.
+    // The new page asks for its own launch rather than reusing the sidebar's
+    // single-use code, and lands on the address that launch resolves to.
     api.requestArtifactLaunch.mockClear();
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '新页面打开').click();
       await Promise.resolve();
     });
+    expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: 'p2p_7_440' });
     expect(openSpy).toHaveBeenCalledWith(
-      `${window.location.origin}/artifact-viewer?mode=gateway&topic=p2p_7_440&agent=440&artifact=saturday-demo`,
+      'https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/',
       '_blank',
       'noopener,noreferrer',
     );
-    expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
 
@@ -1031,8 +1034,10 @@ describe('CloudArtifactsPanel', () => {
         .find((button) => button.textContent === '新页面打开').click();
       await Promise.resolve();
     });
+    // No launch could be obtained, so the tab still opens the application's own
+    // address rather than a viewer that would only show a guest.
     expect(openSpy).toHaveBeenCalledWith(
-      `${window.location.origin}/artifact-viewer?mode=gateway&topic=p2p_7_440&agent=440&artifact=saturday-demo`,
+      'https://artifact.catsco.cc/saturday-demo/',
       '_blank',
       'noopener,noreferrer',
     );
