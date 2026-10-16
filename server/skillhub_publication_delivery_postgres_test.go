@@ -222,4 +222,42 @@ func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 	if err := scoped.QueryRow(`SELECT COUNT(*) FROM skillhub_publication_outbox WHERE delivery_attempts=0`).Scan(&count); err != nil || count != 6 {
 		t.Fatal("old device entries consumed or rebound")
 	}
+	// A cancelled request survives a new Adapter/Hub and is never dispatched.
+	cancelInput := in
+	cancelInput.RequestID = "cancel-before-probe"
+	cancelInput.Source.RouteGeneration = 2
+	stopped, _, err := a2.CreateSkillHubPublicationEntry(context.Background(), cancelInput, store.DefaultSkillHubPublicationEntryPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CancelSkillHubPublicationEntry(context.Background(), actor, stopped.ID); err != nil {
+		t.Fatal(err)
+	}
+	w2.sweep()
+	if len(c2.send) != 0 {
+		t.Fatal("cancelled intent dispatched")
+	}
+	// The wire check is read-only and may already be in flight when cancelled.
+	// Its late success must receive 409 and leave the persisted receipt intact.
+	cancelInput.RequestID = "cancel-in-flight"
+	stopped, _, err = a2.CreateSkillHubPublicationEntry(context.Background(), cancelInput, store.DefaultSkillHubPublicationEntryPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.sweep()
+	late := deliveryProbe(t, c2)
+	if _, err := a.CancelSkillHubPublicationEntry(context.Background(), actor, stopped.ID); err != nil {
+		t.Fatal(err)
+	}
+	h2.handleThinToolRPCResult(c2, result(late))
+	deliveryProcess(t, w2)
+	deliveryAckStatus(t, c2, 409)
+	status, err := a2.GetSkillHubPublicationSourceStatus(context.Background(), actor, stopped.ID)
+	if err != nil || status == nil || status.State != "cancelled" || status.SourceVerifiedAt != nil {
+		t.Fatalf("late receipt replaced cancellation: %+v %v", status, err)
+	}
+	w2.sweep()
+	if len(c2.send) != 0 {
+		t.Fatal("cancelled intent requeued")
+	}
 }

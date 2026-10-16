@@ -169,7 +169,7 @@ func (h *Hub) admitPublicationWorkspace(ctx context.Context, r publicationIntake
 		fail(publicationAdmissionErrorCode(err))
 		return
 	}
-	if entry == nil || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.Input != in || entry.State != "waiting_runtime" {
+	if entry == nil || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.Input != in || (entry.State != "waiting_runtime" && entry.State != "cancelled") {
 		fail("publication.admission_uncertain")
 		return
 	}
@@ -181,7 +181,7 @@ func (h *Hub) admitPublicationWorkspace(ctx context.Context, r publicationIntake
 		fail("publication.admission_uncertain")
 		return
 	}
-	h.publicationIntakeReply(r, map[string]any{"schema_version": 2, "entry_request_id": entry.ID, "state": "waiting_runtime", "replay": replay}, "")
+	h.publicationIntakeReply(r, map[string]any{"schema_version": 2, "entry_request_id": entry.ID, "state": entry.State, "replay": replay}, "")
 }
 
 func publicationAdmissionErrorCode(err error) string {

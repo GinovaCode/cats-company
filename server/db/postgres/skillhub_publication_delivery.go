@@ -44,7 +44,7 @@ func (a *Adapter) listPublicationDeliveries(ctx context.Context, botUID int64, l
 		JOIN users actor ON actor.id=e.actor_uid AND actor.account_type='human' AND actor.state=0
 		JOIN users bot ON bot.id=e.bot_uid AND bot.account_type='bot' AND bot.state=0
 		JOIN bot_config b ON b.user_id=e.bot_uid AND b.owner_id=e.actor_uid AND b.body_id=e.body_id AND b.enabled=true
-		WHERE e.bot_uid=$1 AND o.kind='capture_candidate'
+		WHERE e.bot_uid=$1 AND e.state='waiting_runtime' AND o.kind='capture_candidate'
 		AND ((o.delivery_state='pending' AND o.delivery_attempts<8 AND o.next_attempt_at<=clock_timestamp())
 		OR (o.delivery_state='leased' AND o.lease_until<=clock_timestamp()))
 		`+filter+` ORDER BY e.created_at, e.entry_id LIMIT $2`, args...)
@@ -67,12 +67,15 @@ func (a *Adapter) listPublicationDeliveries(ctx context.Context, botUID int64, l
 // The caller must additionally prove the exact live socket/body lease; DB state
 // cannot independently authenticate NodeID, ConnectionID or local references.
 func lockPublicationDeliveryAuthority(ctx context.Context, tx *sql.Tx, id string, b store.SkillHubPublicationDeliveryBinding) error {
-	e, err := scanPublicationEntry(tx.QueryRowContext(ctx, `SELECT `+publicationEntryColumns+` FROM skillhub_publication_entries WHERE entry_id=$1`, id))
+	e, err := scanPublicationEntry(tx.QueryRowContext(ctx, `SELECT `+publicationEntryColumns+` FROM skillhub_publication_entries WHERE entry_id=$1 FOR SHARE`, id))
 	if err != nil {
 		return err
 	}
 	if e == nil {
 		return store.ErrSkillHubPublicationDenied
+	}
+	if e.State != "waiting_runtime" {
+		return store.ErrSkillHubPublicationSettled
 	}
 	expected := e.Input.Source
 	if b.Source.RouteGeneration < expected.RouteGeneration {

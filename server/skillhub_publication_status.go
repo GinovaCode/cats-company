@@ -29,6 +29,12 @@ func publicationSourceStatusProjection(s *store.SkillHubPublicationSourceStatus)
 	if (s.Attempts == 0 && s.LeaseUntil != nil) || (s.Attempts > 0 && (s.LeaseUntil == nil || s.LeaseUntil.IsZero())) {
 		return v, false
 	}
+	if s.State == "cancelled" {
+		// Cancellation wins presentation; keep old receipt evidence in storage,
+		// but do not advertise verifiedAt or a retry time for a stopped intent.
+		return publicationSourceStatusView{Stage: "cancelled", Attempts: s.Attempts,
+			MaxAttempts: store.SkillHubPublicationDeliveryAttempts, ObservedAt: s.ObservedAt.UTC()}, true
+	}
 	if s.State != "source_verified" && s.SourceVerifiedAt != nil {
 		return v, false
 	}

@@ -332,7 +332,7 @@ func (h *Hub) handlePublicationWorkspaceResult(client *Client, msg *MsgThinToolR
 		h.publicationWorkspaceReply(pending, nil, code)
 		return
 	}
-	if entry == nil || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.Input != in || entry.State != "waiting_runtime" {
+	if entry == nil || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.Input != in || (entry.State != "waiting_runtime" && entry.State != "cancelled") {
 		h.publicationWorkspaceReply(pending, nil, "publication.admission_uncertain")
 		return
 	}
@@ -343,6 +343,6 @@ func (h *Hub) handlePublicationWorkspaceResult(client *Client, msg *MsgThinToolR
 		return
 	}
 	h.publicationWorkspaceReply(pending, map[string]interface{}{
-		"schema_version": 1, "entry_request_id": entry.ID, "state": "waiting_runtime", "replay": replay,
+		"schema_version": 1, "entry_request_id": entry.ID, "state": entry.State, "replay": replay,
 	}, "")
 }

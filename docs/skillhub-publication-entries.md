@@ -12,7 +12,8 @@ or publish files or issue delegated credentials.
 The optional `store.SkillHubPublicationEntryStore` creates an immutable entry and
 a reference-only `capture_candidate` outbox row in one transaction. The optional
 worker below can lease it for read-only source probing, not capture. Creation
-always returns `waiting_runtime`, never a claim
+returns `waiting_runtime` for a new intent; replay preserves `cancelled` for a
+cancelled intent. Neither state is a claim
 that a file was captured, validated, uploaded or published.
 
 The database checks an active human account, an active enabled Bot owned by that
@@ -407,9 +408,61 @@ peer: it covers owner absence, node loss, lease recovery, stale replies, immutab
 intent and obsolete-device starvation. It is not a live XiaoBa or Redis deployment
 test. XiaoBa still must implement and explicitly advertise the new capability.
 
+## Pre-Cloud cancellation
+
+`CATSCO_SKILLHUB_PUBLICATION_CANCELLATION_ENABLED` defaults off. Set it to `1`
+or `true` (trimmed, case-insensitive) together with the read flag to enable
+`POST /api/skillhub/publications/entries/{entryRequestId}/cancel`. The request
+has an empty body, no query parameters and the same active-human Bearer JWT
+guards as reads. `entryCancellationEnabled` reports effective flag and adapter
+support. Admission and delivery flags are not required: stopping existing work
+must remain possible while those producers are disabled. GET never cancels.
+
+Only the original publisher who is **still the Bot Owner** can cancel. The
+store locks the entry, active human and current Bot ownership in one transaction.
+Offline/disabled/rebound Bots can be cancelled by that same Owner without runtime
+access; former Owners, new Owners, friends, Bots and service identities cannot
+cancel this historical intent. Reads retain their original-publisher policy.
+
+This action changes `waiting_runtime` to `cancelled`; repeating it is idempotent.
+It returns the ordinary private entry projection, never a Cloud publication or
+deletion claim. Missing/wrong publisher/ownership denial returns 404; an
+unsupported lifecycle transition returns 409. Unknown future read states fail
+closed. A 503 `publication.cancellation_uncertain` can follow a lost commit
+response: query the existing ID or retry the same cancel, not a new publication.
+Rate, concurrency, transport and context limits also apply to cancellation.
+
+The scheduler excludes cancelled entries **before LIMIT**. Claim and receipt
+transactions lock/read the entry before their authority and outbox checks, so
+they cannot settle new results after cancellation commits. A read-only probe
+already claimed or sent may still run; this is not remote process interruption.
+Its late receipt cannot overwrite the cancellation. Existing lease/receipt rows,
+immutable inputs and request keys remain intact. Entry and source-status reads
+show `cancelled`, with no stale retry or verification timestamp. Same-key v1/v2
+replay keeps `cancelled`; legacy v1 may still run its read-only preflight.
+
+Migration `000035_skillhub_publication_cancellation` mirrors startup DDL and
+only expands the entry-state constraint. Tests use a genuinely empty database
+and a frozen relevant-table pre-PR620 baseline plus unchanged migrations 000028
+and 000030, with an existing intent. They cover SQL-first/startup-first upgrades,
+repeated startup/up, safe down/up, and refusal to roll back after cancellation
+evidence exists. No files, entries or outbox records are deleted.
+
+Before enabling this flag, upgrade **all** admission/delivery workers to this
+version. Old binaries do not enforce the cancellation guard. Once cancellations
+exist, do not roll back to those workers; stop admission/delivery and retain a
+cancellation-aware binary. Turning the cancellation flag off does not revive
+work. The down migration refuses to erase retained cancellations.
+
+There is no linked Cloud task, upload grant or capture dispatcher yet. Future
+capture/Cloud stages need their own pending/too-late/commit-permit protocol;
+this endpoint must not mark an accepted Cloud publication cancelled. This PR
+does not wire a UI button, enable production switches, uninstall Skills, revoke
+installed versions, or change model switching.
+
 ## Remaining integration
 
-Durable **pre-probe** admission, UI integration of delivery progress, safe resume, and the
+Durable **pre-probe** admission is implemented by v2. UI integration of delivery progress, safe resume, and the
 later capture/upload adapter remain required. Initial browser submission is still
 same-node and online-only. The worker resumes already accepted requests, not new
 offline requests. No production switch should be enabled on these tests alone.
@@ -425,8 +478,9 @@ compare-and-swap and crash-recovery tests, not arbitrary state strings.
 
 The rest of contract stage 1 remains: durable cross-node/offline intake, chat
 authorization, short-lived scoped grants, authenticated introspection,
-cancellation and commit-permit ordering. XiaoBa source-probe and capture adapters,
-Cloud upload and the workspace UI still need to be connected and jointly tested.
+Cloud-linked cancellation and commit-permit ordering. XiaoBa source-probe is
+implemented separately; capture adapters, Cloud upload and the workspace UI
+still need to be connected and jointly tested.
 Repair conversations, automatic formatting repairs, approvals, model billing,
 Chinese guides and frontend redesign are not part of this change.
 

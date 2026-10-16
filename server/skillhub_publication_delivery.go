@@ -418,7 +418,7 @@ func (w *publicationDeliveryWorker) processResult(r publicationDeliveryResult) {
 	status := http.StatusOK
 	if err != nil {
 		status = http.StatusServiceUnavailable
-		if errors.Is(err, store.ErrSkillHubPublicationStale) || errors.Is(err, store.ErrSkillHubPublicationDenied) {
+		if errors.Is(err, store.ErrSkillHubPublicationStale) || errors.Is(err, store.ErrSkillHubPublicationDenied) || errors.Is(err, store.ErrSkillHubPublicationSettled) {
 			status = http.StatusConflict
 		}
 	}
