@@ -51,6 +51,15 @@ the connector returns `verified: true`. Retrying the same plan after a lost resp
 `already_applied: true` when the intended values are already present, which prevents a
 second append.
 
+The 5000-cell limit is the accepted matrix size, not an instruction to issue thousands of
+one-cell reads. Shimo removes blank outer rows and columns from values responses, so exact
+write verification restores coordinates with dimension-aware subdivision and caps that work
+at 512 upstream reads. A structurally ambiguous sparse range that still exceeds the cap is
+rejected with `EXACT_READ_TOO_COMPLEX` before an update or append is sent; the caller must
+split that range. Append also exact-reads its target before the PUT/POST. This preflight both
+proves that the target can be verified within the cap and recognizes an already-applied plan
+even when the appended rows lie just beyond the anchor range.
+
 A Shimo "spreadsheet" link has two shapes and the connector accepts both on the same
 endpoints. `/sheets/{id}` is a native Shimo spreadsheet with a cell-values API; the Worker
 reads it in row bands as described below. `/file/{id}` is an `.xlsx`/`.xlsm` workbook the

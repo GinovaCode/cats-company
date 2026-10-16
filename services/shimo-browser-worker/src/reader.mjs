@@ -288,8 +288,16 @@ function rangeForCoordinates(startColumn, startRow, endColumn, endRow) {
   return columnLabel(startColumn) + startRow + ':' + columnLabel(endColumn) + endRow;
 }
 
-function hasExactShape(values, height, width) {
-  return values.length === height && values.every(row => row.length === width);
+function responseWidth(values) {
+  return values.reduce((maximum, row) => Math.max(maximum, row.length), 0);
+}
+
+// Shimo may omit trailing blank cells from individual rows. Once the response
+// still spans the full requested row count and at least one row reaches the
+// requested final column, the row/column origins are unambiguous and the short
+// rows can be padded safely.
+function hasAbsoluteShape(values, height, width) {
+  return values.length === height && responseWidth(values) === width;
 }
 
 function containsNonEmptyValue(values) {
@@ -321,10 +329,15 @@ export async function fetchExactRangeValues(context, fileId, sheetName, cellRang
 
     const subHeight = endRow - startRow + 1;
     const subWidth = endColumn - startColumn + 1;
-    if (hasExactShape(values, subHeight, subWidth)) {
+    const observedHeight = values.length;
+    const observedWidth = responseWidth(values);
+    if (observedHeight > subHeight || observedWidth > subWidth) {
+      throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口返回的数据超出了请求范围。', 502);
+    }
+    if (hasAbsoluteShape(values, subHeight, subWidth)) {
       for (let rowOffset = 0; rowOffset < subHeight; rowOffset += 1) {
         for (let columnOffset = 0; columnOffset < subWidth; columnOffset += 1) {
-          const value = values[rowOffset][columnOffset];
+          const value = values[rowOffset]?.[columnOffset];
           result[startRow - requested.startRow + rowOffset][startColumn - requested.startColumn + columnOffset]
             = value === undefined || value === null ? '' : value;
         }
@@ -339,15 +352,23 @@ export async function fetchExactRangeValues(context, fileId, sheetName, cellRang
       return;
     }
 
-    if (subHeight >= subWidth && subHeight > 1) {
+    // If Shimo shortened the width, split columns first. This isolates a fully
+    // blank leading/trailing column in O(log columns) probes instead of
+    // repeating the same ambiguity once per row. Only split rows first when
+    // the response retained the full width and shortened the height.
+    if (observedWidth < subWidth && subWidth > 1) {
+      const middleColumn = Math.floor((startColumn + endColumn) / 2);
+      await read(startColumn, startRow, middleColumn, endRow);
+      await read(middleColumn + 1, startRow, endColumn, endRow);
+      return;
+    }
+    if (observedHeight < subHeight && subHeight > 1) {
       const middleRow = Math.floor((startRow + endRow) / 2);
       await read(startColumn, startRow, endColumn, middleRow);
       await read(startColumn, middleRow + 1, endColumn, endRow);
       return;
     }
-    const middleColumn = Math.floor((startColumn + endColumn) / 2);
-    await read(startColumn, startRow, middleColumn, endRow);
-    await read(middleColumn + 1, startRow, endColumn, endRow);
+    throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口返回的数据无法映射到请求范围。', 502);
   };
 
   await read(requested.startColumn, requested.startRow, requested.endColumn, requested.endRow);
@@ -943,17 +964,21 @@ export class PlaywrightShimoEngine {
     const targetRange = writeTargetRange(cellRange, values, expectedAppendAfterRow + 1);
     return this.withContext(storageState, async context => {
       await this.assertNativeSheetWritable(context, url);
-      const position = await inspectAppendPosition(context, fileId, sheetName, cellRange);
       const desired = matrixForRange(values, targetRange);
+      // Read the exact target before inspecting or writing. Besides proving
+      // that the target can be verified within the bounded probe budget, this
+      // makes a retry idempotent even when the appended rows sit just beyond
+      // the caller's anchor range and the anchor tail itself is unchanged.
+      const existingTarget = (await fetchExactRangeValues(context, fileId, sheetName, targetRange)).values;
+      if (matricesEqual(existingTarget, desired)) {
+        return {
+          written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
+          append_after_row: expectedAppendAfterRow, appended_rows: values.length,
+          after: existingTarget, verified: true, already_applied: true, source_kind: 'native_sheet',
+        };
+      }
+      const position = await inspectAppendPosition(context, fileId, sheetName, cellRange);
       if (position.append_after_row !== expectedAppendAfterRow) {
-        const existingTarget = (await fetchExactRangeValues(context, fileId, sheetName, targetRange)).values;
-        if (matricesEqual(existingTarget, desired)) {
-          return {
-            written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
-            append_after_row: expectedAppendAfterRow, appended_rows: values.length,
-            after: existingTarget, verified: true, already_applied: true, source_kind: 'native_sheet',
-          };
-        }
         throw new ShimoWorkerError('PRECONDITION_FAILED', '表格末尾在确认后已发生变化；已停止追加，请重新生成预览。', 409);
       }
       // Shimo documents PUT as an append operation whose range is the table

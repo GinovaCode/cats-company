@@ -405,6 +405,22 @@ test('写入精确读取能还原被石墨裁掉的前导空行和空列', async
   assert.ok(result.requests > 1);
 });
 
+test('写入精确读取按缺失列拆分，数百行整列空白不会耗尽探测预算', async () => {
+  const leadingBlankColumn = Array.from({ length: 130 }, (_, index) => ['', `row-${index + 1}`]);
+  const leading = await fetchExactRangeValues(
+    trimmedGridContext(leadingBlankColumn), 'FileId', '项目表', 'A1:B130',
+  );
+  assert.deepEqual(leading.values, leadingBlankColumn);
+  assert.ok(leading.requests <= 3);
+
+  const trailingBlankColumn = Array.from({ length: 300 }, (_, index) => [`row-${index + 1}`, '']);
+  const trailing = await fetchExactRangeValues(
+    trimmedGridContext(trailingBlankColumn), 'FileId', '项目表', 'A1:B300',
+  );
+  assert.deepEqual(trailing.values, trailingBlankColumn);
+  assert.ok(trailing.requests <= 3);
+});
+
 test('追加定位在前导空行后找到真实连续表尾', async () => {
   const context = trimmedGridContext([
     ['', ''],
@@ -583,29 +599,84 @@ test('范围更新发现预览后的并发修改时停止写入', async () => {
 
 test('追加按预览位置写入并回读目标行', async () => {
   const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
-  const table = { values: [['客户', '金额'], ['旧客户', 8000]] };
-  const appended = { values: [['新客户', 9000]] };
+  const grid = [['客户', '金额'], ['旧客户', 8000], ['', ''], ['', ''], ['', '']];
+  const appended = [['新客户', 9000]];
   let putCalls = 0;
-  const request = {
-    async get(endpoint) {
-      const body = decodeURIComponent(endpoint).includes('项目表!A3:B3') ? appended : table;
-      return { status: () => 200, ok: () => true, text: async () => JSON.stringify(body), json: async () => body };
-    },
-    async put(endpoint, options) {
-      putCalls += 1;
-      assert.match(endpoint, /\/sheets\/values$/);
-      assert.equal(options.data.range, '项目表!A1:B5');
-      assert.deepEqual(options.data.resource.values, appended.values);
-      return { status: () => 204, ok: () => true, text: async () => '' };
-    },
+  const request = trimmedGridContext(grid).request;
+  request.put = async (endpoint, options) => {
+    putCalls += 1;
+    assert.match(endpoint, /\/sheets\/values$/);
+    assert.equal(options.data.range, '项目表!A1:B5');
+    assert.deepEqual(options.data.resource.values, appended);
+    grid[2] = [...appended[0]];
+    return { status: () => 204, ok: () => true, text: async () => '' };
   };
   const result = await engineFor(page, request).appendSheet(
-    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B5', appended.values, 2,
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B5', appended, 2,
   );
   assert.equal(result.written_range, 'A3:B3');
   assert.equal(result.verified, true);
   assert.equal(result.already_applied, false);
   assert.equal(putCalls, 1);
+});
+
+test('追加先精确读取目标并在锚点外识别已应用计划，避免失败重试重复写入', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const grid = Array.from({ length: 260 }, (_, index) => (index < 130 ? ['', `old-${index + 1}`] : ['', '']));
+  const appended = Array.from({ length: 130 }, (_, index) => ['', `new-${index + 1}`]);
+  const request = trimmedGridContext(grid).request;
+  let getCalls = 0;
+  const get = request.get;
+  request.get = async (...args) => {
+    getCalls += 1;
+    return get(...args);
+  };
+  let putCalls = 0;
+  request.put = async (endpoint, options) => {
+    putCalls += 1;
+    assert.equal(options.data.range, '项目表!A1:B130');
+    for (let index = 0; index < appended.length; index += 1) grid[130 + index] = [...appended[index]];
+    return { status: () => 204, ok: () => true, text: async () => '' };
+  };
+
+  const engine = engineFor(page, request);
+  const first = await engine.appendSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B130', appended, 130,
+  );
+  assert.equal(first.verified, true);
+  assert.equal(first.already_applied, false);
+  assert.equal(putCalls, 1);
+  assert.ok(getCalls < 20);
+
+  const repeated = await engine.appendSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B130', appended, 130,
+  );
+  assert.equal(repeated.verified, true);
+  assert.equal(repeated.already_applied, true);
+  assert.equal(putCalls, 1);
+});
+
+test('追加目标无法在探测预算内精确定位时会在 PUT 前停止', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  let putCalls = 0;
+  const ambiguous = { values: [['ambiguous']] };
+  const request = {
+    async get() {
+      return {
+        status: () => 200, ok: () => true,
+        text: async () => JSON.stringify(ambiguous), json: async () => ambiguous,
+      };
+    },
+    async put() { putCalls += 1; throw new Error('must fail before PUT'); },
+  };
+  const values = Array.from({ length: 130 }, (_, index) => ['', `new-${index + 1}`]);
+  await assert.rejects(
+    () => engineFor(page, request).appendSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B130', values, 130,
+    ),
+    error => error instanceof ShimoWorkerError && error.code === 'EXACT_READ_TOO_COMPLEX',
+  );
+  assert.equal(putCalls, 0);
 });
 
 test('追加会把 PUT 锚点规范到前导空行后的第一条数据', async () => {

@@ -17,7 +17,10 @@ reread the requested cells before and after the write. Because Shimo trims leadi
 blank rows and columns, the write path recursively subdivides an ambiguous response until each
 value has an absolute coordinate; if the bounded probe budget is exhausted, it refuses the write
 instead of guessing. Append planning likewise locates the first populated row before scanning to
-the first blank row.
+the first blank row. The matrix input cap is 5000 cells, while coordinate restoration is limited
+to 512 upstream reads; exceptionally sparse, ambiguous ranges must be split and are rejected
+before any write. Append exact-reads the target before writing, so the same preflight also detects
+an already-applied append outside the anchor and prevents a retry from adding duplicate rows.
 
 Shimo's official values API defines `POST /sheets/values` as an exact-range update and
 `PUT /sheets/values` as an append that searches for the table tail inside the supplied range.
