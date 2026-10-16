@@ -62,6 +62,9 @@ func TestPostgresSkillHubPublicationMigration(t *testing.T) {
 				t.Fatalf("admission seed: %d %v", locks, err)
 			}
 			// Empty rollback is atomic and does not touch historical user/Bot data.
+			// Later FK-dependent tables must roll back first, just as migrate down
+			// would do. The applied 000028 migration remains unchanged.
+			exec(publicationUploadMigration(t, "down"))
 			exec(down)
 			var tables int
 			if err := db.db.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema()

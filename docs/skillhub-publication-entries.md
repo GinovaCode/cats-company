@@ -5,7 +5,8 @@ This implements staged CatsCo foundations of the
 It adds a PostgreSQL store for durable **workspace publication intents**, a
 default-off private status API and a default-off, source-verified workspace
 entry protocol, plus opt-in durable background source probing. It does not upload
-or publish files or issue delegated credentials.
+or publish files. Upload-grant storage exists as an internal foundation only;
+no credential issuance or introspection transport is registered.
 
 ## Implemented behavior
 
@@ -454,11 +455,75 @@ exist, do not roll back to those workers; stop admission/delivery and retain a
 cancellation-aware binary. Turning the cancellation flag off does not revive
 work. The down migration refuses to erase retained cancellations.
 
-There is no linked Cloud task, upload grant or capture dispatcher yet. Future
+There is no linked Cloud task, reachable upload-grant issuer or capture dispatcher yet. Future
 capture/Cloud stages need their own pending/too-late/commit-permit protocol;
 this endpoint must not mark an accepted Cloud publication cancelled. This PR
 does not wire a UI button, enable production switches, uninstall Skills, revoke
 installed versions, or change model switching.
+
+## Upload grant storage foundation
+
+The optional PostgreSQL `SkillHubPublicationUploadGrantStore` provides internal
+issue/check methods. **There is no HTTP/RPC issuer, Cloud introspection endpoint,
+consumer, capability advertisement or enablement flag for these methods yet.**
+The existing source-probe worker does not call them. This is not an activated
+delegated-upload API and does not change `waiting_runtime` into an upload state.
+
+An upload grant has one action, `candidate.upload`, and binds the entry, original
+human, Bot, source/device/body/installation, current route generation/socket,
+configured canonical HTTPS issuer/audience, revision 1, source snapshot digest,
+exact HTTP byte SHA-256 and byte count (at most 75 MiB). It grants no listing,
+download, final publication, visibility change, installation or billing rights.
+Cloud must independently recompute hashes and enforce its effective limits.
+These store inputs are trusted internal facts, not a browser/model request DTO.
+
+Issuance requires current active human/active enabled Bot ownership and body,
+current durable connection generation, an uncancelled entry and a successful
+source-probe receipt. **A probe is not capture proof.** The future adapter must
+also check the live socket/body lease, capture capability, current workspace,
+safe private-copy provenance and actual exact bytes before calling this store.
+In particular, the store must not become a shortcut for arbitrary runtime files.
+
+The first issue freezes a stable grant ID, candidate facts and Cloud-compatible
+idempotency key. Each token is 256 random bits, valid for 120 seconds using the
+database clock; only its SHA-256 is saved. Token formatting/JSON is redacted.
+The explicit `Reveal` method is reserved for the future dedicated secure
+response/header, never generic RPC logs, chats, events, URLs or model context.
+
+Reissue rotates the token and increments its epoch while retaining the ID,
+candidate and key. It cannot change content, scope, issuer, audience or revision.
+An authenticated reconnect may advance the route generation and replace the
+node/socket only; same-generation socket substitution fails. A durable five-second
+cooldown and eight total issuances per entry bound retries, including restarts.
+At exhaustion, stop for action; do not create a replacement entry automatically.
+One row per already-quota-limited entry bounds storage. No candidate bytes or
+plaintext credentials are stored in CatsCo.
+
+After an uncertain issue response, the caller must keep the same candidate
+bytes and intent, then request a replacement token within these bounds. The old
+secret cannot be recovered from the database; rotation invalidates it. The stable
+key/hash ensures token renewal is not permission to invent another Cloud task.
+The future runtime must durably save its exact private request bytes separately.
+
+Issue takes the entry lock exclusively; check takes it shared, then both recheck
+current authority under the same lock order as cancellation. Cancelled entries,
+expired/rotated tokens, changed scopes/epochs and stale runtime generations fail.
+A successful check is an observation **at that transaction**, not a reservation
+of future authority or a commit permit. A later cancellation may win before any
+Cloud acceptance. Authenticated peer transport, origin pinning, durable Cloud
+association and pending/too-late cancellation/commit ordering remain mandatory
+before exposing these methods. Do not wire them to existing session-only Cloud
+routes or reuse a long-lived user/service token as publication authority.
+
+Migration `000036_skillhub_publication_upload_grants` mirrors startup creation.
+It adds one FK-dependent table; previous migrations are unchanged. Down refuses
+any retained grant (including expired/cancelled records) and never cascades.
+Rollback newer dependent tables before older publication tables. Tests cover
+empty SQL/startup, frozen pre-grant relevant tables (pre-PR620 user/Bot fixture
+plus migrations 000028/000030/000035 and an existing intent), both upgrade orders,
+repeated up/startup, safe empty down/up and refused populated down. Live grants
+and immutable legacy Bot/entry facts survive initialization. No retention/GC is
+introduced; expiry removes authority, not replay evidence.
 
 ## Remaining integration
 
@@ -477,7 +542,7 @@ workspace state; later lifecycle changes require explicit schema evolution,
 compare-and-swap and crash-recovery tests, not arbitrary state strings.
 
 The rest of contract stage 1 remains: durable cross-node/offline intake, chat
-authorization, short-lived scoped grants, authenticated introspection,
+authorization, authenticated grant issuance/introspection adapters,
 Cloud-linked cancellation and commit-permit ordering. XiaoBa source-probe is
 implemented separately; capture adapters, Cloud upload and the workspace UI
 still need to be connected and jointly tested.
