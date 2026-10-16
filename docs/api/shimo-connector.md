@@ -53,13 +53,15 @@ second append.
 
 The 5000-cell limit is the accepted matrix size, not an instruction to issue thousands of
 one-cell reads. Shimo removes blank outer rows and columns from values responses, so exact
-write verification restores coordinates with dimension-aware subdivision and caps that work
-at 512 upstream reads. Before any POST or PUT, the Worker applies the same blank-edge trimming
-rules to the desired matrix in memory and runs the exact-reader subdivision plan without network
-I/O. A desired sparse shape that would exceed the cap is rejected with
-`EXACT_READ_TOO_COMPLEX` before the sheet is modified; the caller must split that range. Append
-also exact-reads its target before writing. This target preflight recognizes an already-applied
-plan even when the appended rows lie just beyond the anchor range.
+write verification restores coordinates with dimension-aware subdivision. The 512-read cap is
+shared by the whole write operation: precondition reads, append-tail discovery and post-write
+verification all consume the same counter. The same operation also has a 65-second budget that
+starts when the Worker receives the request, including queue and page-load time. Before any POST
+or PUT, the Worker applies Shimo's blank-edge trimming rules to the desired matrix in memory,
+predicts its verification cost, and reserves both request and time capacity for the final reread.
+If either capacity is insufficient, the write stops before the sheet is modified. Append also
+exact-reads its target before writing, which recognizes an already-applied plan even when the
+appended rows lie just beyond the anchor range.
 
 A Shimo "spreadsheet" link has two shapes and the connector accepts both on the same
 endpoints. `/sheets/{id}` is a native Shimo spreadsheet with a cell-values API; the Worker

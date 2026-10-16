@@ -49,6 +49,13 @@ export const DEFAULT_READ_BUDGET_MS = 30_000;
 // （goto 最多 45s、等渲染 2.5s、取正文最多 15s）按剩余预算收口，剩下的留给响应序列化
 // 和网络往返，保证「排队 + 前置 + 读取」不越过 server 超时。
 export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
+// Writes share one request/time budget across precondition reads, append-tail
+// discovery and post-write verification. The server gives the Worker 75s, so
+// finish inside 65s and reserve a conservative amount before mutating data.
+export const DEFAULT_TOTAL_WRITE_BUDGET_MS = 65_000;
+export const MAX_WRITE_OPERATION_READS = 512;
+export const WRITE_VERIFY_RESERVE_MS_PER_READ = 125;
+export const MIN_WRITE_VERIFY_RESERVE_MS = 5_000;
 // 页面加载阶段的最小可用预算：剩余不足这个数时不再启动浏览器，直接按「忙、可重试」上报。
 export const MIN_PAGE_BUDGET_MS = 3_000;
 // 上传件走的是「整份下载再解析」，没有分块可退，所以体积必须在上游收口：
@@ -192,6 +199,67 @@ export function readBudgetFor(startedAt, {
   return Math.max(1, Math.min(readBudgetMs, remainingTotalMs));
 }
 
+export function createWriteOperationBudget(startedAt, {
+  totalBudgetMs = DEFAULT_TOTAL_WRITE_BUDGET_MS,
+  maxRequests = MAX_WRITE_OPERATION_READS,
+  now = () => Date.now(),
+} = {}) {
+  let requests = 0;
+  const timeLeft = () => totalBudgetMs - Math.max(0, now() - startedAt);
+  const exhausted = message => new ShimoWorkerError(
+    'WRITE_BUDGET_EXHAUSTED', message, 503,
+    { requests, max_requests: maxRequests, remaining_ms: Math.max(0, Math.floor(timeLeft())) },
+  );
+  return {
+    timeLeft,
+    get requests() { return requests; },
+    get maxRequests() { return maxRequests; },
+    consumeRead() {
+      if (requests >= maxRequests) {
+        throw exhausted(`整次写入的读取次数已达到 ${maxRequests} 次；已停止操作，请缩小范围后重试。`);
+      }
+      if (timeLeft() <= 0) throw exhausted('整次写入的时间预算已用尽；已停止操作，请稍后重试。');
+      requests += 1;
+    },
+    timeoutMs(defaultTimeoutMs) {
+      if (timeLeft() <= 0) throw exhausted('整次写入的时间预算已用尽；已停止操作，请稍后重试。');
+      return budgetBoundedTimeout(defaultTimeoutMs, timeLeft());
+    },
+    translateTimeout(error) {
+      if (error instanceof ShimoWorkerError) return error;
+      return timeLeft() <= 0
+        ? exhausted('整次写入的时间预算已用尽；已停止操作，请稍后重试。')
+        : error;
+    },
+    assertCanVerify(estimatedRequests) {
+      if (requests + estimatedRequests > maxRequests) {
+        throw new ShimoWorkerError(
+          'EXACT_READ_TOO_COMPLEX',
+          `写前检查与写后校验预计共需超过 ${maxRequests} 次读取；已在写入前停止，请把范围拆小后重新预览。`,
+          400,
+          { used_requests: requests, verification_requests: estimatedRequests, max_requests: maxRequests },
+        );
+      }
+      const requiredMs = Math.max(MIN_WRITE_VERIFY_RESERVE_MS, estimatedRequests * WRITE_VERIFY_RESERVE_MS_PER_READ);
+      if (timeLeft() < requiredMs) {
+        throw exhausted(`剩余时间不足以完成写后校验（至少需要预留 ${requiredMs} 毫秒）；已在写入前停止，请稍后重试。`);
+      }
+    },
+    mutationTimeoutMs(defaultTimeoutMs, estimatedVerificationRequests) {
+      this.assertCanVerify(estimatedVerificationRequests);
+      const requiredMs = Math.max(
+        MIN_WRITE_VERIFY_RESERVE_MS,
+        estimatedVerificationRequests * WRITE_VERIFY_RESERVE_MS_PER_READ,
+      );
+      const availableMs = timeLeft() - requiredMs;
+      if (availableMs <= 0) {
+        throw exhausted(`剩余时间不足以完成写入并保留 ${requiredMs} 毫秒写后校验预算；已在写入前停止，请稍后重试。`);
+      }
+      return budgetBoundedTimeout(defaultTimeoutMs, availableMs);
+    },
+  };
+}
+
 // 石墨对「这个账号看不到的文件」和「文件不存在」返回同一类上游错误：
 // HTTP 500 + {"code":3,"statusText":"GetFileByProviderID fail ... GET_REMOTE_FILE_INVALID_ARGUMENT ..."}。
 // 2026-09-15 在生产实测：不存在的 fileId 与「已登录但对该表格没有权限」走的是同一条上游路径。
@@ -250,11 +318,20 @@ export function looksLikeAccessDeniedPage(title, bodyText) {
   return ACCESS_PAGE_BODY_PATTERNS.some(pattern => body.includes(pattern.toLowerCase()));
 }
 
-export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs } = {}) {
+export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs, requestBudget } = {}) {
   const apiRange = sheetName + '!' + cellRange;
   const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values?range=' + encodeURIComponent(apiRange);
-  const requestOptions = Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeout: timeoutMs } : undefined;
-  const response = await context.request.get(endpoint, requestOptions);
+  requestBudget?.consumeRead();
+  const effectiveTimeout = requestBudget
+    ? requestBudget.timeoutMs(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 45_000)
+    : timeoutMs;
+  const requestOptions = Number.isFinite(effectiveTimeout) && effectiveTimeout > 0 ? { timeout: effectiveTimeout } : undefined;
+  let response;
+  try {
+    response = await context.request.get(endpoint, requestOptions);
+  } catch (error) {
+    throw requestBudget ? requestBudget.translateTimeout(error) : error;
+  }
   if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   if (response.status() === 403) throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
   if (!response.ok()) {
@@ -282,7 +359,7 @@ export async function fetchRangeValues(context, fileId, sheetName, cellRange, { 
 // subdivide an ambiguous response until every returned value has an unambiguous
 // coordinate. Dense ranges still take one request; sparse ranges fail closed
 // once the bounded probe budget is exhausted instead of guessing coordinates.
-export const MAX_EXACT_WRITE_READS = 512;
+export const MAX_EXACT_WRITE_READS = MAX_WRITE_OPERATION_READS;
 
 function rangeForCoordinates(startColumn, startRow, endColumn, endRow) {
   return columnLabel(startColumn) + startRow + ':' + columnLabel(endColumn) + endRow;
@@ -370,6 +447,7 @@ function assertDesiredShapeVerifiable(values) {
 export async function fetchExactRangeValues(context, fileId, sheetName, cellRange, {
   timeoutMs,
   maxRequests = MAX_EXACT_WRITE_READS,
+  requestBudget,
 } = {}) {
   const requested = parseA1Range(cellRange);
   const height = requested.endRow - requested.startRow + 1;
@@ -387,7 +465,7 @@ export async function fetchExactRangeValues(context, fileId, sheetName, cellRang
       );
     }
     const range = rangeForCoordinates(startColumn, startRow, endColumn, endRow);
-    const values = await fetchRangeValues(context, fileId, sheetName, range, { timeoutMs });
+    const values = await fetchRangeValues(context, fileId, sheetName, range, { timeoutMs, requestBudget });
     if (!containsNonEmptyValue(values)) return;
 
     const subHeight = endRow - startRow + 1;
@@ -496,7 +574,7 @@ function rowIsEmpty(row, width) {
   return true;
 }
 
-export async function inspectAppendPosition(context, fileId, sheetName, cellRange) {
+export async function inspectAppendPosition(context, fileId, sheetName, cellRange, { requestBudget } = {}) {
   const parsed = parseA1Range(cellRange);
   const width = parsed.endColumn - parsed.startColumn + 1;
   const plan = planRowBands(cellRange);
@@ -506,7 +584,7 @@ export async function inspectAppendPosition(context, fileId, sheetName, cellRang
   let requests = 0;
   const readContainsValue = async (startRow, endRow) => {
     const range = rangeForCoordinates(parsed.startColumn, startRow, parsed.endColumn, endRow);
-    const values = await fetchRangeValues(context, fileId, sheetName, range);
+    const values = await fetchRangeValues(context, fileId, sheetName, range, { requestBudget });
     requests += 1;
     return containsNonEmptyValue(values);
   };
@@ -543,7 +621,7 @@ export async function inspectAppendPosition(context, fileId, sheetName, cellRang
     // A later disconnected block must not move the tail past the first blank
     // row. Check the first row separately before reading the whole band.
     if (!await readContainsValue(band.start_row, band.start_row)) break;
-    const rows = await fetchRangeValues(context, fileId, sheetName, band.range);
+    const rows = await fetchRangeValues(context, fileId, sheetName, band.range, { requestBudget });
     requests += 1;
     const bandHeight = band.end_row - band.start_row + 1;
     for (let offset = 0; offset < bandHeight; offset += 1) {
@@ -951,41 +1029,55 @@ export class PlaywrightShimoEngine {
     });
   }
 
-  async assertNativeSheetWritable(context, url) {
+  async assertNativeSheetWritable(context, url, { operationBudget } = {}) {
     const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeoutMs });
-    await page.waitForTimeout(2500);
-    const bodyText = await page.locator('body').innerText({ timeout: 15_000 });
-    const hasSheetTabs = await pageHasSheetTabs(page);
+    const bounded = timeout => operationBudget ? operationBudget.timeoutMs(timeout) : timeout;
+    let bodyText;
+    let hasSheetTabs;
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: bounded(this.timeoutMs) });
+      await page.waitForTimeout(operationBudget ? Math.min(2500, Math.max(0, operationBudget.timeLeft())) : 2500);
+      bodyText = await page.locator('body').innerText({ timeout: bounded(15_000) });
+      hasSheetTabs = await pageHasSheetTabs(page, bounded(5_000));
+    } catch (error) {
+      throw operationBudget ? operationBudget.translateTimeout(error) : error;
+    }
     assertPageAccess(await page.title(), bodyText, { hasSheetTabs });
     if (!hasSheetTabs) {
       throw new ShimoWorkerError('PAGE_UNEXPECTED', '石墨页面里没有找到表格标签，无法安全写入。', 502);
     }
   }
 
-  async inspectSheetAppend(storageState, inputURL, sheetName, cellRange) {
+  async inspectSheetAppend(storageState, inputURL, sheetName, cellRange, { budgetStartedAt } = {}) {
     const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
     if (kind !== 'sheet') {
       throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
     }
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
+    const operationBudget = createWriteOperationBudget(startedAt, { totalBudgetMs: this.totalBudgetMs, now: this.now });
     return this.withContext(storageState, async context => {
-      await this.assertNativeSheetWritable(context, url);
-      return inspectAppendPosition(context, fileId, sheetName, cellRange);
+      await this.assertNativeSheetWritable(context, url, { operationBudget });
+      return inspectAppendPosition(context, fileId, sheetName, cellRange, { requestBudget: operationBudget });
     });
   }
 
-  async updateSheet(storageState, inputURL, sheetName, cellRange, values, expectedValues) {
+  async updateSheet(storageState, inputURL, sheetName, cellRange, values, expectedValues, { budgetStartedAt } = {}) {
     const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
     if (kind !== 'sheet') {
       throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
     }
     validateWriteMatrix(cellRange, values);
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
+    const operationBudget = createWriteOperationBudget(startedAt, { totalBudgetMs: this.totalBudgetMs, now: this.now });
     return this.withContext(storageState, async context => {
-      await this.assertNativeSheetWritable(context, url);
+      await this.assertNativeSheetWritable(context, url, { operationBudget });
       const expected = matrixForRange(expectedValues, cellRange);
       const desired = matrixForRange(values, cellRange);
       assertDesiredShapeVerifiable(desired);
-      const current = (await fetchExactRangeValues(context, fileId, sheetName, cellRange)).values;
+      const verificationRequests = estimateExactReadRequests(desired);
+      const current = (await fetchExactRangeValues(
+        context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+      )).values;
       if (matricesEqual(current, desired)) {
         return {
           written_at: new Date().toISOString(), requested_range: cellRange,
@@ -995,8 +1087,13 @@ export class PlaywrightShimoEngine {
       if (!matricesEqual(current, expected)) {
         throw new ShimoWorkerError('PRECONDITION_FAILED', '目标单元格在确认后已发生变化；已停止写入，请重新生成预览。', 409);
       }
-      await writeRangeValues(context, 'update', fileId, sheetName, cellRange, values);
-      const after = (await fetchExactRangeValues(context, fileId, sheetName, cellRange)).values;
+      operationBudget.assertCanVerify(verificationRequests);
+      await writeRangeValues(context, 'update', fileId, sheetName, cellRange, values, {
+        timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
+      });
+      const after = (await fetchExactRangeValues(
+        context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+      )).values;
       if (!matricesEqual(after, desired)) {
         throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受写入，但回读结果与计划不一致；请人工检查目标范围。', 502);
       }
@@ -1007,7 +1104,7 @@ export class PlaywrightShimoEngine {
     });
   }
 
-  async appendSheet(storageState, inputURL, sheetName, cellRange, values, expectedAppendAfterRow) {
+  async appendSheet(storageState, inputURL, sheetName, cellRange, values, expectedAppendAfterRow, { budgetStartedAt } = {}) {
     const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
     if (kind !== 'sheet') {
       throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
@@ -1026,15 +1123,20 @@ export class PlaywrightShimoEngine {
       throw new ShimoWorkerError('INVALID_ARGUMENTS', 'expected_append_after_row 不在定位范围内。', 400);
     }
     const targetRange = writeTargetRange(cellRange, values, expectedAppendAfterRow + 1);
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
+    const operationBudget = createWriteOperationBudget(startedAt, { totalBudgetMs: this.totalBudgetMs, now: this.now });
     return this.withContext(storageState, async context => {
-      await this.assertNativeSheetWritable(context, url);
+      await this.assertNativeSheetWritable(context, url, { operationBudget });
       const desired = matrixForRange(values, targetRange);
       assertDesiredShapeVerifiable(desired);
+      const verificationRequests = estimateExactReadRequests(desired);
       // Read the exact target before inspecting or writing. Besides proving
       // that the target can be verified within the bounded probe budget, this
       // makes a retry idempotent even when the appended rows sit just beyond
       // the caller's anchor range and the anchor tail itself is unchanged.
-      const existingTarget = (await fetchExactRangeValues(context, fileId, sheetName, targetRange)).values;
+      const existingTarget = (await fetchExactRangeValues(
+        context, fileId, sheetName, targetRange, { requestBudget: operationBudget },
+      )).values;
       if (matricesEqual(existingTarget, desired)) {
         return {
           written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
@@ -1042,7 +1144,9 @@ export class PlaywrightShimoEngine {
           after: existingTarget, verified: true, already_applied: true, source_kind: 'native_sheet',
         };
       }
-      const position = await inspectAppendPosition(context, fileId, sheetName, cellRange);
+      const position = await inspectAppendPosition(
+        context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+      );
       if (position.append_after_row !== expectedAppendAfterRow) {
         throw new ShimoWorkerError('PRECONDITION_FAILED', '表格末尾在确认后已发生变化；已停止追加，请重新生成预览。', 409);
       }
@@ -1050,12 +1154,19 @@ export class PlaywrightShimoEngine {
       // search anchor. Start that anchor at the first populated row we found,
       // so leading blank rows cannot change the upstream table boundary. An
       // entirely blank anchor is initialized with an exact POST instead.
+      operationBudget.assertCanVerify(verificationRequests);
       if (position.first_data_row === null) {
-        await writeRangeValues(context, 'update', fileId, sheetName, targetRange, values);
+        await writeRangeValues(context, 'update', fileId, sheetName, targetRange, values, {
+          timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
+        });
       } else {
-        await writeRangeValues(context, 'append', fileId, sheetName, position.append_anchor_range, values);
+        await writeRangeValues(context, 'append', fileId, sheetName, position.append_anchor_range, values, {
+          timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
+        });
       }
-      const after = (await fetchExactRangeValues(context, fileId, sheetName, targetRange)).values;
+      const after = (await fetchExactRangeValues(
+        context, fileId, sheetName, targetRange, { requestBudget: operationBudget },
+      )).values;
       if (!matricesEqual(after, desired)) {
         throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受追加，但回读结果与计划不一致；请人工检查目标范围。', 502);
       }

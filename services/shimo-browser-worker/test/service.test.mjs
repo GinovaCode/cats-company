@@ -24,9 +24,9 @@ async function startWorker({ reader: readerOverride, loginManager: loginManagerO
   const reader = readerOverride || {
     async listSheets(state, url) { calls.push(['list', state, url]); return { sheets: [{ name: '项目表', index: 0 }] }; },
     async readSheet(state, url, sheet, range) { calls.push(['sheet', state, url, sheet, range]); return { values: [['金额'], [8500]] }; },
-    async inspectSheetAppend(state, url, sheet, range) { calls.push(['append-plan', state, url, sheet, range]); return { append_after_row: 2 }; },
-    async updateSheet(state, url, sheet, range, values, expected) { calls.push(['update', state, url, sheet, range, values, expected]); return { verified: true }; },
-    async appendSheet(state, url, sheet, range, values, expectedRow) { calls.push(['append', state, url, sheet, range, values, expectedRow]); return { verified: true }; },
+    async inspectSheetAppend(state, url, sheet, range, options) { calls.push(['append-plan', state, url, sheet, range, Number.isFinite(options?.budgetStartedAt)]); return { append_after_row: 2 }; },
+    async updateSheet(state, url, sheet, range, values, expected, options) { calls.push(['update', state, url, sheet, range, values, expected, Number.isFinite(options?.budgetStartedAt)]); return { verified: true }; },
+    async appendSheet(state, url, sheet, range, values, expectedRow, options) { calls.push(['append', state, url, sheet, range, values, expectedRow, Number.isFinite(options?.budgetStartedAt)]); return { verified: true }; },
     async readDocument(state, url, maxChars) { calls.push(['document', state, url, maxChars]); return { text: '正文', truncated: false }; },
   };
   const loginManager = loginManagerOverride || {
@@ -168,6 +168,45 @@ test('read budget starts when the request arrives, charging queue wait to the sa
   } finally { await worker.close(); }
 });
 
+test('write budget also starts on arrival and includes concurrency-queue time', async () => {
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let firstEntered;
+  const firstEnteredPromise = new Promise(resolve => { firstEntered = resolve; });
+  const observed = [];
+  const reader = {
+    async updateSheet(state, url, sheet, range, values, expected, options = {}) {
+      observed.push({ callTime: Date.now(), budgetStartedAt: options.budgetStartedAt });
+      if (observed.length === 1) {
+        firstEntered();
+        await firstGate;
+      }
+      return { verified: true };
+    },
+  };
+  const worker = await startWorker({ reader, limits: { maxConcurrency: 1, maxQueue: 2 } });
+  try {
+    worker.store.save(bindingA, { storageState: { cookies: [] }, accountHint: 'A', verifiedAt: 'now' });
+    const payload = {
+      connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:B1',
+      values: [['新客户', 9000]], expected_values: [['旧客户', 8000]],
+    };
+    const first = request(worker, '/v1/sheets/update', payload);
+    await firstEnteredPromise;
+    const secondQueuedAt = Date.now();
+    const queueDelayMs = 200;
+    const second = request(worker, '/v1/sheets/update', payload);
+    await new Promise(resolve => setTimeout(resolve, queueDelayMs));
+    releaseFirst();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.equal(firstResult.status, 200);
+    assert.equal(secondResult.status, 200);
+    assert.equal(observed.length, 2);
+    assert.ok(observed[1].budgetStartedAt >= secondQueuedAt);
+    assert.ok(observed[1].callTime - observed[1].budgetStartedAt >= queueDelayMs - 50);
+  } finally { await worker.close(); }
+});
+
 test('internal endpoints require service authentication', async () => {
   const worker = await startWorker();
   try {
@@ -208,19 +247,21 @@ test('write routes keep the selected session and pass preconditions to the engin
     assert.equal(update.body.data.verified, true);
     assert.deepEqual(worker.calls[0], [
       'update', { cookies: [{ value: 'actor-a' }] }, 'https://shimo.im/sheets/abc/', '项目表', 'A1:B1',
-      [['新客户', 9000]], [['旧客户', 8000]],
+      [['新客户', 9000]], [['旧客户', 8000]], true,
     ]);
 
     const planned = await request(worker, '/v1/sheets/append-plan', {
       connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:B100',
     });
     assert.equal(planned.body.data.append_after_row, 2);
+    assert.equal(worker.calls[1].at(-1), true);
     const appended = await request(worker, '/v1/sheets/append', {
       connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:B100',
       values: [['新行', 1]], expected_append_after_row: 2,
     });
     assert.equal(appended.status, 200);
     assert.equal(appended.body.data.verified, true);
+    assert.equal(worker.calls[2].at(-1), true);
   } finally { await worker.close(); }
 });
 

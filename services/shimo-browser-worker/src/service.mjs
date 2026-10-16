@@ -115,8 +115,9 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
         if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)) {
           throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称或范围无效。', 400);
         }
+        const budgetStartedAt = Date.now();
         const data = await limiter.run(() => reader.inspectSheetAppend(
-          record.storageState, String(body.url || ''), sheetName, cellRange,
+          record.storageState, String(body.url || ''), sheetName, cellRange, { budgetStartedAt },
         ));
         return sendJSON(response, 200, { ok: true, data });
       }
@@ -126,8 +127,10 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
         if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)) {
           throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称或范围无效。', 400);
         }
+        const budgetStartedAt = Date.now();
         const data = await limiter.run(() => reader.updateSheet(
           record.storageState, String(body.url || ''), sheetName, cellRange, body.values, body.expected_values,
+          { budgetStartedAt },
         ));
         return sendJSON(response, 200, { ok: true, data });
       }
@@ -139,8 +142,10 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
           || !Number.isInteger(expectedAppendAfterRow)) {
           throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称、范围或追加位置无效。', 400);
         }
+        const budgetStartedAt = Date.now();
         const data = await limiter.run(() => reader.appendSheet(
           record.storageState, String(body.url || ''), sheetName, cellRange, body.values, expectedAppendAfterRow,
+          { budgetStartedAt },
         ));
         return sendJSON(response, 200, { ok: true, data });
       }

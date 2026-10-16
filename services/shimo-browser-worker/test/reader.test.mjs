@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
+  budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, createWriteOperationBudget, DEFAULT_TOTAL_READ_BUDGET_MS,
   downloadUploadedFileBytes, estimateExactReadRequests, fetchExactRangeValues, fetchRangeValues, htmlShellVerdict, inspectAppendPosition, loadUploadedWorkbook, looksLikeAccessDeniedPage,
   looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
   MAX_UPLOADED_WINDOW_CELLS, PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, sliceXlsxGrid,
@@ -707,6 +707,67 @@ test('追加的待写结果过于稀疏时会在 PUT 前停止', async () => {
     error => error instanceof ShimoWorkerError && error.code === 'EXACT_READ_TOO_COMPLEX',
   );
   assert.equal(putCalls, 0);
+});
+
+test('范围更新的写前与写后精确读取共享整次 512 次预算', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const expected = Array.from(
+    { length: 400 },
+    (_, index) => (index % 2 === 0 ? [`old-${index + 1}`, index + 1] : ['', '']),
+  );
+  const desired = expected.map(row => (row[0] ? [row[0].replace('old-', 'new-'), row[1]] : ['', '']));
+  assert.equal(estimateExactReadRequests(expected), 319);
+  assert.equal(estimateExactReadRequests(desired), 319);
+  let postCalls = 0;
+  const request = trimmedGridContext(expected).request;
+  request.post = async () => { postCalls += 1; throw new Error('must stop before POST'); };
+  await assert.rejects(
+    () => engineFor(page, request).updateSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B400', desired, expected,
+    ),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'EXACT_READ_TOO_COMPLEX'
+      && error.details.used_requests === 319
+      && error.details.verification_requests === 319,
+  );
+  assert.equal(postCalls, 0);
+});
+
+test('追加定位也计入整次共享预算并在 PUT 前为回读留足额度', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const anchor = Array.from({ length: 400 }, (_, index) => [`existing-${index + 1}`, index + 1]);
+  const oldTarget = Array.from(
+    { length: 400 },
+    (_, index) => (index % 2 === 0 ? [`old-${index + 1}`, index + 1] : ['', '']),
+  );
+  const desired = oldTarget.map(row => (row[0] ? [row[0].replace('old-', 'new-'), row[1]] : ['', '']));
+  const grid = [...anchor, ...oldTarget];
+  let putCalls = 0;
+  const request = trimmedGridContext(grid).request;
+  request.put = async () => { putCalls += 1; throw new Error('must stop before PUT'); };
+  await assert.rejects(
+    () => engineFor(page, request).appendSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B400', desired, 400,
+    ),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'EXACT_READ_TOO_COMPLEX'
+      && error.details.used_requests > 319,
+  );
+  assert.equal(putCalls, 0);
+});
+
+test('写操作在变更前为写后校验保留时间预算', () => {
+  let clock = 1_000_000;
+  const budget = createWriteOperationBudget(clock, { totalBudgetMs: 65_000, now: () => clock });
+  budget.consumeRead();
+  assert.equal(budget.mutationTimeoutMs(45_000, 400), 15_000);
+  clock += 61_000;
+  assert.throws(
+    () => budget.assertCanVerify(1),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'WRITE_BUDGET_EXHAUSTED'
+      && error.status === 503,
+  );
 });
 
 test('追加会把 PUT 锚点规范到前导空行后的第一条数据', async () => {
