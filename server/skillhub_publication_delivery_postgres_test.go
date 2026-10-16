@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -259,5 +260,35 @@ func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 	w2.sweep()
 	if len(c2.send) != 0 {
 		t.Fatal("cancelled intent requeued")
+	}
+	// Exercise the real private peer handler over the real PG grant/authority
+	// path. No grant issuer or Cloud upload consumer is activated by this test.
+	_, _, body, _ := peerFixture(t)
+	upload := store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: store.SkillHubPublicationDeliveryBinding{
+		ActorUID: actor, BotUID: bot, Source: in.Source, NodeID: "dispatch-node-b", ConnectionID: c2.connectionID},
+		Issuer: "https://cats.example", Audience: "https://hub.example", Action: store.SkillHubPublicationUploadAction,
+		Revision: 1, RequestHash: body.RequestHash, SourceSnapshotHash: body.SourceSnapshotHash, RequestBytes: body.RequestBytes}
+	upload.Binding.Source.RouteGeneration = 2
+	grant, token, err := a2.IssueSkillHubPublicationUploadGrant(context.Background(), upload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body.EntryRequestID = entry.ID
+	body.AuthorityEpoch = grant.Epoch
+	peer := NewSkillHubPublicationPeerHandlerFromEnv(a2)
+	request := peerRequest(t, body)
+	request.Header.Set("X-SkillHub-Upload-Grant", token.Reveal())
+	response := runPeer(t, peer, request, 200)
+	if !strings.Contains(response.Body.String(), `"active":true`) || !strings.Contains(response.Body.String(), `"actorCatsCoUid":"`+strconv.FormatInt(actor, 10)+`"`) {
+		t.Fatal("peer failed canonical identity")
+	}
+	if _, err := a2.CancelSkillHubPublicationEntry(context.Background(), actor, entry.ID); err != nil {
+		t.Fatal(err)
+	}
+	request = peerRequest(t, body)
+	request.Header.Set("X-SkillHub-Upload-Grant", token.Reveal())
+	response = runPeer(t, peer, request, 200)
+	if strings.TrimSpace(response.Body.String()) != `{"active":false,"schemaVersion":1}` {
+		t.Fatal("cancelled grant active through peer API")
 	}
 }

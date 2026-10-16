@@ -5,8 +5,8 @@ This implements staged CatsCo foundations of the
 It adds a PostgreSQL store for durable **workspace publication intents**, a
 default-off private status API and a default-off, source-verified workspace
 entry protocol, plus opt-in durable background source probing. It does not upload
-or publish files. Upload-grant storage exists as an internal foundation only;
-no credential issuance or introspection transport is registered.
+or publish files. Upload-grant storage and a default-off, authenticated Cloud-peer
+introspection route exist; no reachable credential issuer or upload consumer exists.
 
 ## Implemented behavior
 
@@ -464,9 +464,10 @@ installed versions, or change model switching.
 ## Upload grant storage foundation
 
 The optional PostgreSQL `SkillHubPublicationUploadGrantStore` provides internal
-issue/check methods. **There is no HTTP/RPC issuer, Cloud introspection endpoint,
-consumer, capability advertisement or enablement flag for these methods yet.**
-The existing source-probe worker does not call them. This is not an activated
+issue/check methods. **There is no HTTP/RPC issuer, upload consumer or runtime
+capability advertisement yet.** Only the read-only peer check below is exposed,
+behind its own default-off flag. The source-probe worker does not issue grants.
+This is not an activated
 delegated-upload API and does not change `waiting_runtime` into an upload state.
 
 An upload grant has one action, `candidate.upload`, and binds the entry, original
@@ -510,9 +511,9 @@ current authority under the same lock order as cancellation. Cancelled entries,
 expired/rotated tokens, changed scopes/epochs and stale runtime generations fail.
 A successful check is an observation **at that transaction**, not a reservation
 of future authority or a commit permit. A later cancellation may win before any
-Cloud acceptance. Authenticated peer transport, origin pinning, durable Cloud
-association and pending/too-late cancellation/commit ordering remain mandatory
-before exposing these methods. Do not wire them to existing session-only Cloud
+Cloud acceptance. A Cloud client with origin pinning, durable Cloud association
+and pending/too-late cancellation/commit ordering remain mandatory before exposing
+issuance or upload. Do not wire them to existing session-only Cloud
 routes or reuse a long-lived user/service token as publication authority.
 
 Migration `000036_skillhub_publication_upload_grants` mirrors startup creation.
@@ -524,6 +525,94 @@ plus migrations 000028/000030/000035 and an existing intent), both upgrade order
 repeated up/startup, safe empty down/up and refused populated down. Live grants
 and immutable legacy Bot/entry facts survive initialization. No retention/GC is
 introduced; expiry removes authority, not replay evidence.
+
+## Cloud peer upload grant introspection
+
+`POST /api/skillhub/publications/internal/upload-grants/introspect` is a
+service-only, read-only check. It does not issue/renew credentials, capture files,
+create a Cloud task, change publication state or reserve permission to commit.
+It adds no schema. All configuration is loaded at startup, separately from human
+login and existing publication flags:
+
+| Variable | Policy |
+| --- | --- |
+| `CATSCO_SKILLHUB_PUBLICATION_INTROSPECTION_ENABLED` | Defaults off; only trimmed `1` or case-insensitive `true` enables the route. |
+| `CATSCO_SKILLHUB_PUBLICATION_ISSUER` | Canonical HTTPS origin of CatsCo. |
+| `CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE` | Canonical HTTPS origin of the single allowed Cloud peer, different from issuer. |
+| `CATSCO_SKILLHUB_PUBLICATION_CLOUD_PEER_SECRET` | Dedicated 256-bit random secret encoded as exactly 64 lowercase hex characters. Never reuse a human JWT, Bot key or existing service token. |
+| `CATSCO_SKILLHUB_PUBLICATION_TRUSTED_PROXY_CIDRS` | Optional comma-separated canonical proxy networks, at most 16, no `/0`. Empty means no proxy is trusted. |
+
+Disabled returns 404. Invalid enabled configuration or an unsupported store
+returns 503 without affecting other endpoints. A request requires direct TLS,
+or an explicitly trusted socket peer with one exact `X-Forwarded-Proto: https`
+header. Do not trust a shared client network: the configured reverse proxy must
+strip incoming forwarded-protocol headers and set its own based on TLS. Global
+proxy settings and caller-supplied forwarded headers do not establish trust here.
+Restrict network access to the Cloud service in addition to application auth.
+
+Provision the dedicated peer secret through the deployment secret manager, not
+source control, chat, URLs or command logs. Configure both services consistently;
+rotation replaces the single accepted secret and requires CatsCo restart and a
+coordinated Cloud update. During a mismatch checks fail closed; there is no
+fallback to user auth. Redact both credential headers at every proxy/APM layer:
+
+```text
+Authorization: Bearer <dedicated Cloud peer secret>
+X-SkillHub-Upload-Grant: pubupload_<opaque 64 hex characters>
+Content-Type: application/json
+```
+
+The body has exactly these eight fields; issuer/audience are server configuration,
+and publisher/Bot identity is read from the stored grant, never accepted as input:
+
+```json
+{
+  "schemaVersion": 1,
+  "entryRequestId": "pubentry_0123456789abcdef0123456789abcdef",
+  "action": "candidate.upload",
+  "candidateRevision": 1,
+  "authorityEpoch": 1,
+  "requestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sourceSnapshotHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requestBytes": 1234
+}
+```
+
+Unknown, duplicate, differently-cased, missing or null fields, trailing JSON,
+query strings, browser Origin, compressed/chunked bodies and duplicate credentials
+are rejected. The JSON body needs a known positive Content-Length of at most
+4 KiB; the declared candidate size is separately bounded to 75 MiB. A five-second
+deadline covers body read and store access, with a socket read deadline (an
+unsupported ResponseWriter fails closed). Limits per process are 120/minute
+with burst 20 for the peer, 30/minute with burst 5 per entry, and 16 in-flight
+checks. Rate/concurrency failures return Retry-After: 5. Deployment-wide header,
+connection and unauthenticated-request limits are still required.
+
+Valid checks return `schemaVersion: 1`, `active: true` and an explicit `grant`
+projection: `delegationId`, `issuer`, `audience`, `action`, decimal-string
+`actorCatsCoUid` and `botUid`, `entryRequestId`, `candidateRevision`,
+`authorityEpoch`, `requestHash`, `sourceSnapshotHash`, `requestBytes`,
+`idempotencyKey`, UTC `expiresAt` and database `observedAt`. It contains no token
+or token hash, local path/reference, device/body/installation, node or socket.
+The entry is locked before reading canonical grant facts; cancellation/rotation
+serialize with the check, and current human/Owner/body/generation are revalidated.
+Successful reads do not mutate the entry, grant or outbox.
+
+Unknown, mismatched, expired, rotated, cancelled or stale-authority grants all
+return the same HTTP 200 `{ "schemaVersion": 1, "active": false }`. Malformed
+requests return 400 (oversize 413), bad service credentials 401, insecure
+transport 403, unsupported methods 405, throttling 429, and storage/deadline or
+invalid adapter results 503. Responses are no-store; errors do not expose raw
+storage exceptions. A transient failure is not a format rejection or a reason
+to invoke a model repair.
+
+**Not a commit permit:** `active: true` describes authority at `observedAt` only.
+Cancellation can occur immediately afterward. The future Cloud client must pin
+the configured HTTPS origin and exact route, reject redirects, redact both
+headers, validate the exact response schema/scope/expiry and independently hash
+the actual candidate bytes. That client, durable task association and the
+cancel/commit protocol are not implemented here. Keep production disabled until
+those pieces and trusted private capture/issuance pass joint isolation tests.
 
 ## Remaining integration
 
@@ -542,7 +631,7 @@ workspace state; later lifecycle changes require explicit schema evolution,
 compare-and-swap and crash-recovery tests, not arbitrary state strings.
 
 The rest of contract stage 1 remains: durable cross-node/offline intake, chat
-authorization, authenticated grant issuance/introspection adapters,
+authorization, authenticated grant issuance and the Cloud introspection client,
 Cloud-linked cancellation and commit-permit ordering. XiaoBa source-probe is
 implemented separately; capture adapters, Cloud upload and the workspace UI
 still need to be connected and jointly tested.
@@ -564,10 +653,17 @@ isolated PostgreSQL service with the Go race detector:
 
 ```sh
 go test ./server/store -run SkillHubPublication -count=1
-go test -race ./server -run '^TestSkillHubPublicationRead' -count=1
+go test -race ./server -run '^TestSkillHubPublication(Read|Peer)' -count=1
 # CATS_PG_TEST_DSN must point to a disposable test database.
 go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication' -count=1 -v
 ```
+
+Peer tests cover credential separation, strict parsing, proxy spoofing, redaction,
+rate/concurrency guards, actual TLS and an actual slow-body read deadline. New
+PostgreSQL tests verify canonical identity, read-only state, reopened adapters,
+authority invalidation, rotation and concurrent cancellation. The two existing
+PostgreSQL delivery-recovery tests also call the real peer handler before/after
+cancellation. Those use a simulated runtime, not live Cloud/XiaoBa deployment.
 
 Without `CATS_PG_TEST_DSN`, database tests skip; this is not evidence of database
 correctness. User manual testing waits for the XiaoBa source-probe adapter and
