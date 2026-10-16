@@ -1395,7 +1395,8 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 
 	displayType, _ := formatted["type"].(string)
 	role := "user"
-	eligible := isDurableAgentContextMessage(message, displayType)
+	durable := isDurableAgentContextMessage(message, displayType)
+	eligible := durable
 	reason := "participant_message"
 	if message.FromUID == agentUID {
 		role = "assistant"
@@ -1406,8 +1407,26 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	} else if sender.AccountType == types.AccountBot {
 		role = "other_agent"
 		eligible = false
-		reason = "other_agent_message"
+		if !durable {
+			// Runtime traffic from a peer (tool calls, tool results, thinking,
+			// runtime plans). The judged transcript already drops it, and a
+			// reader must not mistake it for that Agent's conversation: one
+			// group ran away because a bare "execute_shell" was read as a peer
+			// message. A distinct reason keeps "peer said something" and "peer
+			// is working" separable, which one shared reason cannot express.
+			reason = "other_agent_working"
+		} else {
+			reason = "other_agent_message"
+		}
 	}
+
+	// A person's client resolves @usr<id> against its own member list, so it
+	// renders a name. A cloud Agent only ever sees the raw token, and peers end
+	// up guessing who was addressed from their own session file names. Rewrite
+	// the tokens to names on the Agent's read copy; the stored value and human
+	// readers keep the raw token they already resolve themselves. The
+	// structured `mentions` array stays raw so activation matching is unchanged.
+	withMentionNamesForAgentCopy(formatted, identityUsers)
 
 	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
@@ -1546,6 +1565,105 @@ func mentionValues(raw interface{}) []string {
 	default:
 		return nil
 	}
+}
+
+// withMentionNamesForAgentCopy rewrites raw `@usr<id>` tokens into `@<name>` on
+// the Agent's read copy only.
+//
+// A person's client already resolves the token against its own member list, so
+// the raw form never reaches a human. A cloud Agent has no member list and only
+// sees the token, so peers end up identifying each other by scraping their own
+// session file names — on a live group, both Agents guessed who `@usr365` was
+// that way and said so in the room. The structured `mentions` array stays raw
+// (activation matching compares it against `usr<id>`), and the stored value and
+// human copies are untouched.
+func withMentionNamesForAgentCopy(formatted map[string]interface{}, identityUsers map[int64]*types.User) {
+	if formatted == nil || len(identityUsers) == 0 {
+		return
+	}
+	names := make(map[string]string, len(identityUsers))
+	for uid, user := range identityUsers {
+		if uid <= 0 || user == nil {
+			continue
+		}
+		if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+			names[formatUID(uid)] = name
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	names[structuredMentionAllBots] = "所有人"
+
+	if content, ok := formatted["content"].(string); ok && content != "" {
+		formatted["content"] = replaceMentionTokens(content, names)
+	}
+	switch blocks := formatted["content_blocks"].(type) {
+	case []types.ContentBlock:
+		next := make([]types.ContentBlock, len(blocks))
+		copy(next, blocks)
+		for index := range next {
+			if next[index].Type != "text" || next[index].Text == "" {
+				continue
+			}
+			next[index].Text = replaceMentionTokens(next[index].Text, names)
+		}
+		formatted["content_blocks"] = next
+	case []interface{}:
+		next := make([]interface{}, len(blocks))
+		copy(next, blocks)
+		for index, rawBlock := range next {
+			block, ok := rawBlock.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			text, ok := block["text"].(string)
+			if !ok || text == "" {
+				continue
+			}
+			replaced := make(map[string]interface{}, len(block))
+			for key, value := range block {
+				replaced[key] = value
+			}
+			replaced["text"] = replaceMentionTokens(text, names)
+			next[index] = replaced
+		}
+		formatted["content_blocks"] = next
+	}
+}
+
+// replaceMentionTokens swaps whole `@usr<id>` / `@all` tokens for their names.
+// Matching is boundary-aware so an id that is a prefix of a longer one (usr36
+// inside usr365) cannot be rewritten in its place.
+func replaceMentionTokens(text string, names map[string]string) string {
+	if text == "" || !strings.Contains(text, "@") {
+		return text
+	}
+	var builder strings.Builder
+	builder.Grow(len(text))
+	for index := 0; index < len(text); {
+		if text[index] != '@' {
+			builder.WriteByte(text[index])
+			index++
+			continue
+		}
+		end := index + 1
+		for end < len(text) && isMentionTokenChar(text[end]) {
+			end++
+		}
+		token := text[index+1 : end]
+		if name, ok := names[token]; ok {
+			builder.WriteString("@" + name)
+		} else {
+			builder.WriteString(text[index:end])
+		}
+		index = end
+	}
+	return builder.String()
+}
+
+func isMentionTokenChar(char byte) bool {
+	return (char >= '0' && char <= '9') || (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
 }
 
 func withStructuredMentionBlocks(blocks []types.ContentBlock, displayContent interface{}, mentions []string) []types.ContentBlock {
