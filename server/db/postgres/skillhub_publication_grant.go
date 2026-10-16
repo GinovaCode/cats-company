@@ -14,6 +14,7 @@ import (
 )
 
 var _ store.SkillHubPublicationUploadGrantStore = (*Adapter)(nil)
+var _ store.SkillHubPublicationUploadIntrospector = (*Adapter)(nil)
 
 const uploadGrantColumns = `g.grant_id, g.entry_id, g.issuer, g.audience, g.action,
 	g.candidate_revision, g.request_hash, g.source_snapshot_hash, g.request_bytes,
@@ -164,7 +165,22 @@ func (a *Adapter) IssueSkillHubPublicationUploadGrant(ctx context.Context, in st
 // guarantee that authority will remain valid after this transaction. Cloud task
 // acceptance and cancellation ordering MUST be connected before external use.
 func (a *Adapter) CheckSkillHubPublicationUploadGrant(ctx context.Context, token store.SkillHubPublicationUploadToken, expected store.SkillHubPublicationUploadInput, epoch int) (*store.SkillHubPublicationUploadGrant, error) {
-	if expected.Validate() != nil || epoch < 1 || epoch > store.SkillHubPublicationUploadMaxIssues {
+	if expected.Validate() != nil {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	o, err := a.checkPublicationUploadGrant(ctx, token, expected.Query(epoch), &expected)
+	if err != nil {
+		return nil, err
+	}
+	return o.Grant, nil
+}
+
+func (a *Adapter) IntrospectSkillHubPublicationUploadGrant(ctx context.Context, token store.SkillHubPublicationUploadToken, q store.SkillHubPublicationUploadQuery) (*store.SkillHubPublicationUploadObservation, error) {
+	return a.checkPublicationUploadGrant(ctx, token, q, nil)
+}
+
+func (a *Adapter) checkPublicationUploadGrant(ctx context.Context, token store.SkillHubPublicationUploadToken, q store.SkillHubPublicationUploadQuery, expected *store.SkillHubPublicationUploadInput) (*store.SkillHubPublicationUploadObservation, error) {
+	if q.Validate() != nil {
 		return nil, store.ErrSkillHubPublicationInvalid
 	}
 	if _, err := store.ParseSkillHubPublicationUploadToken(token.Reveal()); err != nil {
@@ -177,26 +193,36 @@ func (a *Adapter) CheckSkillHubPublicationUploadGrant(ctx context.Context, token
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := lockPublicationDeliveryAuthority(ctx, tx, expected.EntryID, expected.Binding); err != nil {
-		return nil, err
+	// Lock before loading the canonical binding, so rotation/cancel cannot
+	// replace it between token verification and live authority revalidation.
+	var id string
+	err = tx.QueryRowContext(ctx, `SELECT entry_id FROM skillhub_publication_entries WHERE entry_id=$1 FOR SHARE`, q.EntryID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrSkillHubPublicationDenied
 	}
-	g, hash, err := readUploadGrant(ctx, tx, expected.EntryID)
 	if err != nil {
 		return nil, err
 	}
-	if g == nil || g.Input != expected || g.Epoch != epoch ||
+	g, hash, err := readUploadGrant(ctx, tx, q.EntryID)
+	if err != nil {
+		return nil, err
+	}
+	if g == nil || g.Input.Validate() != nil || g.Input.Query(g.Epoch) != q || (expected != nil && g.Input != *expected) ||
 		subtle.ConstantTimeCompare([]byte(hash), []byte(uploadTokenHash(token))) != 1 {
 		return nil, store.ErrSkillHubPublicationDenied
 	}
-	var live bool
-	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp() >= $1 AND clock_timestamp() < $2`, g.IssuedAt, g.ExpiresAt).Scan(&live); err != nil {
+	if err := lockPublicationDeliveryAuthority(ctx, tx, q.EntryID, g.Input.Binding); err != nil {
 		return nil, err
 	}
-	if !live {
+	var now time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return nil, err
+	}
+	if now.Before(g.IssuedAt) || !now.Before(g.ExpiresAt) {
 		return nil, store.ErrSkillHubPublicationDenied
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return g, nil
+	return &store.SkillHubPublicationUploadObservation{Grant: g, ObservedAt: now}, nil
 }
