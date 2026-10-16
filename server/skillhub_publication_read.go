@@ -24,12 +24,13 @@ var skillHubPublicationEntryID = regexp.MustCompile(`^pubentry_[a-f0-9]{32}$`)
 // authentication errors are private/no-store and never use query credentials.
 // It deliberately has no creation, runtime dispatch or Cloud transport method.
 type SkillHubPublicationReadHandler struct {
-	db                      store.Store
-	entries                 store.SkillHubPublicationEntryStore
-	enabled                 bool
-	limits                  *HTTPRateLimiter
-	reads                   chan struct{}
-	workspaceEntriesEnabled bool
+	db                             store.Store
+	entries                        store.SkillHubPublicationEntryStore
+	enabled                        bool
+	limits                         *HTTPRateLimiter
+	reads                          chan struct{}
+	workspaceEntriesEnabled        bool
+	workspaceDurableEntriesEnabled bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -46,6 +47,10 @@ func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicati
 	_, generations := db.(store.ConversationTaskGenerationStore)
 	_, recovery := db.(store.SkillHubPublicationEntryRequestReader)
 	h.workspaceEntriesEnabled = publicationWorkspaceEntriesEnabled() && h.entries != nil && generations && recovery
+	_, delivery := db.(store.SkillHubPublicationDeliveryStore)
+	_, lister := db.(store.SkillHubPublicationRuntimeDeliveryLister)
+	_, statusReader := db.(store.SkillHubPublicationSourceStatusReader)
+	h.workspaceDurableEntriesEnabled = h.workspaceEntriesEnabled && publicationDeliveryEnabled() && delivery && lister && statusReader
 	return h
 }
 
@@ -147,7 +152,8 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 			"schemaVersion": 1, "entryReadsEnabled": h.enabled && h.entries != nil,
 			"sourceStatusReadsEnabled": h.enabled && h.entries != nil && sourceStatusSupported,
 			"workspaceCreateEnabled":   h.workspaceEntriesEnabled, "chatCreateEnabled": false,
-			"minPollIntervalMs": 5000,
+			"workspaceDurableCreateEnabled": h.workspaceDurableEntriesEnabled,
+			"minPollIntervalMs":             5000,
 		})
 		return
 	}

@@ -157,6 +157,63 @@ indicator or fabricate a repair action from infrastructure errors.
 
 ## Workspace source verification and entry admission
 
+### Durable admission before probing
+
+New orchestration clients should use `skillhub.publication.createEntry.v2` when
+`workspaceDurableCreateEnabled` is true in the capabilities response. The original
+`createEntry.v1` below keeps its probe-before-admission contract; neither protocol
+is connected to the production publishing UI yet. v2 requires all three existing
+read/workspace/delivery flags, all default off, and a supported durable adapter.
+Capabilities describe configuration/support, not worker or runtime health; the
+RPC also refuses admission when the local delivery worker is not running.
+
+The v2 request uses the same exact three-field payload, request ID and owner/device
+headers as v1. It first authenticates the current human/Owner and verifies the
+active, exact, same-node Bot/device/body/installation and connection generation.
+Then it saves the immutable entry and reference-only outbox **before sending any
+source probe**. Browser source references are still unverified selectors at this
+point, not permission to read or upload files. Only the existing durable delivery
+worker sends the read-only probe, with its fresh authority/connection checks,
+leases, bounded retries and terminal source-failure handling.
+
+The private final RPC result has exactly `schema_version: 2`, `entry_request_id`,
+`state: "waiting_runtime"`, and `replay`. It means **durably accepted, not source
+verified or published**. There is no provisional success ACK or transient probe
+to the Bot on this path. Source progress is read using the existing private
+`source-status` route. A missing/changed/unsafe source is a durable worker result,
+not a reason to erase the admitted request or trigger automatic format repair.
+
+Admission runs outside the WebSocket read loop, with at most 16 in-flight
+admissions per Hub/process, no waiting queue, the shared v1/v2 account rate limit,
+and a maximum ten-second context shortened by caller expiry or worker shutdown.
+The database's transactional authority, capacity, quota and idempotency checks
+remain in force. No new schema or production environment configuration is added.
+
+An exact same-key retry after a legitimate reconnect preserves the original
+saved connection generation if all other immutable identity/source fields match
+and the current trusted generation has not regressed. It rechecks current
+authority and does not reset the outbox, attempts or terminal outcome. Changed
+Bot, device, installation, body, local selector or workspace generation conflicts;
+new keys are never invented automatically. On an uncertain DB outcome or lost
+response, use `/requests/{requestId}` with the original publisher login. A
+concurrent request can still commit, so a transient 404 is not proof of failure.
+
+After commit, a Bot disconnect does not retract admission. Loss of the publisher's
+socket suppresses the private reply but does not cancel the durable intent; a
+new login retrieves it through the private read API. The worker can recover it
+on a different node after the same runtime reconnects, even when no first probe
+was sent. Account/Owner/body changes still prevent new execution; original active
+publishers keep private historical reads after transfer.
+
+**Boundary:** a brand-new request still needs an online, same-node, trusted runtime
+binding to establish its immutable source identity. v2 does not accept arbitrary
+offline/cross-node browser selectors. Durable offline first admission still needs
+a separately authenticated source-binding mechanism. This change does not
+capture files, upload, delegate credentials, create repair conversations, invoke
+models, bill accounts or change the legacy publishing buttons.
+
+### Original probe first protocol
+
 This protocol is an integration foundation, not a ready publishing button. Both
 `CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED` and
 `CATSCO_SKILLHUB_PUBLICATION_WORKSPACE_ENTRIES_ENABLED` must be `1`/`true`.

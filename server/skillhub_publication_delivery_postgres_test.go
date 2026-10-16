@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -17,6 +18,14 @@ import (
 // Actual PG persistence + two independent node-local Hubs. The wire peer here
 // is synthetic, NOT a claim that XiaoBa capture/upload has been implemented.
 func TestSkillHubPublicationDeliveryPostgresRecovery(t *testing.T) {
+	testPublicationPostgresRecovery(t, false)
+}
+
+func TestSkillHubPublicationDeliveryPostgresDurableIntake(t *testing.T) {
+	testPublicationPostgresRecovery(t, true)
+}
+
+func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 	dsn := os.Getenv("CATS_PG_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set CATS_PG_TEST_DSN for publication dispatcher integration")
@@ -121,13 +130,42 @@ func TestSkillHubPublicationDeliveryPostgresRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	entry, _, err := a.CreateSkillHubPublicationEntry(context.Background(), in, store.DefaultSkillHubPublicationEntryPolicy())
-	if err != nil {
-		t.Fatal(err)
+	var entry *store.SkillHubPublicationEntry
+	var probe1 *MsgThinToolRPC
+	if beforeFirstProbe {
+		h1.publicationWorkspaceEntries = true
+		owner := &Client{uid: actor, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+		h1.addClient(owner)
+		h1.handleThinToolRPCRequest(owner, &MsgThinToolRPC{Type: thinToolRPCTypeRequest,
+			ToolName: publicationWorkspaceCreateDurable, RequestID: in.RequestID,
+			TargetOwnerUserID: formatUID(actor), TargetDeviceID: in.Source.DeviceID,
+			Payload: map[string]interface{}{"bot_uid": strconv.FormatInt(bot, 10), "local_skill_id": in.Source.LocalSkillID, "workspace_generation": in.Source.WorkspaceGeneration}})
+		reply := publicationIntakeResponse(t, owner)
+		if reply.Error != nil || reply.Result.(map[string]interface{})["state"] != "waiting_runtime" {
+			t.Fatalf("durable intake: %+v", reply)
+		}
+		if len(c1.send) != 0 {
+			t.Fatal("runtime was probed before durable admission")
+		}
+		entry, err = a.GetSkillHubPublicationEntryByRequest(context.Background(), actor, in.RequestID)
+		if err != nil || entry == nil || entry.Input != in || reply.Result.(map[string]interface{})["entry_request_id"] != entry.ID {
+			t.Fatal("admission response not backed by exact PG entry")
+		}
+		var attempts int
+		if err := scoped.QueryRow(`SELECT delivery_attempts FROM skillhub_publication_outbox WHERE entry_id=$1`, entry.ID).Scan(&attempts); err != nil || attempts != 0 {
+			t.Fatal("first probe attempted before intake committed")
+		}
+		h1.removeClient(owner)
+	} else {
+		entry, _, err = a.CreateSkillHubPublicationEntry(context.Background(), in, store.DefaultSkillHubPublicationEntryPolicy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		w1.sweep()
+		probe1 = deliveryProbe(t, c1)
 	}
-	w1.sweep()
-	probe1 := deliveryProbe(t, c1)
-	// Runtime/node dies before replying. Owner has no socket on either node.
+	// Runtime/node dies before first probe (v2) or before its reply (v1).
+	// Recovery has no Owner socket and uses a new PostgreSQL Adapter and Hub.
 	w1.cancel()
 	h1.removeClient(c1)
 	h1.releaseBotBodyLease(c1)
@@ -135,23 +173,27 @@ func TestSkillHubPublicationDeliveryPostgresRecovery(t *testing.T) {
 	h1.clearClientRuntimeRoute(c1)
 	a2 := open()
 	h2, c2, w2 := attach(a2, "dispatch-node-b")
-	w2.sweep()
-	if len(c2.send) != 0 {
-		t.Fatal("stole unexpired lease")
-	}
-	if _, err := scoped.Exec(`UPDATE skillhub_publication_outbox SET lease_until=clock_timestamp()-INTERVAL '1 second' WHERE entry_id=$1`, entry.ID); err != nil {
-		t.Fatal(err)
+	if !beforeFirstProbe {
+		w2.sweep()
+		if len(c2.send) != 0 {
+			t.Fatal("stole unexpired lease")
+		}
+		if _, err := scoped.Exec(`UPDATE skillhub_publication_outbox SET lease_until=clock_timestamp()-INTERVAL '1 second' WHERE entry_id=$1`, entry.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w2.sweep()
 	probe2 := deliveryProbe(t, c2)
-	if probe1.RequestID == probe2.RequestID {
+	if probe1 != nil && probe1.RequestID == probe2.RequestID {
 		t.Fatal("wire ID reused after restart")
 	}
 	result := func(p *MsgThinToolRPC) *MsgThinToolRPC {
 		return &MsgThinToolRPC{Type: thinToolRPCTypeResult, RequestID: p.RequestID, Result: map[string]interface{}{"schema_version": float64(1), "local_skill_id": "local-skill-1", "workspace_generation": "workspace-1"}}
 	}
-	h2.handleThinToolRPCResult(c2, result(probe1))
-	deliveryAckStatus(t, c2, 404)
+	if probe1 != nil {
+		h2.handleThinToolRPCResult(c2, result(probe1))
+		deliveryAckStatus(t, c2, 404)
+	}
 	h2.handleThinToolRPCResult(c1, result(probe2))
 	deliveryAckStatus(t, c1, 403)
 	h2.handleThinToolRPCResult(c2, result(probe2))
@@ -162,7 +204,11 @@ func TestSkillHubPublicationDeliveryPostgresRecovery(t *testing.T) {
 	if err := scoped.QueryRow(`SELECT delivery_state,lease_node,delivery_attempts,lease_generation FROM skillhub_publication_outbox WHERE entry_id=$1`, entry.ID).Scan(&state, &node, &attempts, &generation); err != nil {
 		t.Fatal(err)
 	}
-	if state != "source_verified" || node != "dispatch-node-b" || attempts != 2 || generation != 2 {
+	wantAttempts := 2
+	if beforeFirstProbe {
+		wantAttempts = 1
+	}
+	if state != "source_verified" || node != "dispatch-node-b" || attempts != wantAttempts || generation != 2 {
 		t.Fatalf("recovery: %s %s %d %d", state, node, attempts, generation)
 	}
 	recovered, err := a2.GetSkillHubPublicationEntryByRequest(context.Background(), actor, in.RequestID)

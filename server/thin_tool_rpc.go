@@ -200,6 +200,10 @@ func (h *Hub) handleThinToolRPC(client *Client, msg *MsgThinToolRPC) {
 }
 
 func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
+	if msg.ToolName == publicationWorkspaceCreateDurable {
+		h.handlePublicationWorkspaceDurableRequest(client, msg)
+		return
+	}
 	if strings.HasPrefix(strings.TrimSpace(msg.ToolName), "skillhub.publication.") {
 		h.handlePublicationWorkspaceRequest(client, msg)
 		return
