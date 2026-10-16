@@ -67,6 +67,13 @@ func TestServiceAgentsEndToEnd(t *testing.T) {
 	if _, err := scoped.Exec(string(receiptsMigration)); err != nil {
 		t.Fatalf("apply service run receipts migration: %v", err)
 	}
+	subscriptionsMigration, err := os.ReadFile("db/migrations/postgres/000034_service_agent_subscriptions.up.sql")
+	if err != nil {
+		t.Fatalf("read service agent subscriptions migration: %v", err)
+	}
+	if _, err := scoped.Exec(string(subscriptionsMigration)); err != nil {
+		t.Fatalf("apply service agent subscriptions migration: %v", err)
+	}
 	adapter := &postgres.Adapter{}
 	if err := adapter.Open(scopedDSN); err != nil {
 		t.Fatalf("open store adapter: %v", err)
@@ -397,4 +404,66 @@ func TestServiceAgentsEndToEnd(t *testing.T) {
 	if contEnv.Status != ServiceRunCompleted || contEnv.SessionID != awaitEnv.SessionID || !strings.Contains(string(contEnv.Output), "hello-continued") {
 		t.Fatalf("continuation envelope = %+v", contEnv)
 	}
+
+	// ---- Run 6：目录订阅——屏蔽 hello → 调用拒；恢复 → 调用通（设计 §3.3-9）----
+	if err := adapter.SetServiceAgentSubscriptionHidden(ctx, callerUID, 1, true); err != nil {
+		t.Fatalf("hide hello: %v", err)
+	}
+	mcpHandler.NotifySubscriptionChanged(callerUID)
+	blocked, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "catsco_hello",
+		Arguments: map[string]any{"input": map[string]any{"q": "blocked"}, "client_token": "ct_e2e_hidden"},
+	})
+	if err == nil && (blocked == nil || !blocked.IsError) {
+		t.Fatalf("hidden agent call must be rejected: err=%v result=%+v", err, blocked)
+	}
+	// run_status 工具始终可用（清单不裁剪查询面）
+	statusCall, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "catsco_run_status", Arguments: map[string]any{"run_id": "run_missing"}})
+	if err != nil {
+		t.Fatalf("run_status transport after hide: %v", err)
+	}
+	if !statusCall.IsError || !strings.Contains(strings.ToLower(textOfCall(statusCall)), "run_not_found") {
+		t.Fatalf("run_status after hide = %+v, want run_not_found tool error", statusCall)
+	}
+	// 恢复（添加）→ 正常调用（同步置 autoComplete 以免等太久：直接内联完成）
+	if err := adapter.SetServiceAgentSubscriptionHidden(ctx, callerUID, 1, false); err != nil {
+		t.Fatalf("restore hello: %v", err)
+	}
+	mcpHandler.NotifySubscriptionChanged(callerUID)
+	mcpHandler.syncWait = 5 * time.Second
+	restoreOutcomes := make(chan callOutcome, 1)
+	go func() {
+		call, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "catsco_hello",
+			Arguments: map[string]any{"input": map[string]any{"q": "restored"}, "client_token": "ct_e2e_restored"},
+		})
+		restoreOutcomes <- callOutcome{call, err}
+	}()
+	restoredRun := claimRuns("inst-a")[0]
+	emitResultEvent(restoredRun, "hello-restored")
+	completeRun(restoredRun, "res_e2e_6", "hello-restored", `{"prompt_tokens":2,"completion_tokens":3}`)
+	var restoreOutcome callOutcome
+	select {
+	case restoreOutcome = <-restoreOutcomes:
+	case <-time.After(10 * time.Second):
+		t.Fatal("restored MCP call did not return")
+	}
+	if restoreOutcome.err != nil || restoreOutcome.call.IsError {
+		t.Fatalf("restored call: err=%v result=%+v", restoreOutcome.err, restoreOutcome.call)
+	}
+	restoreEnv := decodeServiceEnvelope(t, restoreOutcome.call.StructuredContent)
+	if restoreEnv.Status != ServiceRunCompleted || !strings.Contains(string(restoreEnv.Output), "hello-restored") {
+		t.Fatalf("restored envelope = %+v", restoreEnv)
+	}
+}
+
+// textOfCall 汇总工具结果文本（e2e 断言用）。
+func textOfCall(call *mcp.CallToolResult) string {
+	text := ""
+	for _, content := range call.Content {
+		if tc, ok := content.(*mcp.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	return text
 }

@@ -56,6 +56,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
 		createServiceRunReceiptsTable,
+		createServiceAgentSubscriptionsTable,
 		seedServiceAgentsHello,
 		seedServiceAgentVersionsHello,
 	}
@@ -616,6 +617,18 @@ CREATE TABLE IF NOT EXISTS service_run_receipts (
 // 待投递扫描索引（MySQL 无部分索引，退化为普通复合索引；重复创建走 1061 幂等忽略）。
 const migrateServiceRunReceiptsPendingIndex = `
 CREATE INDEX idx_service_run_receipts_pending ON service_run_receipts (delivered_at, created_at);
+`
+
+// 应用目录订阅清单（PG 000034 镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
+const createServiceAgentSubscriptionsTable = `
+CREATE TABLE IF NOT EXISTS service_agent_subscriptions (
+    uid BIGINT NOT NULL,
+    agent_id BIGINT NOT NULL,
+    hidden TINYINT(1) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (uid, agent_id),
+    FOREIGN KEY (agent_id) REFERENCES service_agents(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
 const seedServiceAgentsHello = `
