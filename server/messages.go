@@ -1422,6 +1422,19 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		}
 	}
 
+	// File/image attachments store only a server-relative /uploads path. A cloud
+	// Agent rebuilds its session from this history and can only fetch by
+	// absolute address, so the authorized Agent's read copy carries the public
+	// origin. The stored value and human readers keep the relative path.
+	if modelText := h.fileAddressModelText(message); modelText != "" {
+		blocks, _ := formatted["content_blocks"].([]types.ContentBlock)
+		content, nextBlocks := withGatewayAnnotationAgentDelivery(blocks, formatted["content"], modelText, displayType, message.MsgType)
+		formatted["content"] = content
+		if len(nextBlocks) > 0 {
+			formatted["content_blocks"] = nextBlocks
+		}
+	}
+
 	formatted["agent_uid"] = agentUID
 	formatted["agent_id"] = formatUID(agentUID)
 	formatted["context_role"] = role
@@ -1431,6 +1444,49 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		formatted["mentions"] = mentions
 	}
 	return formatted
+}
+
+// fileAddressModelText returns the model-facing absolute address of a file or
+// image attachment so a cloud Agent can read it straight from this server with
+// read_file. It returns "" for anything that is not a stored file/image
+// attachment or when no public origin is configured.
+func (h *Hub) fileAddressModelText(message *types.Message) string {
+	if message == nil {
+		return ""
+	}
+	rich, ok := decodeStoredContent(message.Content).(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	richType := strings.TrimSpace(jsStringOf(rich["type"]))
+	if richType != "file" && richType != "image" {
+		return ""
+	}
+	payload, ok := rich["payload"].(map[string]interface{})
+	if !ok {
+		payload = rich
+	}
+	rawURL := strings.TrimSpace(jsStringOf(payload["url"]))
+	if rawURL == "" {
+		return ""
+	}
+	absolute := rawURL
+	if strings.HasPrefix(rawURL, "/") {
+		resolved, err := requestAbsoluteURL(rawURL)
+		if err != nil {
+			return ""
+		}
+		absolute = resolved
+	}
+	name := strings.TrimSpace(jsStringOf(payload["name"]))
+	if name == "" {
+		name = strings.TrimSpace(jsStringOf(payload["file_name"]))
+	}
+	label := "[附件地址]"
+	if name != "" {
+		label += " " + name
+	}
+	return label + "\n" + absolute + "\n读取方式: 如需查看该附件，调用 read_file，file_path 使用上面的地址。"
 }
 
 func isDurableAgentContextMessage(message *types.Message, displayType string) bool {
