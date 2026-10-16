@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,11 +19,21 @@ import (
 // 工具：每个 agent 一个 catsco_<slug>（调用=创建/复用会话+run），外加 catsco_run_status 查询。
 // 同步交付=阈值内返回结果 envelope；超时返回运行句柄（catsco.service-run-async.v1），随后用
 // catsco_run_status 查询终态。对象均经 structuredContent 承载（content 给文本摘要）。
+//
+// 目录与订阅（设计 §3.3-9"模式二：默认开放 + 个人清单"）：
+// tools/list = 全部 active agent − 调用账号的屏蔽集（清单跟账号）；
+// 清单变更时对在线 MCP 会话做增量同步（AddTool/RemoveTools）→ SDK 自动发
+// notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
 	store    store.ServiceAgentStore
 	balance  *ServiceBalanceChecker // 计费预检（可选；未设置=跳过，调用面单测不受影响）
 	syncWait time.Duration          // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
 	http     *mcp.StreamableHTTPHandler
+
+	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
+	// 每会话一个独立 *mcp.Server 实例）——清单变更时据此下发 list_changed。
+	liveMu      sync.Mutex
+	liveServers map[int64]map[*mcp.Server]map[string]struct{} // uid → server → 已注册工具名集
 }
 
 const (
@@ -34,7 +45,10 @@ const (
 var errServiceRunNotOwned = errors.New("service run not owned by caller")
 
 func NewServiceAgentsMCPHandler(st store.ServiceAgentStore) *ServiceAgentsMCPHandler {
-	h := &ServiceAgentsMCPHandler{store: st}
+	h := &ServiceAgentsMCPHandler{
+		store:       st,
+		liveServers: map[int64]map[*mcp.Server]map[string]struct{}{},
+	}
 	h.http = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return h.buildServer(UIDFromContext(r.Context()))
 	}, nil)
@@ -55,16 +69,128 @@ func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	h.http.ServeHTTP(w, r)
 }
 
-func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "catsco-agents", Version: "0.1.0"}, nil)
-	agents, err := h.store.ListServiceAgents(context.Background())
-	if err == nil {
-		for _, agent := range agents {
-			h.addAgentTool(srv, agent, callerUID)
+// visibleServiceAgents 计算调用账号的可见清单：全部 active agent − 屏蔽集（设计 §3.3-9）。
+// 屏蔽集查询失败时按"全可见"降级（清单是个人聚焦设置，不因存储抖动阻断工具面）。
+func (h *ServiceAgentsMCPHandler) visibleServiceAgents(ctx context.Context, callerUID int64) []store.ServiceAgentDescriptor {
+	agents, err := h.store.ListServiceAgents(ctx)
+	if err != nil {
+		log.Printf("service mcp list agents: %v", err)
+		return nil
+	}
+	hiddenIDs, err := h.store.ListHiddenServiceAgentIDs(ctx, callerUID)
+	if err != nil {
+		log.Printf("service mcp list hidden agents uid=%d: %v", callerUID, err)
+		return agents
+	}
+	if len(hiddenIDs) == 0 {
+		return agents
+	}
+	hidden := make(map[int64]struct{}, len(hiddenIDs))
+	for _, id := range hiddenIDs {
+		hidden[id] = struct{}{}
+	}
+	visible := make([]store.ServiceAgentDescriptor, 0, len(agents))
+	for _, agent := range agents {
+		if _, blocked := hidden[agent.ID]; blocked {
+			continue
 		}
+		visible = append(visible, agent)
+	}
+	return visible
+}
+
+func (h *ServiceAgentsMCPHandler) buildServer(callerUID int64) *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "catsco-agents", Version: "0.1.0"}, &mcp.ServerOptions{
+		// 目录与订阅：工具清单会随账号清单变化动态调整（list_changed 通知）。
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: true}},
+	})
+	registered := map[string]struct{}{}
+	for _, agent := range h.visibleServiceAgents(context.Background(), callerUID) {
+		h.addAgentTool(srv, agent, callerUID)
+		registered["catsco_"+agent.Slug] = struct{}{}
 	}
 	h.addRunStatusTool(srv, callerUID)
+	registered["catsco_run_status"] = struct{}{}
+	h.registerLiveServer(callerUID, srv, registered)
 	return srv
+}
+
+func (h *ServiceAgentsMCPHandler) registerLiveServer(callerUID int64, srv *mcp.Server, tools map[string]struct{}) {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	if h.liveServers[callerUID] == nil {
+		h.liveServers[callerUID] = map[*mcp.Server]map[string]struct{}{}
+	}
+	h.liveServers[callerUID][srv] = tools
+}
+
+// NotifySubscriptionChanged 清单变更后同步该账号全部在线 MCP 会话的工具集。
+// 差量：移除已屏蔽 agent 的 tool、补上新可见 agent 的 tool——SDK 的 AddTool/RemoveTools
+// 自带 list_changed 通知（capabilities.Tools.ListChanged 已声明）。
+// 无会话的 server 从注册表剪枝（会话关闭后 server 实例不再可达）。
+func (h *ServiceAgentsMCPHandler) NotifySubscriptionChanged(callerUID int64) {
+	h.liveMu.Lock()
+	servers := h.liveServers[callerUID]
+	h.liveServers[callerUID] = map[*mcp.Server]map[string]struct{}{}
+	h.liveMu.Unlock()
+	if len(servers) == 0 {
+		return
+	}
+	desired := map[string]store.ServiceAgentDescriptor{}
+	for _, agent := range h.visibleServiceAgents(context.Background(), callerUID) {
+		desired["catsco_"+agent.Slug] = agent
+	}
+	for srv, tools := range servers {
+		if !serviceMCPHasLiveSessions(srv) {
+			continue // 会话已关：实例不再可用，丢弃
+		}
+		removeNames := make([]string, 0)
+		for name := range tools {
+			if name == "catsco_run_status" {
+				continue
+			}
+			if _, ok := desired[name]; !ok {
+				removeNames = append(removeNames, name)
+			}
+		}
+		if len(removeNames) > 0 {
+			srv.RemoveTools(removeNames...)
+			for _, name := range removeNames {
+				delete(tools, name)
+			}
+		}
+		for name, agent := range desired {
+			if _, ok := tools[name]; ok {
+				continue
+			}
+			h.addAgentTool(srv, agent, callerUID)
+			tools[name] = struct{}{}
+		}
+		// 重新登记（存活 server 继续跟踪）。
+		h.registerLiveServer(callerUID, srv, tools)
+	}
+}
+
+// serviceMCPHasLiveSessions 判断 server 是否仍挂着会话（用于注册表剪枝）。
+func serviceMCPHasLiveSessions(srv *mcp.Server) bool {
+	for range srv.Sessions() {
+		return true
+	}
+	return false
+}
+
+// isAgentHiddenFor 判断 agent 是否被该账号屏蔽（清单移除）。
+func (h *ServiceAgentsMCPHandler) isAgentHiddenFor(ctx context.Context, callerUID, agentID int64) (bool, error) {
+	hiddenIDs, err := h.store.ListHiddenServiceAgentIDs(ctx, callerUID)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range hiddenIDs {
+		if id == agentID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type serviceInvokeToolArgs struct {
@@ -99,6 +225,13 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 			}
 			return serviceToolError("service_unavailable: 计费预检暂不可用，请稍后再试"), nil, nil
 		}
+	}
+	// 目录与订阅（设计 §3.3-9）：被该账号从清单移除（屏蔽）的 agent 拒绝调用——
+	// 尊重用户自己的设置；查询失败按放行降级（清单是聚焦设置，非访问控制）。
+	if hidden, err := h.isAgentHiddenFor(ctx, callerUID, agent.ID); err != nil {
+		log.Printf("service mcp hidden check agent=%d uid=%d: %v", agent.ID, callerUID, err)
+	} else if hidden {
+		return serviceToolError("agent_not_subscribed: 该应用已从你的清单中移除（可在应用目录重新添加后再调用）"), nil, nil
 	}
 	input, err := json.Marshal(args.Input)
 	if err != nil || len(input) == 0 || string(input) == "null" {

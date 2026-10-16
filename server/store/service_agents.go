@@ -162,6 +162,13 @@ type ServiceAgentStore interface {
 	MarkServiceRunReceiptDelivered(ctx context.Context, receiptID string) error
 	// TouchServiceRunReceiptDelivery 记录一次投递尝试（离线未送达时累计，可观测）。
 	TouchServiceRunReceiptDelivery(ctx context.Context, receiptID string) error
+	// ---- 应用目录订阅清单（设计 §3.3-9"模式二：默认开放 + 个人清单"）----
+	// ListHiddenServiceAgentIDs 返回该账号从清单中移除（屏蔽）的 agent id 集；
+	// tools/list = 全部 active agent − 本集（无行 = 默认可见）。清单跟账号（uid）。
+	ListHiddenServiceAgentIDs(ctx context.Context, uid int64) ([]int64, error)
+	// SetServiceAgentSubscriptionHidden 调整该账号的目录清单：
+	// hidden=true 屏蔽（目录"删除"；调用亦拒绝）；hidden=false 恢复（目录"添加"）。幂等。
+	SetServiceAgentSubscriptionHidden(ctx context.Context, uid, agentID int64, hidden bool) error
 	// RecordServiceInstanceHeartbeat 落库实例心跳（监控数据源；设计 §7.1"实例在线数"）。
 	// UPSERT 语义：每实例一行最新值；last_seen_at 刷新（在线判定=now-last_seen < 阈值）。
 	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error

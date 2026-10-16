@@ -488,6 +488,14 @@ export const api = {
   createSTTSession: () => request('POST', '/api/stt/sessions'),
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
   relayAdminProxyURL: (path) => `/api/admin/relay${path}`,
+  // 应用目录（服务 agent 订阅清单；设计 §3.3-9）：清单跟账号，变更即时同步在线 MCP 会话。
+  getServiceAgentsCatalog: () => request('GET', '/api/service-agents/catalog'),
+  addServiceAgentSubscription: (slug) => (
+    request('PUT', `/api/service-agents/${encodeURIComponent(slug)}/subscription`)
+  ),
+  removeServiceAgentSubscription: (slug) => (
+    request('DELETE', `/api/service-agents/${encodeURIComponent(slug)}/subscription`)
+  ),
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })

@@ -118,6 +118,7 @@ import './workspace-styles';
 // Keep the active conversation eager; fetch secondary tools only when opened.
 // Chunk failures still use the app's existing WorkspaceLoadErrorBoundary.
 const RelayAdminPanel = lazy(() => import('./relay-admin-panel'));
+const ServiceAgentsPanel = lazy(() => import('./service-agents-panel'));
 const MobileUploadView = lazy(() => import('./mobile-upload-view'));
 const SkillHubView = lazy(() => import('./skillhub-view'));
 const AppsView = lazy(() => import('./apps-view'));
@@ -523,6 +524,7 @@ function TinodeWebApp({ location }) {
   const [relayLinkHandled, setRelayLinkHandled] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+  const [serviceAgentsOpen, setServiceAgentsOpen] = useState(false);
   const recoveredProfileRef = useRef(null);
   const showAutomaticWorkspaceOnboarding = activeView !== 'skillhub'
     && activeView !== 'apps'
@@ -1622,6 +1624,7 @@ function TinodeWebApp({ location }) {
       onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
       relayAdminAllowed={relayAdminAllowed}
       onOpenRelayAdmin={() => setRelayAdminOpen(true)}
+      onOpenServiceAgents={() => setServiceAgentsOpen(true)}
     />
   );
 
@@ -1884,6 +1887,11 @@ function TinodeWebApp({ location }) {
               <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
             </Suspense>
           )}
+          {serviceAgentsOpen && (
+            <Suspense fallback={<SecondaryViewLoading label="应用目录" />}>
+              <ServiceAgentsPanel onClose={() => setServiceAgentsOpen(false)} />
+            </Suspense>
+          )}
         </div>
       </div>
 
@@ -1989,7 +1997,7 @@ function TinodeWebApp({ location }) {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, mobileModelInfo = null, onNewTask }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, onOpenServiceAgents, mobileModelInfo = null, onNewTask }) {
   const barRef = useRef(null);
   const mobileActionsRef = useRef(null);
   const mobileActionsTriggerRef = useRef(null);
@@ -2092,6 +2100,9 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         </div>
       )}
       <div className="v3-shell-actions">
+        <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="应用目录" title="应用目录（定制应用管理）">
+          <Package size={17} />
+        </button>
         {relayAdminAllowed && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
             <Settings2 size={17} />
@@ -2129,6 +2140,10 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
               <button type="button" role="menuitem" aria-label="新建任务" onClick={() => { closeMobileActions(); onNewTask?.(); }}>
                 <Plus size={16} aria-hidden="true" />
                 <span>新建任务</span>
+              </button>
+              <button type="button" role="menuitem" aria-label="应用目录" onClick={() => { closeMobileActions(); onOpenServiceAgents?.(); }}>
+                <Package size={16} aria-hidden="true" />
+                <span>应用目录</span>
               </button>
               {relayAdminAllowed && (
                 <button type="button" role="menuitem" aria-label="模型用量" onClick={() => { closeMobileActions(); onOpenRelayAdmin?.(); }}>

@@ -31,6 +31,7 @@ type fakeServiceAgentStore struct {
 	receipts             map[string]*store.ServiceRunReceipt // 回执收件箱（回注测试用）
 	receiptSeq           []string                            // 回执插入序（ListUndelivered 排序）
 	deliveredReceipts    map[string]bool                     // 已送达标记
+	hiddenAgents         map[int64]map[int64]bool            // uid → agentID → hidden（目录清单）
 	autoCompleteAfter    time.Duration
 	autoAwaitAfter       time.Duration // 到点把 run 收尾为 awaiting_input（返问同步路径测试用）
 	nextID               int64
@@ -54,6 +55,7 @@ func newFakeServiceAgentStore() *fakeServiceAgentStore {
 		packages:             map[string]json.RawMessage{},
 		agentPackageVersions: map[int64][]fakePackageVersion{},
 		receipts:             map[string]*store.ServiceRunReceipt{},
+		hiddenAgents:         map[int64]map[int64]bool{},
 		deliveredReceipts:    map[string]bool{},
 	}
 }
@@ -420,6 +422,34 @@ func (f *fakeServiceAgentStore) TouchServiceRunReceiptDelivery(_ context.Context
 	}
 	return nil
 }
+// ---- 应用目录订阅清单（设计 §3.3-9）----
+
+func (f *fakeServiceAgentStore) ListHiddenServiceAgentIDs(_ context.Context, uid int64) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []int64
+	for agentID, hidden := range f.hiddenAgents[uid] {
+		if hidden {
+			out = append(out, agentID)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeServiceAgentStore) SetServiceAgentSubscriptionHidden(_ context.Context, uid, agentID int64, hidden bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hiddenAgents[uid] == nil {
+		f.hiddenAgents[uid] = map[int64]bool{}
+	}
+	if hidden {
+		f.hiddenAgents[uid][agentID] = true
+	} else {
+		delete(f.hiddenAgents[uid], agentID)
+	}
+	return nil
+}
+
 
 func mcpAuthStub(uid int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

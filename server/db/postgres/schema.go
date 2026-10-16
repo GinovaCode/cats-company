@@ -146,6 +146,7 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunsCreatedAtIndex,
 		createServiceRunReceiptsTable,
 		createServiceRunReceiptsPendingIndex,
+		createServiceAgentSubscriptionsTable,
 		seedServiceAgentsHello,
 		createUsersIndexes,
 		createFriendsIndexes,
@@ -584,6 +585,16 @@ CREATE TABLE IF NOT EXISTS service_run_receipts (
 const createServiceRunReceiptsPendingIndex = `
 CREATE INDEX IF NOT EXISTS idx_service_run_receipts_pending
     ON service_run_receipts (created_at) WHERE delivered_at IS NULL;`
+
+// 应用目录订阅清单（000034 编号迁移镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
+const createServiceAgentSubscriptionsTable = `
+CREATE TABLE IF NOT EXISTS service_agent_subscriptions (
+    uid BIGINT NOT NULL,
+    agent_id BIGINT NOT NULL REFERENCES service_agents(id) ON DELETE CASCADE,
+    hidden BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (uid, agent_id)
+);`
 
 const seedServiceAgentsHello = `
 INSERT INTO service_agents (slug, name) VALUES ('hello', 'Hello 试点应用')
