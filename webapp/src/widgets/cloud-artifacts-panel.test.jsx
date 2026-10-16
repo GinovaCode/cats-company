@@ -912,20 +912,21 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(loadedBinding.signal.aborted).toBe(false);
 
-    // The new page asks for its own launch rather than reusing the sidebar's
-    // single-use code, and lands on the address that launch resolves to.
+    // A new page opens the application's own address and never spends a launch
+    // code: that address is the one to show and to share, and the gateway
+    // recognises the visitor from the platform's domain cookie on its own.
     api.requestArtifactLaunch.mockClear();
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '新页面打开').click();
       await Promise.resolve();
     });
-    expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: 'p2p_7_440' });
     expect(openSpy).toHaveBeenCalledWith(
-      'https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/',
+      'https://artifact.catsco.cc/saturday-demo/',
       '_blank',
       'noopener,noreferrer',
     );
+    expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
 
