@@ -157,6 +157,27 @@ func TestSkillHubPublicationWorkspaceDurableReplayAfterReconnect(t *testing.T) {
 	}
 }
 
+func TestSkillHubPublicationWorkspaceDurableCancelledReplay(t *testing.T) {
+	f, s, _ := newPublicationIntakeFixture(t)
+	f.h.handleThinToolRPCRequest(f.owner, publicationIntakeRPC())
+	first := publicationIntakeResponse(t, f.owner)
+	if first.Error != nil {
+		t.Fatal(first.Error)
+	}
+	s.mu.Lock()
+	s.entries["click-0001"].State = "cancelled"
+	s.mu.Unlock()
+	f.h.handleThinToolRPCRequest(f.owner, publicationIntakeRPC())
+	reply := publicationIntakeResponse(t, f.owner)
+	if reply.Error != nil {
+		t.Fatal(reply.Error)
+	}
+	r := reply.Result.(map[string]interface{})
+	if r["state"] != "cancelled" || r["replay"] != true || r["entry_request_id"] != publicationReadTestID || len(f.runtime.send) != 0 || len(s.entries) != 1 {
+		t.Fatalf("cancelled replay: %v", r)
+	}
+}
+
 func TestSkillHubPublicationWorkspaceDurableRequestGuards(t *testing.T) {
 	for _, tc := range []struct {
 		name, code string

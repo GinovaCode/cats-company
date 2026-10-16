@@ -10,6 +10,7 @@ Current state:
 - Data backfills/transformations belong only in the numbered migration, not startup DDL. Apply the ordering and release gates in [docs/DB_MIGRATIONS.md](../../../docs/DB_MIGRATIONS.md): test empty creation and a named historical schema upgrade, repeat the upgrade to prove idempotence, and run database tests with a real test DSN in CI.
 - Do not edit an already-applied migration. Add a new one.
 - `000030_skillhub_publication_delivery` adds inert publication delivery leases to the existing outbox. Its down migration preserves pre-existing intents but refuses to discard any delivery attempt/receipt evidence; see [publication persistence](../../../docs/skillhub-publication-entries.md).
+- `000035_skillhub_publication_cancellation` expands the entry-state constraint without deleting intents or outbox evidence. Down refuses retained cancellations; all delivery workers must be cancellation-aware before the feature flag is enabled. See the cancellation section in the same publication document.
 - MySQL is not part of the migration system. Keep MySQL compatibility fixes in code only unless the product explicitly reintroduces MySQL migrations.
 
 Sensitive values never belong here:

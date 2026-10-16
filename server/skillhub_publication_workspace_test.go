@@ -198,6 +198,30 @@ func TestSkillHubPublicationWorkspaceAdmissionAndReplay(t *testing.T) {
 	}
 }
 
+func TestSkillHubPublicationWorkspaceCancelledReplay(t *testing.T) {
+	f := newPublicationWorkspaceFixture(t)
+	probe := f.start(t, publicationWorkspaceRequest())
+	f.h.handleThinToolRPCResult(f.runtime, f.result(probe))
+	publicationWorkspaceResponse(t, f.owner)
+	deliveryAckStatus(t, f.runtime, 200)
+	f.db.mu.Lock()
+	f.db.entries["click-0001"].State = "cancelled"
+	f.db.mu.Unlock()
+	// Legacy v1 still performs its read-only preflight, but must never present
+	// replay as a new waiting request or recreate the cancelled intent.
+	probe = f.start(t, publicationWorkspaceRequest())
+	f.h.handleThinToolRPCResult(f.runtime, f.result(probe))
+	reply := publicationWorkspaceResponse(t, f.owner)
+	if reply.Error != nil {
+		t.Fatal(reply.Error)
+	}
+	r := reply.Result.(map[string]interface{})
+	if r["state"] != "cancelled" || r["replay"] != true || r["entry_request_id"] != publicationReadTestID || len(f.db.entries) != 1 {
+		t.Fatalf("cancelled replay: %v", r)
+	}
+	deliveryAckStatus(t, f.runtime, 200)
+}
+
 func TestSkillHubPublicationWorkspaceRequestGuards(t *testing.T) {
 	for _, tc := range []struct {
 		name, code string

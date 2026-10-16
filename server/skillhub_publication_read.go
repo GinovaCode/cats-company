@@ -22,7 +22,8 @@ var skillHubPublicationEntryID = regexp.MustCompile(`^pubentry_[a-f0-9]{32}$`)
 
 // SkillHubPublicationReadHandler authenticates active humans itself, so even
 // authentication errors are private/no-store and never use query credentials.
-// It deliberately has no creation, runtime dispatch or Cloud transport method.
+// It also serves a separately gated pre-Cloud cancellation action. It has no
+// creation, runtime dispatch or Cloud transport method; GET never mutates state.
 type SkillHubPublicationReadHandler struct {
 	db                             store.Store
 	entries                        store.SkillHubPublicationEntryStore
@@ -31,6 +32,7 @@ type SkillHubPublicationReadHandler struct {
 	reads                          chan struct{}
 	workspaceEntriesEnabled        bool
 	workspaceDurableEntriesEnabled bool
+	cancellationEnabled            bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -51,6 +53,8 @@ func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicati
 	_, lister := db.(store.SkillHubPublicationRuntimeDeliveryLister)
 	_, statusReader := db.(store.SkillHubPublicationSourceStatusReader)
 	h.workspaceDurableEntriesEnabled = h.workspaceEntriesEnabled && publicationDeliveryEnabled() && delivery && lister && statusReader
+	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_CANCELLATION_ENABLED"))
+	h.cancellationEnabled = h.enabled && (v == "1" || strings.EqualFold(v, "true"))
 	return h
 }
 
@@ -66,7 +70,7 @@ type skillHubPublicationEntryView struct {
 
 func skillHubPublicationReadError(w http.ResponseWriter, status int, code string) {
 	problem := map[string]string{
-		"code": code, "message": "SkillHub publication status could not be read.",
+		"code": code, "message": "SkillHub publication request could not be processed.",
 	}
 	if status == http.StatusServiceUnavailable {
 		// Never log raw database errors, bearer tokens or source information.
@@ -118,8 +122,12 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	capabilities := path == skillHubPublicationPrefix+"/capabilities"
 	id := strings.TrimPrefix(path, skillHubPublicationPrefix+"/entries/")
 	sourceStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/source-status")
+	cancelEntry := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/cancel")
 	if sourceStatus {
 		id = strings.TrimSuffix(id, "/source-status")
+	}
+	if cancelEntry {
+		id = strings.TrimSuffix(id, "/cancel")
 	}
 	byRequest := strings.HasPrefix(path, skillHubPublicationPrefix+"/requests/")
 	valid := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && skillHubPublicationEntryID.MatchString(id)
@@ -131,8 +139,16 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
 		return
 	}
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	method := http.MethodGet
+	if cancelEntry {
+		if !h.enabled || !h.cancellationEnabled {
+			skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
+			return
+		}
+		method = http.MethodPost
+	}
+	if r.Method != method {
+		w.Header().Set("Allow", method)
 		skillHubPublicationReadError(w, http.StatusMethodNotAllowed, "publication.method_not_allowed")
 		return
 	}
@@ -148,16 +164,18 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if capabilities {
 		_, sourceStatusSupported := h.db.(store.SkillHubPublicationSourceStatusReader)
+		_, cancelSupported := h.db.(store.SkillHubPublicationCancellationStore)
 		writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
 			"schemaVersion": 1, "entryReadsEnabled": h.enabled && h.entries != nil,
 			"sourceStatusReadsEnabled": h.enabled && h.entries != nil && sourceStatusSupported,
 			"workspaceCreateEnabled":   h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"workspaceDurableCreateEnabled": h.workspaceDurableEntriesEnabled,
+			"entryCancellationEnabled":      h.enabled && h.entries != nil && h.cancellationEnabled && cancelSupported,
 			"minPollIntervalMs":             5000,
 		})
 		return
 	}
-	if !h.enabled {
+	if !h.enabled || (cancelEntry && !h.cancellationEnabled) {
 		skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
 		return
 	}
@@ -211,7 +229,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	// Unknown future states must be deliberately mapped, never passed through
 	// as arbitrary strings or mistaken for a successful Cloud publication.
 	identityMatches := (!byRequest && entry.ID == id) || (byRequest && entry.Input.RequestID == id)
-	if !identityMatches || !skillHubPublicationEntryID.MatchString(entry.ID) || entry.State != "waiting_runtime" || entry.Input.Entrypoint != "workspace" || entry.Input.BotUID <= 0 || entry.CreatedAt.IsZero() {
+	if !identityMatches || !skillHubPublicationEntryID.MatchString(entry.ID) || (entry.State != "waiting_runtime" && entry.State != "cancelled") || entry.Input.Entrypoint != "workspace" || entry.Input.BotUID <= 0 || entry.CreatedAt.IsZero() {
 		skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.record_unavailable")
 		return
 	}
@@ -219,11 +237,34 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		h.readSourceStatus(w, ctx, claims.UID, entry.ID)
 		return
 	}
+	if cancelEntry {
+		canceller, ok := h.db.(store.SkillHubPublicationCancellationStore)
+		if !ok {
+			skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.storage_unsupported")
+			return
+		}
+		cancelled, err := canceller.CancelSkillHubPublicationEntry(ctx, claims.UID, entry.ID)
+		if errors.Is(err, store.ErrSkillHubPublicationDenied) || errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+			skillHubPublicationReadError(w, http.StatusNotFound, "publication.not_found")
+			return
+		}
+		if errors.Is(err, store.ErrSkillHubPublicationConflict) {
+			skillHubPublicationReadError(w, http.StatusConflict, "publication.cancellation_conflict")
+			return
+		}
+		if err != nil || ctx.Err() != nil || cancelled == nil || cancelled.ID != entry.ID || cancelled.Input != entry.Input || cancelled.State != "cancelled" || cancelled.CreatedAt.IsZero() {
+			// A cancelled context/lost response may follow a successful commit.
+			// Preserve the original ID; GET the state or repeat this same action.
+			skillHubPublicationReadError(w, http.StatusServiceUnavailable, "publication.cancellation_uncertain")
+			return
+		}
+		entry = cancelled
+	}
 	writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
 		"schemaVersion": 1,
 		"entry": skillHubPublicationEntryView{
 			EntryRequestID: entry.ID, BotUID: strconv.FormatInt(entry.Input.BotUID, 10),
-			Entrypoint: "workspace", State: "waiting_runtime", CreatedAt: entry.CreatedAt.UTC(),
+			Entrypoint: "workspace", State: entry.State, CreatedAt: entry.CreatedAt.UTC(),
 		},
 	})
 }

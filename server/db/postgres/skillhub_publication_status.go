@@ -22,7 +22,7 @@ func (a *Adapter) GetSkillHubPublicationSourceStatus(ctx context.Context, actorU
 	// Deliberately no current Bot-owner join: this is original-publisher history,
 	// not authority to execute anything. It remains readable when workers stop.
 	err := a.db.QueryRowContext(ctx, `SELECT e.entry_id, e.actor_uid,
-		o.delivery_state, o.delivery_attempts, o.last_code, o.next_attempt_at,
+		CASE WHEN e.state='cancelled' THEN 'cancelled' ELSE o.delivery_state END, o.delivery_attempts, o.last_code, o.next_attempt_at,
 		o.lease_until, o.source_verified_at, clock_timestamp()
 		FROM skillhub_publication_entries e
 		JOIN skillhub_publication_outbox o ON o.entry_id=e.entry_id AND o.kind='capture_candidate'
