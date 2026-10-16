@@ -26,7 +26,7 @@ import {
 import { api, resolveMediaURL } from '../api';
 import { getAuthRevision, getToken } from '../auth-session';
 import { normalizeArtifactOpenBinding, artifactOpenBindingUsable } from '../gateway-annotations';
-import { gatewayApplicationShareURL, openBlankTab, openTabAt } from '../artifact-preview-coordinator';
+import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
@@ -348,12 +348,15 @@ export default function CloudArtifactsPanel({
   // for any reason we still open the plain URL, so the action never dead-ends.
   const openGatewayApp = useCallback(async (app, target = 'panel') => {
     if (!app?.id || !app?.url) return;
-    // A new tab opens the application's own address, not the hosted viewer: the
-    // viewer URL carries this conversation and the owner, so it is a poor thing
-    // to hand to anyone and a worse thing to leave in the address bar. Claiming
-    // the tab now keeps the click as the active gesture, and the launch below
-    // fills it in with an address that already carries the visitor's identity.
-    const claimedTab = target === 'window' ? openBlankTab() : null;
+    // A new tab opens the application's own address. That is the address to show,
+    // to bookmark, and to hand to anyone else. Identity arrives on its own: the
+    // platform signs a domain cookie the browser also sends to the gateway host,
+    // so the gateway recognises the visitor without a one-shot launch code — which
+    // is also why this path never has to touch the launch endpoint at all.
+    if (target === 'window') {
+      window.open(app.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
     const launchSequence = ++gatewayLaunchSequenceRef.current;
     // Panel opens own one capability per instance.
     const requestID = ++gatewayOpenSequenceRef.current;
@@ -396,17 +399,6 @@ export default function CloudArtifactsPanel({
     if (launchSequence !== gatewayLaunchSequenceRef.current
       || requestID !== gatewayOpenSequenceRef.current || getAuthRevision() !== authRevision || getToken() !== token) {
       if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
-      return;
-    }
-    if (target === 'window') {
-      // The launch address ends on the application's own URL with the visitor's
-      // identity already established, which is what a new tab should show. The
-      // binding itself is of no use here — a standalone tab has no parent to
-      // annotate into — so release it rather than leave a capability alive.
-      if (openBinding) void api.revokeArtifactOpenBinding(openBinding.open_ref).catch(() => {});
-      if (!openTabAt(viewerURL, claimedTab)) {
-        feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
-      }
       return;
     }
     retireGatewayOpen();
