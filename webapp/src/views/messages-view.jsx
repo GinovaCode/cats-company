@@ -71,7 +71,8 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
-  createGatewayApplicationViewerURL,
+  openBlankTab,
+  openTabAt,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -2397,25 +2398,32 @@ export default function MessagesView({
   // with it. The generic file preview would show the entry point as a stored
   // page and could not hand off to a new tab. "Open in a new page" stays where it
   // already is — in that viewer, which knows the conversation to carry.
-  const openArtifactApp = useCallback((artifact, { newPage = false } = {}) => {
+  const openArtifactApp = useCallback(async (artifact, { newPage = false } = {}) => {
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
     if (agentUid <= 0 || !appId) return;
-    // The card offers the handoff directly as well as through the sidebar. It
-    // builds the same viewer URL the sidebar builds, from this conversation's
-    // topic and the application's owner, so the tab it opens joins the same
-    // session instead of starting as a guest.
+    // A new tab opens the application's own address rather than the hosted
+    // viewer: the viewer URL carries this conversation and the owner, which is
+    // both a poor thing to hand to anyone and a poor thing to leave in the
+    // address bar. The tab is claimed while the click is still the active
+    // gesture, and the launch fills it in with an address that already carries
+    // the visitor's identity.
     if (newPage) {
-      const viewerURL = createGatewayApplicationViewerURL({
-        topicId: topic,
-        agentUid,
-        artifactId: appId,
-      });
-      if (viewerURL) {
-        window.open(viewerURL, '_blank', 'noopener,noreferrer');
-        return;
+      const claimedTab = openBlankTab();
+      let destination = String(artifact?.url || '').trim();
+      try {
+        const launch = await api.requestArtifactLaunch({ app: appId, ...(topic ? { topic_id: topic } : {}) });
+        if (launch?.launch_url) destination = launch.launch_url;
+        // The tab is standalone, so it has no parent to annotate into and the
+        // capability would only linger.
+        const binding = normalizeArtifactOpenBinding(launch?.open_binding);
+        if (binding) void api.revokeArtifactOpenBinding(binding.open_ref).catch(() => {});
+      } catch {
+        // Keep the application's own address; it opens as a guest.
       }
-      feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
+      if (!openTabAt(destination, claimedTab)) {
+        feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
+      }
       return;
     }
     setPendingArtifactRefresh(null);
