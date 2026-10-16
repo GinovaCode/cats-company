@@ -275,6 +275,93 @@ export async function fetchRangeValues(context, fileId, sheetName, cellRange, { 
   return payload.values;
 }
 
+function matrixForRange(values, cellRange) {
+  const parsed = parseA1Range(cellRange);
+  const height = parsed.endRow - parsed.startRow + 1;
+  const width = parsed.endColumn - parsed.startColumn + 1;
+  return Array.from({ length: height }, (_, rowIndex) => Array.from({ length: width }, (_, columnIndex) => {
+    const value = values?.[rowIndex]?.[columnIndex];
+    return value === undefined || value === null ? '' : value;
+  }));
+}
+
+function matricesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validateWriteMatrix(cellRange, values) {
+  const parsed = parseA1Range(cellRange);
+  const height = parsed.endRow - parsed.startRow + 1;
+  const width = parsed.endColumn - parsed.startColumn + 1;
+  if (!Array.isArray(values) || values.length !== height || values.some(row => !Array.isArray(row) || row.length !== width)) {
+    throw new ShimoWorkerError('INVALID_ARGUMENTS', `values 的尺寸必须与 ${cellRange} 完全一致（${height} 行 × ${width} 列）。`, 400);
+  }
+  if (values.some(row => row.some(value => typeof value !== 'string' && typeof value !== 'number'))) {
+    throw new ShimoWorkerError('INVALID_ARGUMENTS', '单元格值只支持文本和数字。', 400);
+  }
+  return parsed;
+}
+
+function writeTargetRange(anchorRange, values, startRow) {
+  const parsed = parseA1Range(anchorRange);
+  const width = values[0].length;
+  return columnLabel(parsed.startColumn) + startRow + ':'
+    + columnLabel(parsed.startColumn + width - 1) + (startRow + values.length - 1);
+}
+
+async function writeRangeValues(context, method, fileId, sheetName, cellRange, values, { timeoutMs } = {}) {
+  const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values';
+  const options = { data: { range: sheetName + '!' + cellRange, resource: { values } } };
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) options.timeout = timeoutMs;
+  const response = method === 'append'
+    ? await context.request.put(endpoint, options)
+    : await context.request.post(endpoint, options);
+  if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
+  if (response.status() === 403) throw new ShimoWorkerError('DOCUMENT_NOT_WRITABLE', '当前石墨账号没有修改这份表格的权限。', 403);
+  if (!response.ok()) {
+    const body = await response.text().catch(() => '');
+    const excerpt = upstreamExcerpt(body);
+    throw new ShimoWorkerError('SHIMO_WRITE_ERROR', '石墨表格写入接口返回 HTTP ' + response.status() + '。' + (excerpt ? '上游返回：' + excerpt : ''), 502);
+  }
+}
+
+function rowIsEmpty(row, width) {
+  for (let index = 0; index < width; index += 1) {
+    const value = row?.[index];
+    if (value !== undefined && value !== null && value !== '') return false;
+  }
+  return true;
+}
+
+export async function inspectAppendPosition(context, fileId, sheetName, cellRange) {
+  const parsed = parseA1Range(cellRange);
+  const width = parsed.endColumn - parsed.startColumn + 1;
+  const plan = planRowBands(cellRange);
+  if (plan.truncated) {
+    throw new ShimoWorkerError('RANGE_TOO_LARGE', '追加定位范围过大，请缩小到连续数据区域。', 400);
+  }
+  let appendAfterRow = parsed.startRow - 1;
+  let requests = 0;
+  for (const band of plan.bands) {
+    const rows = await fetchRangeValues(context, fileId, sheetName, band.range);
+    requests += 1;
+    const bandHeight = band.end_row - band.start_row + 1;
+    for (let offset = 0; offset < bandHeight; offset += 1) {
+      if (rowIsEmpty(rows[offset], width)) {
+        return {
+          inspected_at: new Date().toISOString(), requested_range: cellRange,
+          append_after_row: appendAfterRow, requests, source_kind: 'native_sheet',
+        };
+      }
+      appendAfterRow = band.start_row + offset;
+    }
+  }
+  return {
+    inspected_at: new Date().toISOString(), requested_range: cellRange,
+    append_after_row: appendAfterRow, requests, source_kind: 'native_sheet',
+  };
+}
+
 export function browserExecutable() {
   const configured = String(process.env.CHROMIUM_EXECUTABLE_PATH || '').trim();
   const candidates = [configured, '/usr/bin/chromium', '/usr/bin/google-chrome',
@@ -656,6 +743,108 @@ export class PlaywrightShimoEngine {
         merged_ranges: sliced.merged_ranges,
         sheet_max_row: grid.maxRow,
         sheet_max_column: columnLabel(grid.maxColumn),
+      };
+    });
+  }
+
+  async assertNativeSheetWritable(context, url) {
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.timeoutMs });
+    await page.waitForTimeout(2500);
+    const bodyText = await page.locator('body').innerText({ timeout: 15_000 });
+    const hasSheetTabs = await pageHasSheetTabs(page);
+    assertPageAccess(await page.title(), bodyText, { hasSheetTabs });
+    if (!hasSheetTabs) {
+      throw new ShimoWorkerError('PAGE_UNEXPECTED', '石墨页面里没有找到表格标签，无法安全写入。', 502);
+    }
+  }
+
+  async inspectSheetAppend(storageState, inputURL, sheetName, cellRange) {
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind !== 'sheet') {
+      throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
+    }
+    return this.withContext(storageState, async context => {
+      await this.assertNativeSheetWritable(context, url);
+      return inspectAppendPosition(context, fileId, sheetName, cellRange);
+    });
+  }
+
+  async updateSheet(storageState, inputURL, sheetName, cellRange, values, expectedValues) {
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind !== 'sheet') {
+      throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
+    }
+    validateWriteMatrix(cellRange, values);
+    return this.withContext(storageState, async context => {
+      await this.assertNativeSheetWritable(context, url);
+      const current = matrixForRange(await fetchRangeValues(context, fileId, sheetName, cellRange), cellRange);
+      const expected = matrixForRange(expectedValues, cellRange);
+      const desired = matrixForRange(values, cellRange);
+      if (matricesEqual(current, desired)) {
+        return {
+          written_at: new Date().toISOString(), requested_range: cellRange,
+          before: current, after: current, verified: true, already_applied: true, source_kind: 'native_sheet',
+        };
+      }
+      if (!matricesEqual(current, expected)) {
+        throw new ShimoWorkerError('PRECONDITION_FAILED', '目标单元格在确认后已发生变化；已停止写入，请重新生成预览。', 409);
+      }
+      await writeRangeValues(context, 'update', fileId, sheetName, cellRange, values);
+      const after = matrixForRange(await fetchRangeValues(context, fileId, sheetName, cellRange), cellRange);
+      if (!matricesEqual(after, desired)) {
+        throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受写入，但回读结果与计划不一致；请人工检查目标范围。', 502);
+      }
+      return {
+        written_at: new Date().toISOString(), requested_range: cellRange,
+        before: current, after, verified: true, already_applied: false, source_kind: 'native_sheet',
+      };
+    });
+  }
+
+  async appendSheet(storageState, inputURL, sheetName, cellRange, values, expectedAppendAfterRow) {
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind !== 'sheet') {
+      throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
+    }
+    if (!Array.isArray(values) || values.length === 0 || !Array.isArray(values[0]) || values[0].length === 0
+      || values.some(row => !Array.isArray(row) || row.length !== values[0].length
+        || row.some(value => typeof value !== 'string' && typeof value !== 'number'))) {
+      throw new ShimoWorkerError('INVALID_ARGUMENTS', 'values 必须是只含文本和数字的非空二维矩形。', 400);
+    }
+    const parsed = parseA1Range(cellRange);
+    const anchorWidth = parsed.endColumn - parsed.startColumn + 1;
+    if (values[0].length > anchorWidth) {
+      throw new ShimoWorkerError('INVALID_ARGUMENTS', '追加数据的列数不能超过定位范围的列数。', 400);
+    }
+    if (!Number.isInteger(expectedAppendAfterRow) || expectedAppendAfterRow < parsed.startRow - 1 || expectedAppendAfterRow > parsed.endRow) {
+      throw new ShimoWorkerError('INVALID_ARGUMENTS', 'expected_append_after_row 不在定位范围内。', 400);
+    }
+    const targetRange = writeTargetRange(cellRange, values, expectedAppendAfterRow + 1);
+    return this.withContext(storageState, async context => {
+      await this.assertNativeSheetWritable(context, url);
+      const position = await inspectAppendPosition(context, fileId, sheetName, cellRange);
+      const desired = matrixForRange(values, targetRange);
+      if (position.append_after_row !== expectedAppendAfterRow) {
+        const existingTarget = matrixForRange(await fetchRangeValues(context, fileId, sheetName, targetRange), targetRange);
+        if (matricesEqual(existingTarget, desired)) {
+          return {
+            written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
+            append_after_row: expectedAppendAfterRow, appended_rows: values.length,
+            after: existingTarget, verified: true, already_applied: true, source_kind: 'native_sheet',
+          };
+        }
+        throw new ShimoWorkerError('PRECONDITION_FAILED', '表格末尾在确认后已发生变化；已停止追加，请重新生成预览。', 409);
+      }
+      await writeRangeValues(context, 'append', fileId, sheetName, cellRange, values);
+      const after = matrixForRange(await fetchRangeValues(context, fileId, sheetName, targetRange), targetRange);
+      if (!matricesEqual(after, desired)) {
+        throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受追加，但回读结果与计划不一致；请人工检查目标范围。', 502);
+      }
+      return {
+        written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
+        append_after_row: expectedAppendAfterRow, appended_rows: values.length,
+        after, verified: true, already_applied: false, source_kind: 'native_sheet',
       };
     });
   }

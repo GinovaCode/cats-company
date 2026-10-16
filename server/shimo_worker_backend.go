@@ -117,6 +117,32 @@ func (b *httpShimoWorkerBackend) ReadSheet(ctx context.Context, actor shimoActor
 	return response, err
 }
 
+func (b *httpShimoWorkerBackend) InspectSheetAppend(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string) (map[string]any, error) {
+	var response map[string]any
+	err := b.call(ctx, "/v1/sheets/append-plan", map[string]any{
+		"connection_binding": b.binding(actor), "url": sourceURL, "sheet_name": sheetName, "range": cellRange,
+	}, &response)
+	return response, err
+}
+
+func (b *httpShimoWorkerBackend) UpdateSheet(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string, values, expectedValues [][]any) (map[string]any, error) {
+	var response map[string]any
+	err := b.call(ctx, "/v1/sheets/update", map[string]any{
+		"connection_binding": b.binding(actor), "url": sourceURL, "sheet_name": sheetName, "range": cellRange,
+		"values": values, "expected_values": expectedValues,
+	}, &response)
+	return response, err
+}
+
+func (b *httpShimoWorkerBackend) AppendSheet(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string, values [][]any, expectedAppendAfterRow int) (map[string]any, error) {
+	var response map[string]any
+	err := b.call(ctx, "/v1/sheets/append", map[string]any{
+		"connection_binding": b.binding(actor), "url": sourceURL, "sheet_name": sheetName, "range": cellRange,
+		"values": values, "expected_append_after_row": expectedAppendAfterRow,
+	}, &response)
+	return response, err
+}
+
 func (b *httpShimoWorkerBackend) ReadDocument(ctx context.Context, actor shimoActor, sourceURL string, maxChars int) (map[string]any, error) {
 	var response map[string]any
 	err := b.call(ctx, "/v1/documents/read", map[string]any{

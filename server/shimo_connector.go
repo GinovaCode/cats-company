@@ -25,7 +25,9 @@ import (
 const (
 	shimoConnectorAudience = "catsco-shimo-connector"
 	shimoConnectorIssuer   = "catscompany"
-	shimoConnectorRevision = "catsco-shimo-mvp-1"
+	shimoConnectorRevision = "catsco-shimo-v2"
+	shimoReadCapability    = "shimo:connect shimo:read"
+	shimoWriteCapability   = "shimo:connect shimo:read shimo:write"
 	defaultShimoAttemptTTL = 5 * time.Minute
 	maxShimoActorTokenTTL  = 10 * time.Minute
 	maxShimoRequestBytes   = 1 << 20
@@ -46,9 +48,10 @@ type ShimoActorClaims struct {
 }
 
 type shimoActor struct {
-	agentUID string
-	actorUID string
-	taskRef  string
+	agentUID   string
+	actorUID   string
+	taskRef    string
+	capability string
 }
 
 type shimoConnectionKey struct {
@@ -99,6 +102,9 @@ type ShimoLoginResume struct {
 type ShimoConnectorBackend interface {
 	ListSheets(ctx context.Context, actor shimoActor, sourceURL string) (map[string]any, error)
 	ReadSheet(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string) (map[string]any, error)
+	InspectSheetAppend(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string) (map[string]any, error)
+	UpdateSheet(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string, values, expectedValues [][]any) (map[string]any, error)
+	AppendSheet(ctx context.Context, actor shimoActor, sourceURL, sheetName, cellRange string, values [][]any, expectedAppendAfterRow int) (map[string]any, error)
 	ReadDocument(ctx context.Context, actor shimoActor, sourceURL string, maxChars int) (map[string]any, error)
 }
 
@@ -192,6 +198,17 @@ func (h *ShimoConnectorHandler) SetLoginResumePublisher(publisher func(ShimoLogi
 // GenerateShimoActorToken creates the per-invocation capability consumed by
 // the connector. Callers must pass identities already verified by CatsCo.
 func GenerateShimoActorToken(secret []byte, agentUID, actorUID, taskRef, skillID string, ttl time.Duration) (string, error) {
+	return generateShimoActorToken(secret, agentUID, actorUID, taskRef, skillID, shimoReadCapability, ttl)
+}
+
+// GenerateShimoWriterActorToken creates a short-lived token for the separately
+// allowlisted writer skill. The reader token deliberately never receives this
+// capability, so installing shimo-reader cannot mutate a document.
+func GenerateShimoWriterActorToken(secret []byte, agentUID, actorUID, taskRef, skillID string, ttl time.Duration) (string, error) {
+	return generateShimoActorToken(secret, agentUID, actorUID, taskRef, skillID, shimoWriteCapability, ttl)
+}
+
+func generateShimoActorToken(secret []byte, agentUID, actorUID, taskRef, skillID, capability string, ttl time.Duration) (string, error) {
 	if len(secret) < 32 {
 		return "", errors.New("shimo actor secret must contain at least 32 bytes")
 	}
@@ -215,7 +232,7 @@ func GenerateShimoActorToken(secret []byte, agentUID, actorUID, taskRef, skillID
 		ActorUID:   actorUID,
 		TaskRef:    taskRef,
 		SkillID:    skillID,
-		Capability: "shimo:connect shimo:read",
+		Capability: capability,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    shimoConnectorIssuer,
 			Audience:  jwt.ClaimStrings{shimoConnectorAudience},
@@ -226,6 +243,77 @@ func GenerateShimoActorToken(secret []byte, agentUID, actorUID, taskRef, skillID
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+}
+
+func (h *ShimoConnectorHandler) HandleInspectSheetAppend(w http.ResponseWriter, r *http.Request) {
+	actor, sourceURL, sheetName, cellRange, ok := h.authorizedSheetRequest(w, r, false)
+	if !ok {
+		return
+	}
+	data, err := h.backend.InspectSheetAppend(r.Context(), actor, sourceURL, sheetName, cellRange)
+	if err != nil {
+		h.writeBackendError(w, err)
+		return
+	}
+	h.writeOK(w, http.StatusOK, h.connectionBinding(shimoConnectionKey{agentUID: actor.agentUID, actorUID: actor.actorUID}), data)
+}
+
+func (h *ShimoConnectorHandler) HandleUpdateSheet(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.authenticateMethodAndConnection(w, r, http.MethodPost)
+	if !ok || !h.requireWriteCapability(w, actor) {
+		return
+	}
+	var body struct {
+		URL            string  `json:"url"`
+		SheetName      string  `json:"sheet_name"`
+		Range          string  `json:"range"`
+		Values         [][]any `json:"values"`
+		ExpectedValues [][]any `json:"expected_values"`
+	}
+	if !h.decodeJSON(w, r, &body) {
+		return
+	}
+	sourceURL, sheetName, cellRange, ok := h.validateSheetTarget(w, body.URL, body.SheetName, body.Range)
+	if !ok || !validateShimoValueMatrix(w, h, body.Values, false) || !validateShimoValueMatrix(w, h, body.ExpectedValues, true) {
+		return
+	}
+	data, err := h.backend.UpdateSheet(r.Context(), actor, sourceURL, sheetName, cellRange, body.Values, body.ExpectedValues)
+	if err != nil {
+		h.writeBackendError(w, err)
+		return
+	}
+	h.writeOK(w, http.StatusOK, h.connectionBinding(shimoConnectionKey{agentUID: actor.agentUID, actorUID: actor.actorUID}), data)
+}
+
+func (h *ShimoConnectorHandler) HandleAppendSheet(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.authenticateMethodAndConnection(w, r, http.MethodPost)
+	if !ok || !h.requireWriteCapability(w, actor) {
+		return
+	}
+	var body struct {
+		URL                    string  `json:"url"`
+		SheetName              string  `json:"sheet_name"`
+		Range                  string  `json:"range"`
+		Values                 [][]any `json:"values"`
+		ExpectedAppendAfterRow int     `json:"expected_append_after_row"`
+	}
+	if !h.decodeJSON(w, r, &body) {
+		return
+	}
+	sourceURL, sheetName, cellRange, ok := h.validateSheetTarget(w, body.URL, body.SheetName, body.Range)
+	if !ok || !validateShimoValueMatrix(w, h, body.Values, false) {
+		return
+	}
+	if body.ExpectedAppendAfterRow < 0 || body.ExpectedAppendAfterRow > 9999999 {
+		h.writeError(w, http.StatusBadRequest, "INVALID_ARGUMENTS", "expected_append_after_row 无效", 0)
+		return
+	}
+	data, err := h.backend.AppendSheet(r.Context(), actor, sourceURL, sheetName, cellRange, body.Values, body.ExpectedAppendAfterRow)
+	if err != nil {
+		h.writeBackendError(w, err)
+		return
+	}
+	h.writeOK(w, http.StatusOK, h.connectionBinding(shimoConnectionKey{agentUID: actor.agentUID, actorUID: actor.actorUID}), data)
 }
 
 func (h *ShimoConnectorHandler) HandleConnection(w http.ResponseWriter, r *http.Request) {
@@ -590,6 +678,80 @@ func (h *ShimoConnectorHandler) authorizedReadRequest(w http.ResponseWriter, r *
 	return actor, sourceURL, true
 }
 
+func (h *ShimoConnectorHandler) authorizedSheetRequest(w http.ResponseWriter, r *http.Request, requireWrite bool) (shimoActor, string, string, string, bool) {
+	actor, ok := h.authenticateMethodAndConnection(w, r, http.MethodPost)
+	if !ok || (requireWrite && !h.requireWriteCapability(w, actor)) {
+		return shimoActor{}, "", "", "", false
+	}
+	var body struct {
+		URL       string `json:"url"`
+		SheetName string `json:"sheet_name"`
+		Range     string `json:"range"`
+	}
+	if !h.decodeJSON(w, r, &body) {
+		return shimoActor{}, "", "", "", false
+	}
+	sourceURL, sheetName, cellRange, ok := h.validateSheetTarget(w, body.URL, body.SheetName, body.Range)
+	return actor, sourceURL, sheetName, cellRange, ok
+}
+
+func (h *ShimoConnectorHandler) validateSheetTarget(w http.ResponseWriter, rawURL, rawSheetName, rawRange string) (string, string, string, bool) {
+	sourceURL, err := validateShimoSourceURL(rawURL)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "INVALID_URL", err.Error(), 0)
+		return "", "", "", false
+	}
+	sheetName := strings.TrimSpace(rawSheetName)
+	if sheetName == "" || len([]rune(sheetName)) > 200 {
+		h.writeError(w, http.StatusBadRequest, "INVALID_ARGUMENTS", "工作表名称不能为空或过长", 0)
+		return "", "", "", false
+	}
+	cellRange := strings.ToUpper(strings.TrimSpace(rawRange))
+	if !shimoCellRangePattern.MatchString(cellRange) {
+		h.writeError(w, http.StatusBadRequest, "INVALID_RANGE", "单元格范围应类似 A1:Z1000", 0)
+		return "", "", "", false
+	}
+	return sourceURL, sheetName, cellRange, true
+}
+
+func (h *ShimoConnectorHandler) requireWriteCapability(w http.ResponseWriter, actor shimoActor) bool {
+	if actor.capability != shimoWriteCapability {
+		h.writeError(w, http.StatusForbidden, "WRITE_CAPABILITY_REQUIRED", "当前 Skill 没有石墨写入权限", 0)
+		return false
+	}
+	return true
+}
+
+func validateShimoValueMatrix(w http.ResponseWriter, h *ShimoConnectorHandler, values [][]any, allowEmpty bool) bool {
+	if len(values) == 0 {
+		if allowEmpty {
+			return true
+		}
+		h.writeError(w, http.StatusBadRequest, "INVALID_ARGUMENTS", "values 不能为空", 0)
+		return false
+	}
+	width := len(values[0])
+	if width == 0 || len(values)*width > 5000 {
+		h.writeError(w, http.StatusBadRequest, "INVALID_ARGUMENTS", "values 必须是非空矩形，且不能超过 5000 个单元格", 0)
+		return false
+	}
+	for _, row := range values {
+		if len(row) != width {
+			h.writeError(w, http.StatusBadRequest, "INVALID_ARGUMENTS", "values 必须是二维矩形", 0)
+			return false
+		}
+		for _, value := range row {
+			switch value.(type) {
+			case string, float64:
+			default:
+				h.writeError(w, http.StatusBadRequest, "INVALID_ARGUMENTS", "单元格值只支持文本和数字", 0)
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (h *ShimoConnectorHandler) authenticate(w http.ResponseWriter, r *http.Request) (shimoActor, bool) {
 	if len(h.actorSecret) < 32 {
 		h.writeError(w, http.StatusServiceUnavailable, "CONNECTOR_NOT_CONFIGURED", "石墨连接器身份密钥尚未配置", 30)
@@ -612,11 +774,12 @@ func (h *ShimoConnectorHandler) authenticate(w http.ResponseWriter, r *http.Requ
 	expiresAtOK := claims.ExpiresAt != nil && claims.IssuedAt != nil && claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) <= maxShimoActorTokenTTL
 	requestedSkillID := strings.TrimSpace(r.Header.Get("X-CatsCo-Skill-ID"))
 	identityOK := strings.TrimSpace(claims.AgentUID) != "" && strings.TrimSpace(claims.ActorUID) != "" && strings.TrimSpace(claims.TaskRef) != "" && strings.TrimSpace(claims.SkillID) != "" && claims.Subject == strings.TrimSpace(claims.ActorUID)
-	if err != nil || !token.Valid || !issuedAtOK || !expiresAtOK || !identityOK || requestedSkillID == "" || requestedSkillID != strings.TrimSpace(claims.SkillID) || claims.Capability != "shimo:connect shimo:read" {
+	capabilityOK := claims.Capability == shimoReadCapability || claims.Capability == shimoWriteCapability
+	if err != nil || !token.Valid || !issuedAtOK || !expiresAtOK || !identityOK || requestedSkillID == "" || requestedSkillID != strings.TrimSpace(claims.SkillID) || !capabilityOK {
 		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "石墨连接器短时令牌无效或已过期", 0)
 		return shimoActor{}, false
 	}
-	return shimoActor{agentUID: strings.TrimSpace(claims.AgentUID), actorUID: strings.TrimSpace(claims.ActorUID), taskRef: strings.TrimSpace(claims.TaskRef)}, true
+	return shimoActor{agentUID: strings.TrimSpace(claims.AgentUID), actorUID: strings.TrimSpace(claims.ActorUID), taskRef: strings.TrimSpace(claims.TaskRef), capability: claims.Capability}, true
 }
 
 func (h *ShimoConnectorHandler) decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
@@ -846,6 +1009,30 @@ func (mockShimoConnectorBackend) ReadSheet(_ context.Context, _ shimoActor, _ st
 		"stopped_early":       false,
 		"truncated":           false,
 		"source_kind":         "native_sheet",
+	}, nil
+}
+
+func (mockShimoConnectorBackend) InspectSheetAppend(_ context.Context, _ shimoActor, _ string, _, cellRange string) (map[string]any, error) {
+	return map[string]any{
+		"inspected_at":     time.Now().UTC().Format(time.RFC3339),
+		"requested_range":  cellRange,
+		"append_after_row": 2,
+		"source_kind":      "native_sheet",
+	}, nil
+}
+
+func (mockShimoConnectorBackend) UpdateSheet(_ context.Context, _ shimoActor, _ string, _, cellRange string, values, expectedValues [][]any) (map[string]any, error) {
+	return map[string]any{
+		"written_at": time.Now().UTC().Format(time.RFC3339), "requested_range": cellRange,
+		"before": expectedValues, "after": values, "verified": true, "source_kind": "native_sheet",
+	}, nil
+}
+
+func (mockShimoConnectorBackend) AppendSheet(_ context.Context, _ shimoActor, _ string, _, cellRange string, values [][]any, expectedAppendAfterRow int) (map[string]any, error) {
+	return map[string]any{
+		"written_at": time.Now().UTC().Format(time.RFC3339), "requested_range": cellRange,
+		"append_after_row": expectedAppendAfterRow, "appended_rows": len(values),
+		"after": values, "verified": true, "source_kind": "native_sheet",
 	}, nil
 }
 

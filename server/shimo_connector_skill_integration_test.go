@@ -188,6 +188,89 @@ func TestShimoSkillClientContract(t *testing.T) {
 	}
 }
 
+func TestShimoWriterSkillClientContract(t *testing.T) {
+	clientPath := os.Getenv("SHIMO_WRITER_SKILL_CLIENT_PATH")
+	if clientPath == "" {
+		t.Skip("set SHIMO_WRITER_SKILL_CLIENT_PATH to run the shimo-writer contract test")
+	}
+	if _, err := os.Stat(clientPath); err != nil {
+		t.Fatalf("writer skill client unavailable: %v", err)
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable")
+	}
+	handler := NewShimoConnectorHandler(ShimoConnectorOptions{
+		ActorSecret: shimoTestSecret, PublicURL: "http://127.0.0.1", Backend: mockShimoConnectorBackend{},
+	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/shimo/connection", handler.HandleConnection)
+	mux.HandleFunc("/v1/shimo/connection-link", handler.HandleConnectionLink)
+	mux.HandleFunc("/v1/shimo/sheets/list", handler.HandleListSheets)
+	mux.HandleFunc("/v1/shimo/sheets/read", handler.HandleReadSheet)
+	mux.HandleFunc("/v1/shimo/sheets/append-plan", handler.HandleInspectSheetAppend)
+	mux.HandleFunc("/v1/shimo/sheets/update", handler.HandleUpdateSheet)
+	mux.HandleFunc("/v1/shimo/sheets/append", handler.HandleAppendSheet)
+	mux.HandleFunc("/connect/shimo/", handler.HandleLoginAttempt)
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+	handler.publicURL = testServer.URL
+	token, err := GenerateShimoWriterActorToken(shimoTestSecret, "agent-42", "user-a", "task-writer-contract", "catsco/shimo-writer", 2*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runClient := func(arguments ...string) map[string]any {
+		t.Helper()
+		command := exec.Command(node, append([]string{clientPath}, arguments...)...)
+		command.Env = append(os.Environ(), "CATSCO_SHIMO_CONNECTOR_URL="+testServer.URL, "CATSCO_ACTOR_TOKEN="+token, "CATSCO_SKILL_ID=catsco/shimo-writer")
+		output, runErr := command.CombinedOutput()
+		if runErr != nil {
+			t.Fatalf("writer client %v failed: %v\n%s", arguments, runErr, output)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(output, &decoded); err != nil {
+			t.Fatalf("decode writer output %q: %v", output, err)
+		}
+		return decoded
+	}
+	connect := runClient("connect")
+	response, err := http.Post(nestedString(connect, "data", "connection_url"), "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("mock login status=%d", response.StatusCode)
+	}
+	directory := t.TempDir()
+	valuesPath := filepath.Join(directory, "values.json")
+	planPath := filepath.Join(directory, "plan.json")
+	if err := os.WriteFile(valuesPath, []byte(`[["客户","金额"],["新客户",9000]]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared := runClient("prepare-update", "--url", "https://shimo.im/sheets/contract-test/", "--sheet", "项目表", "--range", "A1:B2", "--values-file", valuesPath, "--output", planPath)
+	if prepared["ok"] != true {
+		t.Fatalf("prepare failed: %#v", prepared)
+	}
+	applied := runClient("apply-plan", "--plan", planPath)
+	if applied["ok"] != true || nestedBool(applied, "data", "result", "verified") != true {
+		t.Fatalf("apply failed: %#v", applied)
+	}
+}
+
+func nestedBool(value map[string]any, keys ...string) bool {
+	var current any = value
+	for _, key := range keys {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+		current = object[key]
+	}
+	result, _ := current.(bool)
+	return result
+}
+
 // shimoContractBackend 在 mock 后端之上补齐 worker 现在会返回的覆盖范围字段，
 // 用来端到端验证「worker 信号 → connector → skill 快照」这一整条链路。
 type shimoContractBackend struct {

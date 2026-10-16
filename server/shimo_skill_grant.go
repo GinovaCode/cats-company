@@ -57,6 +57,7 @@ func (h *Hub) buildShimoSkillConnectorMetadata(actorUID, recipientUID int64, top
 	}
 	secret := []byte(strings.TrimSpace(os.Getenv("CATSCO_SHIMO_ACTOR_SECRET")))
 	skillID := strings.TrimSpace(os.Getenv("CATSCO_SHIMO_SKILL_ID"))
+	writerSkillID := strings.TrimSpace(os.Getenv("CATSCO_SHIMO_WRITER_SKILL_ID"))
 	connectorURL := normalizeShimoConnectorURL(os.Getenv("CATSCO_SHIMO_CONNECTOR_URL"))
 	if len(secret) < 32 {
 		return logShimoGrantSkip(actorUID, recipientUID, topicID, msgID, "invalid_secret", "")
@@ -81,18 +82,41 @@ func (h *Hub) buildShimoSkillConnectorMetadata(actorUID, recipientUID int64, top
 	if err != nil {
 		return logShimoGrantSkip(actorUID, recipientUID, topicID, msgID, "token_generation_error", shimoErrorCategory(err))
 	}
+	grants := []map[string]interface{}{
+		{
+			"provider":      "shimo",
+			"skill_id":      skillID,
+			"connector_url": connectorURL,
+			"actor_token":   token,
+			"expires_at":    now.Add(shimoSkillGrantTTL).Format(time.RFC3339),
+		},
+	}
+	if writerSkillID != "" {
+		if !shimoSkillIDPattern.MatchString(writerSkillID) {
+			logShimoGrantSkipLine(actorUID, recipientUID, topicID, msgID, "invalid_writer_skill_id", "")
+		} else if writerSkillID == skillID {
+			logShimoGrantSkipLine(actorUID, recipientUID, topicID, msgID, "writer_skill_matches_reader", "")
+		} else {
+			writerToken, writerErr := GenerateShimoWriterActorToken(
+				secret, formatUID(recipientUID), formatUID(actorUID), taskRef, writerSkillID, shimoSkillGrantTTL,
+			)
+			if writerErr != nil {
+				logShimoGrantSkipLine(actorUID, recipientUID, topicID, msgID, "writer_token_generation_error", shimoErrorCategory(writerErr))
+			} else {
+				grants = append(grants, map[string]interface{}{
+					"provider":      "shimo",
+					"skill_id":      writerSkillID,
+					"connector_url": connectorURL,
+					"actor_token":   writerToken,
+					"expires_at":    now.Add(shimoSkillGrantTTL).Format(time.RFC3339),
+				})
+			}
+		}
+	}
 	logShimoGrantIssued(actorUID, recipientUID, topicID, msgID)
 	return map[string]interface{}{
 		"schema": "catsco.skill_connectors.v1",
-		"grants": []map[string]interface{}{
-			{
-				"provider":      "shimo",
-				"skill_id":      skillID,
-				"connector_url": connectorURL,
-				"actor_token":   token,
-				"expires_at":    now.Add(shimoSkillGrantTTL).Format(time.RFC3339),
-			},
-		},
+		"grants": grants,
 	}
 }
 
@@ -111,6 +135,7 @@ func logShimoGrantSkip(actorUID, recipientUID int64, topicID string, msgID int64
 	}
 	if shouldLog && (strings.TrimSpace(os.Getenv("CATSCO_SHIMO_ACTOR_SECRET")) != "" ||
 		strings.TrimSpace(os.Getenv("CATSCO_SHIMO_SKILL_ID")) != "" ||
+		strings.TrimSpace(os.Getenv("CATSCO_SHIMO_WRITER_SKILL_ID")) != "" ||
 		strings.TrimSpace(os.Getenv("CATSCO_SHIMO_CONNECTOR_URL")) != "") {
 		logShimoGrantSkipLine(actorUID, recipientUID, topicID, msgID, reason, category)
 	}

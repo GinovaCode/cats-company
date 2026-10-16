@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
-  downloadUploadedFileBytes, fetchRangeValues, htmlShellVerdict, loadUploadedWorkbook, looksLikeAccessDeniedPage,
+  downloadUploadedFileBytes, fetchRangeValues, htmlShellVerdict, inspectAppendPosition, loadUploadedWorkbook, looksLikeAccessDeniedPage,
   looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
   MAX_UPLOADED_WINDOW_CELLS, PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, sliceXlsxGrid,
   UNREADABLE_DOCUMENT_MESSAGE,
@@ -349,6 +349,20 @@ test('石墨接口的错误码会映射成明确的 worker 错误', async () => 
   await expectCode(200, '{"values":"not-a-matrix"}', 'UPSTREAM_CHANGED');
 });
 
+test('追加定位按连续数据的第一处空行计算，不会越过中间空行', async () => {
+  const payload = { values: [['日期', '客户'], ['2026-10-16', 'A'], ['', ''], ['later', 'B']] };
+  const context = {
+    request: {
+      get: async () => ({
+        status: () => 200, ok: () => true, text: async () => JSON.stringify(payload), json: async () => payload,
+      }),
+    },
+  };
+  const result = await inspectAppendPosition(context, 'FileId', '工作表1', 'A1:B5');
+  assert.equal(result.append_after_row, 2);
+  assert.equal(result.requests, 1);
+});
+
 const contextReturning = (status, body) => ({
   request: {
     get: async () => ({
@@ -433,6 +447,97 @@ const engineFor = (page, request) => {
   });
   return engine;
 };
+
+test('范围更新先核对旧值，写后回读，并可幂等重试', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const before = { values: [['旧客户', 8000]] };
+  const after = { values: [['新客户', 9000]] };
+  let getCalls = 0;
+  let postCalls = 0;
+  const request = {
+    async get() {
+      getCalls += 1;
+      const body = getCalls === 1 ? before : after;
+      return { status: () => 200, ok: () => true, text: async () => JSON.stringify(body), json: async () => body };
+    },
+    async post(endpoint, options) {
+      postCalls += 1;
+      assert.match(endpoint, /\/sheets\/values$/);
+      assert.deepEqual(options.data.resource.values, after.values);
+      return { status: () => 204, ok: () => true, text: async () => '' };
+    },
+  };
+  const result = await engineFor(page, request).updateSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B1', after.values, before.values,
+  );
+  assert.equal(result.verified, true);
+  assert.equal(result.already_applied, false);
+  assert.equal(postCalls, 1);
+
+  const idempotentRequest = {
+    async get() { return { status: () => 200, ok: () => true, text: async () => JSON.stringify(after), json: async () => after }; },
+    async post() { throw new Error('already applied must not write again'); },
+  };
+  const repeated = await engineFor(page, idempotentRequest).updateSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B1', after.values, before.values,
+  );
+  assert.equal(repeated.already_applied, true);
+});
+
+test('范围更新发现预览后的并发修改时停止写入', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const changed = { values: [['同事刚改的客户', 8800]] };
+  const request = {
+    async get() { return { status: () => 200, ok: () => true, text: async () => JSON.stringify(changed), json: async () => changed }; },
+    async post() { throw new Error('must not write stale plan'); },
+  };
+  await assert.rejects(
+    () => engineFor(page, request).updateSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B1', [['新客户', 9000]], [['旧客户', 8000]],
+    ),
+    error => error instanceof ShimoWorkerError && error.code === 'PRECONDITION_FAILED' && error.status === 409,
+  );
+});
+
+test('追加按预览位置写入并回读目标行', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const table = { values: [['客户', '金额'], ['旧客户', 8000]] };
+  const appended = { values: [['新客户', 9000]] };
+  let putCalls = 0;
+  const request = {
+    async get(endpoint) {
+      const body = decodeURIComponent(endpoint).includes('项目表!A3:B3') ? appended : table;
+      return { status: () => 200, ok: () => true, text: async () => JSON.stringify(body), json: async () => body };
+    },
+    async put(endpoint, options) {
+      putCalls += 1;
+      assert.match(endpoint, /\/sheets\/values$/);
+      assert.equal(options.data.range, '项目表!A1:B5');
+      assert.deepEqual(options.data.resource.values, appended.values);
+      return { status: () => 204, ok: () => true, text: async () => '' };
+    },
+  };
+  const result = await engineFor(page, request).appendSheet(
+    {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B5', appended.values, 2,
+  );
+  assert.equal(result.written_range, 'A3:B3');
+  assert.equal(result.verified, true);
+  assert.equal(result.already_applied, false);
+  assert.equal(putCalls, 1);
+});
+
+test('上传到石墨的 Excel 保持只读，写入明确拒绝', async () => {
+  const engine = new PlaywrightShimoEngine({ executablePath: 'test-browser' });
+  engine.withContext = async () => { throw new Error('uploaded file must be rejected before browser launch'); };
+  await assert.rejects(
+    () => engine.updateSheet({}, 'https://shimo.im/file/Abc123/', '项目表', 'A1:A1', [['x']], [['old']]),
+    error => error instanceof ShimoWorkerError && error.code === 'WRITE_UNSUPPORTED',
+  );
+  await assert.rejects(
+    () => engine.appendSheet({}, 'https://shimo.im/file/Abc123/', '项目表', 'A1:A10', [['x']], 1),
+    error => error instanceof ShimoWorkerError && error.code === 'WRITE_UNSUPPORTED',
+  );
+});
 
 test('页面上有表格标签时，正文里的普通文案不会让读取变成「看不到文档」', async () => {
   const url = 'https://shimo.im/sheets/Abc123/';

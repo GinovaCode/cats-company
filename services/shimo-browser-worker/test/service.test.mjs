@@ -24,6 +24,9 @@ async function startWorker({ reader: readerOverride, loginManager: loginManagerO
   const reader = readerOverride || {
     async listSheets(state, url) { calls.push(['list', state, url]); return { sheets: [{ name: '项目表', index: 0 }] }; },
     async readSheet(state, url, sheet, range) { calls.push(['sheet', state, url, sheet, range]); return { values: [['金额'], [8500]] }; },
+    async inspectSheetAppend(state, url, sheet, range) { calls.push(['append-plan', state, url, sheet, range]); return { append_after_row: 2 }; },
+    async updateSheet(state, url, sheet, range, values, expected) { calls.push(['update', state, url, sheet, range, values, expected]); return { verified: true }; },
+    async appendSheet(state, url, sheet, range, values, expectedRow) { calls.push(['append', state, url, sheet, range, values, expectedRow]); return { verified: true }; },
     async readDocument(state, url, maxChars) { calls.push(['document', state, url, maxChars]); return { text: '正文', truncated: false }; },
   };
   const loginManager = loginManagerOverride || {
@@ -190,6 +193,34 @@ test('read restores only the selected encrypted user session', async () => {
     });
     assert.equal(readB.status, 409);
     assert.equal(readB.body.error.code, 'LOGIN_REQUIRED');
+  } finally { await worker.close(); }
+});
+
+test('write routes keep the selected session and pass preconditions to the engine', async () => {
+  const worker = await startWorker();
+  try {
+    worker.store.save(bindingA, { storageState: { cookies: [{ value: 'actor-a' }] }, accountHint: 'A', verifiedAt: 'now' });
+    const update = await request(worker, '/v1/sheets/update', {
+      connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:B1',
+      values: [['新客户', 9000]], expected_values: [['旧客户', 8000]],
+    });
+    assert.equal(update.status, 200);
+    assert.equal(update.body.data.verified, true);
+    assert.deepEqual(worker.calls[0], [
+      'update', { cookies: [{ value: 'actor-a' }] }, 'https://shimo.im/sheets/abc/', '项目表', 'A1:B1',
+      [['新客户', 9000]], [['旧客户', 8000]],
+    ]);
+
+    const planned = await request(worker, '/v1/sheets/append-plan', {
+      connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:B100',
+    });
+    assert.equal(planned.body.data.append_after_row, 2);
+    const appended = await request(worker, '/v1/sheets/append', {
+      connection_binding: bindingA, url: 'https://shimo.im/sheets/abc/', sheet_name: '项目表', range: 'A1:B100',
+      values: [['新行', 1]], expected_append_after_row: 2,
+    });
+    assert.equal(appended.status, 200);
+    assert.equal(appended.body.data.verified, true);
   } finally { await worker.close(); }
 });
 
