@@ -61,7 +61,10 @@ or PUT, the Worker applies Shimo's blank-edge trimming rules to the desired matr
 predicts its verification cost, and reserves both request and time capacity for the final reread.
 The time reservation uses the upper end of the observed 100-350ms values-request interval, keeps
 at least five seconds for verification, and separately keeps five seconds for the mutation call.
-If either capacity is insufficient, the write stops before the sheet is modified. If Shimo accepts
+If that minimum already exceeds the complete 65-second budget, the Worker returns a non-retryable
+400 response telling the caller to split the range. A 503 retry response is reserved for an
+otherwise admissible operation whose remaining time was consumed by queue or page-load delay.
+Either condition stops before the sheet is modified. If Shimo accepts
 the mutation but an unexpected upstream failure still prevents the final reread, the Worker returns
 `WRITE_VERIFICATION_INDETERMINATE` and tells the caller to inspect the target instead of blindly
 retrying. Append also exact-reads its target before writing, which recognizes an already-applied

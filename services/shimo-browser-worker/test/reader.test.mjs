@@ -756,7 +756,7 @@ test('追加定位也计入整次共享预算并在 PUT 前为回读留足额度
   assert.equal(putCalls, 0);
 });
 
-test('范围更新按 350ms 实测上界预留回读时间并在 POST 前停止', async () => {
+test('范围更新的保守回读时间必然超过总预算时用 400 要求拆小，并在 POST 前停止', async () => {
   const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
   const expected = Array.from({ length: 1600 }, (_, index) => [`old-${index + 1}`, index + 1]);
   const desired = Array.from(
@@ -772,8 +772,10 @@ test('范围更新按 350ms 实测上界预留回读时间并在 POST 前停止'
       {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B1600', desired, expected,
     ),
     error => error instanceof ShimoWorkerError
-      && error.code === 'WRITE_BUDGET_EXHAUSTED'
-      && /写入并预留写后校验/.test(error.message),
+      && error.code === 'EXACT_READ_TOO_COMPLEX'
+      && error.status === 400
+      && error.details.required_ms > error.details.total_budget_ms
+      && /把范围拆小/.test(error.message),
   );
   assert.equal(postCalls, 0);
 });
@@ -783,6 +785,14 @@ test('写操作在变更前为写后校验保留时间预算', () => {
   const budget = createWriteOperationBudget(clock, { totalBudgetMs: 65_000, now: () => clock });
   budget.consumeRead();
   assert.equal(budget.mutationTimeoutMs(45_000, 100), 30_000);
+  assert.doesNotThrow(() => budget.assertCanVerify(171));
+  assert.throws(
+    () => budget.assertCanVerify(172),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'EXACT_READ_TOO_COMPLEX'
+      && error.status === 400
+      && /把范围拆小/.test(error.message),
+  );
   clock += 61_000;
   assert.throws(
     () => budget.assertCanVerify(1),

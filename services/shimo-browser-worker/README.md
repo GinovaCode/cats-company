@@ -23,8 +23,10 @@ discovery and post-write verification. The same operation has a 65-second budget
 the request reaches the Worker, so queue and page-load time count too. Before POST or PUT, the
 Worker simulates the exact-reader plan against the desired matrix using Shimo's trimming rules
 and reserves the upper end of the observed 100-350ms request interval for every predicted reread,
-with separate five-second floors for verification and mutation. Exceptionally sparse or late
-operations are therefore rejected before the sheet is modified and must be split or retried. If
+with separate five-second floors for verification and mutation. A matrix whose minimum predicted
+time exceeds the complete 65-second budget is rejected with a non-retryable request to split the
+range. An otherwise admissible operation that only ran short after queue or page-load delay gets a
+retryable budget error. Both stop before the sheet is modified. If
 Shimo accepts the mutation but an unexpected failure still interrupts the final reread, the Worker
 returns `WRITE_VERIFICATION_INDETERMINATE`; callers must inspect the target instead of immediately
 repeating the write. Append also exact-reads the target before writing, so that preflight detects

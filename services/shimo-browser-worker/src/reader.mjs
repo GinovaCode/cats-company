@@ -246,6 +246,19 @@ export function createWriteOperationBudget(startedAt, {
       }
       const requiredMs = Math.max(MIN_WRITE_VERIFY_RESERVE_MS, estimatedRequests * WRITE_VERIFY_RESERVE_MS_PER_READ);
       const requiredTotalMs = requiredMs + MIN_WRITE_MUTATION_BUDGET_MS;
+      if (requiredTotalMs > totalBudgetMs) {
+        throw new ShimoWorkerError(
+          'EXACT_READ_TOO_COMPLEX',
+          `当前矩阵形状预计至少需要 ${requiredTotalMs} 毫秒完成写入与校验，超过整次 ${totalBudgetMs} 毫秒上限；已在写入前停止，请把范围拆小后重新预览。`,
+          400,
+          {
+            used_requests: requests,
+            verification_requests: estimatedRequests,
+            required_ms: requiredTotalMs,
+            total_budget_ms: totalBudgetMs,
+          },
+        );
+      }
       if (timeLeft() < requiredTotalMs) {
         throw exhausted(`剩余时间不足以完成写入并预留写后校验（至少需要 ${requiredTotalMs} 毫秒）；已在写入前停止，请稍后重试。`);
       }
