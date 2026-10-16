@@ -308,6 +308,7 @@ vi.mock('../api', () => ({
 import MessagesView, {
   canonicalizeStructuredMentionText,
   collectStructuredMentionTargets,
+  composeInjectionTopic,
   gatewayAppsAsArtifacts,
   mergeArtifactSources,
   mergeOwnServerEcho,
@@ -527,6 +528,55 @@ function dispatchFrameMessage(source, origin, data) {
   window.dispatchEvent(event);
 }
 
+describe('gateway application injection target', () => {
+  it('injects in place when the application was opened in the conversation on screen', () => {
+    // The reported case: the application is opened from a group, so the binding
+    // names that group and the text stays there.
+    expect(composeInjectionTopic({
+      bindingTopic: 'grp_4133',
+      currentTopic: 'grp_4133',
+    })).toBe('grp_4133');
+  });
+
+  it('injects in place in a one-to-one conversation with the owning bot', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: 'p2p_116_365',
+      currentTopic: 'p2p_116_365',
+    })).toBe('p2p_116_365');
+  });
+
+  it('falls back when the user has moved to another conversation', () => {
+    // The binding still names where the application was opened, but the user is
+    // looking somewhere else now, so the text must go to the owner's own
+    // conversation rather than into whatever happens to be on screen.
+    expect(composeInjectionTopic({
+      bindingTopic: 'grp_4133',
+      currentTopic: 'p2p_116_42',
+    })).toBe('');
+  });
+
+  it('falls back when no conversation is open', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: 'grp_4133',
+      currentTopic: '',
+    })).toBe('');
+  });
+
+  it('falls back when the binding carries no conversation', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: '',
+      currentTopic: 'grp_4133',
+    })).toBe('');
+    expect(composeInjectionTopic({ bindingTopic: undefined, currentTopic: undefined })).toBe('');
+  });
+
+  it('ignores surrounding whitespace when comparing conversations', () => {
+    expect(composeInjectionTopic({
+      bindingTopic: ' grp_4133 ',
+      currentTopic: 'grp_4133',
+    })).toBe('grp_4133');
+  });
+});
 describe('structured composer mention provenance', () => {
   it('does not promote hand-typed uid-like text into structured targets', () => {
     expect(collectStructuredMentionTargets('@usr42 请处理', [])).toEqual([]);

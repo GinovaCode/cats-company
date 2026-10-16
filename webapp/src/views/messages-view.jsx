@@ -1055,11 +1055,14 @@ export default function MessagesView({
   const artifactComposeInjectRef = useRef(null);
 
   // Gateway application -> conversation injection. The application hands over a
-  // free-form string and nothing else; this decides where it goes. The target is
-  // always the conversation of the bot that owns the application, because the
-  // files an application refers to live on that bot's machine. If that
-  // conversation is already open we send into it; otherwise we open it first, so
-  // the user sees where the message landed.
+  // free-form string and nothing else; this decides where it goes.
+  //
+  // In place when the application was opened in the conversation on screen, and
+  // otherwise into the owning bot's own conversation. The open binding already
+  // answers this: it records the conversation the application was opened in, and
+  // the platform only issues one after checking that this bot is reachable from
+  // that conversation (for a group, that it is a current member). The annotation
+  // channel sends through the same binding, so both channels agree on the target.
   artifactComposeInjectRef.current = async (text, binding) => {
     const ownerAgentUid = Number(binding?.agentUid || 0);
     const appId = String(binding?.appId || '');
@@ -1067,13 +1070,15 @@ export default function MessagesView({
 
     const currentTopic = String(activeTopicRef.current || '');
     const currentAgent = availableAgents.find((agent) => agent.topic_id === currentTopic) || null;
-    const currentAgentUid = Number(currentAgent?.uid || currentAgent?.id || 0);
 
-    let topicId = currentTopic;
+    let topicId = composeInjectionTopic({
+      bindingTopic: binding?.openBinding?.topic_id,
+      currentTopic,
+    });
     let switched = false;
     let agentName = currentAgent?.display_name || currentAgent?.name || '';
 
-    if (!currentTopic || currentAgentUid !== ownerAgentUid) {
+    if (!topicId) {
       let opened = null;
       try {
         opened = await api.openAgent(ownerAgentUid);
@@ -1111,9 +1116,11 @@ export default function MessagesView({
     const label = agentName || `bot ${ownerAgentUid}`;
     feedback.notify({
       tone: 'success',
+      // In place the text went to the conversation on screen, which is a group
+      // as often as not, so naming the bot there would be wrong.
       message: switched
         ? `已切换到与 ${label} 的会话并注入`
-        : `已注入到与 ${label} 的会话`,
+        : '已注入到当前会话',
     });
     return { ok: true };
   };
@@ -8536,6 +8543,22 @@ function parseUid(uidStr) {
     return parseInt(normalized.slice(3), 10) || 0;
   }
   return parseInt(normalized, 10) || 0;
+}
+
+// Where a gateway application's injected text lands: in place when the
+// application was opened in the conversation now on screen, otherwise in the
+// owning bot's own conversation. Returns '' to mean "fall back".
+//
+// The open binding is the same source the annotation channel sends through, so
+// both channels agree. It records the conversation the application was opened
+// in, and the platform only issues one after checking the bot is reachable from
+// that conversation — for a group, that it is a current member — so an in-place
+// send can never reach a bot the conversation does not contain.
+export function composeInjectionTopic({ bindingTopic, currentTopic }) {
+  const bound = String(bindingTopic || '').trim();
+  const current = String(currentTopic || '').trim();
+  if (bound && bound === current) return bound;
+  return '';
 }
 
 function sameUID(left, right) {
