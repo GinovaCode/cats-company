@@ -1,6 +1,6 @@
 # Shimo browser worker
 
-This internal CatsCo service owns interactive Shimo login and read-only browser sessions. It never receives a CatsCo user ID, agent ID, task message, password, verification code, or actor token. CatsCo identifies a session with an opaque HMAC binding.
+This internal CatsCo service owns interactive Shimo login and browser sessions for reads and separately authorized native-sheet writes. It never receives a CatsCo user ID, agent ID, task message, password, verification code, or actor token. CatsCo identifies a session with an opaque HMAC binding.
 
 ## Runtime flow
 
@@ -8,7 +8,37 @@ This internal CatsCo service owns interactive Shimo login and read-only browser 
 2. The Worker starts a temporary Chromium context and returns a random `/shimo-login/{token}/` URL.
 3. The user operates the isolated Shimo page directly in a live canvas. A same-origin WebSocket streams frames and forwards pointer (including double-click), keyboard, paste, Chinese IME, and wheel input; recoverable input validation errors are shown inline without ending the login attempt. The older HTTP screenshot endpoints remain as a connection fallback. QR login works by opening the WeChat option and scanning the displayed code.
 4. The Worker detects `https://shimo.im/lizard-api/users/me`, exports Playwright storage state, encrypts it with AES-256-GCM, and closes the login browser.
-5. Every read creates a fresh headless browser context from that user's encrypted state.
+5. Every read or write creates a fresh headless browser context from that user's encrypted state.
+
+## Native-sheet writes
+
+Writes are available only through the separately allowlisted writer capability. Exact updates
+reread the requested cells before and after the write. Because Shimo trims leading and trailing
+blank rows and columns, the write path recursively subdivides an ambiguous response until each
+value has an absolute coordinate; if the bounded probe budget is exhausted, it refuses the write
+instead of guessing. Append planning likewise locates the first populated row before scanning to
+the first blank row. The matrix input cap is 5000 cells. Coordinate restoration has one shared
+512-request counter for the complete write operation, including precondition reads, append-tail
+discovery and post-write verification. The same operation has a 65-second budget beginning when
+the request reaches the Worker, so queue and page-load time count too. Before POST or PUT, the
+Worker simulates the exact-reader plan against the desired matrix using Shimo's trimming rules
+and reserves the upper end of the observed 100-350ms request interval for every predicted reread,
+with separate five-second floors for verification and mutation. A matrix whose minimum predicted
+time exceeds the complete 65-second budget is rejected with a non-retryable request to split the
+range. An otherwise admissible operation that only ran short after queue or page-load delay gets a
+retryable budget error. Both stop before the sheet is modified. If
+Shimo accepts the mutation but an unexpected failure still interrupts the final reread, the Worker
+returns `WRITE_VERIFICATION_INDETERMINATE`; callers must inspect the target instead of immediately
+repeating the write. Append also exact-reads the target before writing, so that preflight detects
+an already-applied append outside the anchor and prevents a retry from adding duplicate rows.
+
+Shimo's official values API defines `POST /sheets/values` as an exact-range update and
+`PUT /sheets/values` as an append that searches for the table tail inside the supplied range.
+The worker therefore passes the normalized continuous-table anchor to PUT, then rereads the exact
+target range. An entirely blank anchor is initialized with an exact POST.
+
+- Update API: https://shimo-sdk.apifox.cn/api-334628363
+- Append API: https://shimo-sdk.apifox.cn/api-334628364
 
 The login URL is a bearer secret. It expires after ten minutes, is excluded from referrers and caches, and must never be logged by reverse proxies.
 

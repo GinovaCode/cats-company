@@ -1,6 +1,6 @@
 # Shimo Skill connector
 
-The Shimo connector is the server boundary used by the `shimo-reader` Skill. It accepts only short-lived capabilities minted from CatsCo's server-canonical chat identity. Request bodies cannot choose or override `agent_uid` or `actor_user_id`.
+The Shimo connector is the server boundary used by the `shimo-reader` and `shimo-writer` Skills. It accepts only short-lived capabilities minted from CatsCo's server-canonical chat identity. Request bodies cannot choose or override `agent_uid` or `actor_user_id`.
 
 ## Local MVP
 
@@ -11,6 +11,7 @@ CATSCO_SHIMO_ACTOR_SECRET=<at-least-32-random-bytes>
 CATSCO_SHIMO_PUBLIC_BASE_URL=http://127.0.0.1:6061
 CATSCO_SHIMO_CONNECTOR_URL=http://127.0.0.1:6061
 CATSCO_SHIMO_SKILL_ID=arrowhaken/shimo-reader
+CATSCO_SHIMO_WRITER_SKILL_ID=arrowhaken/shimo-writer
 CATSCO_SHIMO_MOCK_ENABLED=true
 ```
 
@@ -21,6 +22,8 @@ at least 32 bytes. Provision it separately in the CatsCo deployment environment
 and the deployment workflow secret; never commit it or place it on a remote
 command line. `CATSCO_SHIMO_SKILL_ID` must exactly match the SkillHub package
 installed in XiaoBa. The current package is `arrowhaken/shimo-reader`.
+`CATSCO_SHIMO_WRITER_SKILL_ID` is separately allowlisted and receives the write
+capability; leaving it empty keeps every installed Skill read-only.
 
 ## API
 
@@ -33,7 +36,39 @@ All `/v1/shimo/*` requests require `Authorization: Bearer <short-lived-actor-cap
 | `DELETE` | `/v1/shimo/connection` | Delete the current actor's connection |
 | `POST` | `/v1/shimo/sheets/list` | List sheets in one Shimo spreadsheet |
 | `POST` | `/v1/shimo/sheets/read` | Read one sheet and cell range (chunked server-side, see below) |
+| `POST` | `/v1/shimo/sheets/append-plan` | Locate the tail of a continuous native-sheet table without writing |
+| `POST` | `/v1/shimo/sheets/update` | Update an exact native-sheet range after comparing the expected old values |
+| `POST` | `/v1/shimo/sheets/append` | Append rows after comparing the expected table tail |
 | `POST` | `/v1/shimo/documents/read` | Read document text |
+
+The three write-workflow routes accept only native `/sheets/{id}` links. Uploaded
+`/file/{id}` workbooks remain read-only. Updates and appends accept rectangular text/number
+matrices of at most 5000 cells. Before an update, the Worker rereads the target range and
+compares it with `expected_values`; before an append, it rescans the caller's anchor range
+and compares the tail with `expected_append_after_row`. A mismatch returns
+`PRECONDITION_FAILED` without writing. Every accepted write is reread and must match before
+the connector returns `verified: true`. Retrying the same plan after a lost response returns
+`already_applied: true` when the intended values are already present, which prevents a
+second append.
+
+The 5000-cell limit is the accepted matrix size, not an instruction to issue thousands of
+one-cell reads. Shimo removes blank outer rows and columns from values responses, so exact
+write verification restores coordinates with dimension-aware subdivision. The 512-read cap is
+shared by the whole write operation: precondition reads, append-tail discovery and post-write
+verification all consume the same counter. The same operation also has a 65-second budget that
+starts when the Worker receives the request, including queue and page-load time. Before any POST
+or PUT, the Worker applies Shimo's blank-edge trimming rules to the desired matrix in memory,
+predicts its verification cost, and reserves both request and time capacity for the final reread.
+The time reservation uses the upper end of the observed 100-350ms values-request interval, keeps
+at least five seconds for verification, and separately keeps five seconds for the mutation call.
+If that minimum already exceeds the complete 65-second budget, the Worker returns a non-retryable
+400 response telling the caller to split the range. A 503 retry response is reserved for an
+otherwise admissible operation whose remaining time was consumed by queue or page-load delay.
+Either condition stops before the sheet is modified. If Shimo accepts
+the mutation but an unexpected upstream failure still prevents the final reread, the Worker returns
+`WRITE_VERIFICATION_INDETERMINATE` and tells the caller to inspect the target instead of blindly
+retrying. Append also exact-reads its target before writing, which recognizes an already-applied
+plan even when the appended rows lie just beyond the anchor range.
 
 A Shimo "spreadsheet" link has two shapes and the connector accepts both on the same
 endpoints. `/sheets/{id}` is a native Shimo spreadsheet with a cell-values API; the Worker
@@ -120,6 +155,11 @@ The real Worker receives a separate opaque completion token and the internal cal
 - audience `catsco-shimo-connector`
 - capability `shimo:connect shimo:read`
 
+`GenerateShimoWriterActorToken` uses a separate exact capability,
+`shimo:connect shimo:read shimo:write`, and only for
+`CATSCO_SHIMO_WRITER_SKILL_ID`. Read tokens may use connection and read routes but receive
+`WRITE_CAPABILITY_REQUIRED` from update and append routes.
+
 For a live server-canonical user message, CatsCo adds an ephemeral `catsco_skill_connectors` grant only to the bot recipient. It is not stored and is omitted from history replay. XiaoBa removes connector variables from the shared Runtime environment, verifies the installed SkillHub package id, and injects the grant only into that package's direct Node.js child process. Other Skills and ordinary shell commands receive no connector credential.
 
 ## Browser Worker
@@ -130,7 +170,7 @@ For a live server-canonical user message, CatsCo adds an ephemeral `catsco_skill
 - serves the user a short-lived browser surface at `/shimo-login/{token}/` for QR login, clicks, text input, and supported keys;
 - detects a successful Shimo login through the authenticated Shimo session;
 - exports Playwright storage state, encrypts it with AES-256-GCM, and closes the temporary browser;
-- restores a fresh headless context from that encrypted state for every read;
+- restores a fresh headless context from that encrypted state for every read or write;
 - uses the connection binding as authenticated encryption AAD, so copying one user's encrypted file to another binding cannot decrypt it.
 - calls the private CatsCo completion endpoint after the session is safely stored, retrying temporary bot-offline or network failures for a short window.
 
@@ -138,4 +178,4 @@ Enable the Worker with Compose profile `shimo` only after setting independent ra
 
 ## Current limitation
 
-The browser Worker, real read path, per-turn Skill credential path, and trusted login-completion resume event are implemented locally. A live cloud login has not yet been accepted against the deployment environment. Login and resume tickets are process-local in this first version, so the CatsCo server must remain on one instance during a login attempt; moving those short-lived tickets to Redis is required before horizontal server scaling.
+Login and resume tickets are process-local in this version, so the CatsCo server must remain on one instance during a login attempt; moving those short-lived tickets to Redis is required before horizontal server scaling. The writer V1 supports cell values in native spreadsheets only; formulas, formatting, row deletion, tab creation, uploaded Excel mutation, and traditional-document editing are outside its contract.

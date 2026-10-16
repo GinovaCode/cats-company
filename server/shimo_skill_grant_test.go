@@ -206,6 +206,35 @@ func TestLiveBotMessageCarriesBoundShimoSkillGrantButHistoryDoesNot(t *testing.T
 	}
 }
 
+func TestShimoGrantAddsSeparateWriterCapability(t *testing.T) {
+	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
+	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")
+	t.Setenv("CATSCO_SHIMO_WRITER_SKILL_ID", "catsco/shimo-writer")
+	t.Setenv("CATSCO_SHIMO_CONNECTOR_URL", "https://app.catsco.test")
+	data := &agentIdentityE2EStore{users: map[int64]*types.User{
+		7: {ID: 7, AccountType: types.AccountHuman}, 43: {ID: 43, AccountType: types.AccountBot},
+	}}
+	connectors := NewHub(data, nil).buildShimoSkillConnectorMetadata(7, 43, "p2p_7_43", 91)
+	grants, ok := connectors["grants"].([]map[string]interface{})
+	if !ok || len(grants) != 2 {
+		t.Fatalf("connector grants = %#v", connectors["grants"])
+	}
+	wantCapabilities := map[string]string{
+		"catsco/shimo-reader": shimoReadCapability,
+		"catsco/shimo-writer": shimoWriteCapability,
+	}
+	for _, grant := range grants {
+		skillID, _ := grant["skill_id"].(string)
+		claims := &ShimoActorClaims{}
+		token, err := jwt.ParseWithClaims(grant["actor_token"].(string), claims, func(token *jwt.Token) (interface{}, error) {
+			return shimoTestSecret, nil
+		})
+		if err != nil || !token.Valid || claims.SkillID != skillID || claims.Capability != wantCapabilities[skillID] {
+			t.Fatalf("unexpected %s grant: token=%v err=%v claims=%#v", skillID, token.Valid, err, claims)
+		}
+	}
+}
+
 func TestGroupBotDeliveryCarriesBoundShimoSkillGrant(t *testing.T) {
 	t.Setenv("CATSCO_SHIMO_ACTOR_SECRET", string(shimoTestSecret))
 	t.Setenv("CATSCO_SHIMO_SKILL_ID", "catsco/shimo-reader")

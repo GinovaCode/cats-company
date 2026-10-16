@@ -109,6 +109,46 @@ export function createShimoWorkerServer({ internalToken, store, reader, loginMan
         ));
         return sendJSON(response, 200, { ok: true, data });
       }
+      if (url.pathname === '/v1/sheets/append-plan') {
+        const sheetName = String(body.sheet_name || '').trim();
+        const cellRange = String(body.range || '').trim().toUpperCase();
+        if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)) {
+          throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称或范围无效。', 400);
+        }
+        const budgetStartedAt = Date.now();
+        const data = await limiter.run(() => reader.inspectSheetAppend(
+          record.storageState, String(body.url || ''), sheetName, cellRange, { budgetStartedAt },
+        ));
+        return sendJSON(response, 200, { ok: true, data });
+      }
+      if (url.pathname === '/v1/sheets/update') {
+        const sheetName = String(body.sheet_name || '').trim();
+        const cellRange = String(body.range || '').trim().toUpperCase();
+        if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)) {
+          throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称或范围无效。', 400);
+        }
+        const budgetStartedAt = Date.now();
+        const data = await limiter.run(() => reader.updateSheet(
+          record.storageState, String(body.url || ''), sheetName, cellRange, body.values, body.expected_values,
+          { budgetStartedAt },
+        ));
+        return sendJSON(response, 200, { ok: true, data });
+      }
+      if (url.pathname === '/v1/sheets/append') {
+        const sheetName = String(body.sheet_name || '').trim();
+        const cellRange = String(body.range || '').trim().toUpperCase();
+        const expectedAppendAfterRow = Number(body.expected_append_after_row);
+        if (!sheetName || [...sheetName].length > 200 || !RANGE_PATTERN.test(cellRange)
+          || !Number.isInteger(expectedAppendAfterRow)) {
+          throw new ShimoWorkerError('INVALID_ARGUMENTS', '工作表名称、范围或追加位置无效。', 400);
+        }
+        const budgetStartedAt = Date.now();
+        const data = await limiter.run(() => reader.appendSheet(
+          record.storageState, String(body.url || ''), sheetName, cellRange, body.values, expectedAppendAfterRow,
+          { budgetStartedAt },
+        ));
+        return sendJSON(response, 200, { ok: true, data });
+      }
       if (url.pathname === '/v1/documents/read') {
         const maxChars = Number(body.max_chars);
         if (!Number.isInteger(maxChars) || maxChars < 1000 || maxChars > 500000) {
@@ -190,6 +230,9 @@ function allowedFields(pathname) {
   if (pathname === '/v1/sessions/login') return new Set([...common, 'completion_callback_url', 'completion_token']);
   if (pathname === '/v1/sheets/list') return new Set([...common, 'url']);
   if (pathname === '/v1/sheets/read') return new Set([...common, 'url', 'sheet_name', 'range']);
+  if (pathname === '/v1/sheets/append-plan') return new Set([...common, 'url', 'sheet_name', 'range']);
+  if (pathname === '/v1/sheets/update') return new Set([...common, 'url', 'sheet_name', 'range', 'values', 'expected_values']);
+  if (pathname === '/v1/sheets/append') return new Set([...common, 'url', 'sheet_name', 'range', 'values', 'expected_append_after_row']);
   if (pathname === '/v1/documents/read') return new Set([...common, 'url', 'max_chars']);
   return new Set();
 }

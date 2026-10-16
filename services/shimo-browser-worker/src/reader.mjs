@@ -49,6 +49,17 @@ export const DEFAULT_READ_BUDGET_MS = 30_000;
 // （goto 最多 45s、等渲染 2.5s、取正文最多 15s）按剩余预算收口，剩下的留给响应序列化
 // 和网络往返，保证「排队 + 前置 + 读取」不越过 server 超时。
 export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
+// Writes share one request/time budget across precondition reads, append-tail
+// discovery and post-write verification. The server gives the Worker 75s, so
+// finish inside 65s and reserve a conservative amount before mutating data.
+export const DEFAULT_TOTAL_WRITE_BUDGET_MS = 65_000;
+export const MAX_WRITE_OPERATION_READS = 512;
+// Existing production notes in this file put a same-context values request at
+// 100-350ms. Reserve the upper end rather than the optimistic edge: a write
+// must not be admitted when its final exact reread only works at <=125ms.
+export const WRITE_VERIFY_RESERVE_MS_PER_READ = 350;
+export const MIN_WRITE_VERIFY_RESERVE_MS = 5_000;
+export const MIN_WRITE_MUTATION_BUDGET_MS = 5_000;
 // 页面加载阶段的最小可用预算：剩余不足这个数时不再启动浏览器，直接按「忙、可重试」上报。
 export const MIN_PAGE_BUDGET_MS = 3_000;
 // 上传件走的是「整份下载再解析」，没有分块可退，所以体积必须在上游收口：
@@ -192,6 +203,81 @@ export function readBudgetFor(startedAt, {
   return Math.max(1, Math.min(readBudgetMs, remainingTotalMs));
 }
 
+export function createWriteOperationBudget(startedAt, {
+  totalBudgetMs = DEFAULT_TOTAL_WRITE_BUDGET_MS,
+  maxRequests = MAX_WRITE_OPERATION_READS,
+  now = () => Date.now(),
+} = {}) {
+  let requests = 0;
+  const timeLeft = () => totalBudgetMs - Math.max(0, now() - startedAt);
+  const exhausted = message => new ShimoWorkerError(
+    'WRITE_BUDGET_EXHAUSTED', message, 503,
+    { requests, max_requests: maxRequests, remaining_ms: Math.max(0, Math.floor(timeLeft())) },
+  );
+  return {
+    timeLeft,
+    get requests() { return requests; },
+    get maxRequests() { return maxRequests; },
+    consumeRead() {
+      if (requests >= maxRequests) {
+        throw exhausted(`整次写入的读取次数已达到 ${maxRequests} 次；已停止操作，请缩小范围后重试。`);
+      }
+      if (timeLeft() <= 0) throw exhausted('整次写入的时间预算已用尽；已停止操作，请稍后重试。');
+      requests += 1;
+    },
+    timeoutMs(defaultTimeoutMs) {
+      if (timeLeft() <= 0) throw exhausted('整次写入的时间预算已用尽；已停止操作，请稍后重试。');
+      return budgetBoundedTimeout(defaultTimeoutMs, timeLeft());
+    },
+    translateTimeout(error) {
+      if (error instanceof ShimoWorkerError) return error;
+      return timeLeft() <= 0
+        ? exhausted('整次写入的时间预算已用尽；已停止操作，请稍后重试。')
+        : error;
+    },
+    assertCanVerify(estimatedRequests) {
+      if (requests + estimatedRequests > maxRequests) {
+        throw new ShimoWorkerError(
+          'EXACT_READ_TOO_COMPLEX',
+          `写前检查与写后校验预计共需超过 ${maxRequests} 次读取；已在写入前停止，请把范围拆小后重新预览。`,
+          400,
+          { used_requests: requests, verification_requests: estimatedRequests, max_requests: maxRequests },
+        );
+      }
+      const requiredMs = Math.max(MIN_WRITE_VERIFY_RESERVE_MS, estimatedRequests * WRITE_VERIFY_RESERVE_MS_PER_READ);
+      const requiredTotalMs = requiredMs + MIN_WRITE_MUTATION_BUDGET_MS;
+      if (requiredTotalMs > totalBudgetMs) {
+        throw new ShimoWorkerError(
+          'EXACT_READ_TOO_COMPLEX',
+          `当前矩阵形状预计至少需要 ${requiredTotalMs} 毫秒完成写入与校验，超过整次 ${totalBudgetMs} 毫秒上限；已在写入前停止，请把范围拆小后重新预览。`,
+          400,
+          {
+            used_requests: requests,
+            verification_requests: estimatedRequests,
+            required_ms: requiredTotalMs,
+            total_budget_ms: totalBudgetMs,
+          },
+        );
+      }
+      if (timeLeft() < requiredTotalMs) {
+        throw exhausted(`剩余时间不足以完成写入并预留写后校验（至少需要 ${requiredTotalMs} 毫秒）；已在写入前停止，请稍后重试。`);
+      }
+    },
+    mutationTimeoutMs(defaultTimeoutMs, estimatedVerificationRequests) {
+      this.assertCanVerify(estimatedVerificationRequests);
+      const requiredMs = Math.max(
+        MIN_WRITE_VERIFY_RESERVE_MS,
+        estimatedVerificationRequests * WRITE_VERIFY_RESERVE_MS_PER_READ,
+      );
+      const availableMs = timeLeft() - requiredMs;
+      if (availableMs < MIN_WRITE_MUTATION_BUDGET_MS) {
+        throw exhausted(`剩余时间不足以完成写入并保留 ${requiredMs} 毫秒写后校验预算；已在写入前停止，请稍后重试。`);
+      }
+      return budgetBoundedTimeout(defaultTimeoutMs, availableMs);
+    },
+  };
+}
+
 // 石墨对「这个账号看不到的文件」和「文件不存在」返回同一类上游错误：
 // HTTP 500 + {"code":3,"statusText":"GetFileByProviderID fail ... GET_REMOTE_FILE_INVALID_ARGUMENT ..."}。
 // 2026-09-15 在生产实测：不存在的 fileId 与「已登录但对该表格没有权限」走的是同一条上游路径。
@@ -250,11 +336,20 @@ export function looksLikeAccessDeniedPage(title, bodyText) {
   return ACCESS_PAGE_BODY_PATTERNS.some(pattern => body.includes(pattern.toLowerCase()));
 }
 
-export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs } = {}) {
+export async function fetchRangeValues(context, fileId, sheetName, cellRange, { timeoutMs, requestBudget } = {}) {
   const apiRange = sheetName + '!' + cellRange;
   const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values?range=' + encodeURIComponent(apiRange);
-  const requestOptions = Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeout: timeoutMs } : undefined;
-  const response = await context.request.get(endpoint, requestOptions);
+  requestBudget?.consumeRead();
+  const effectiveTimeout = requestBudget
+    ? requestBudget.timeoutMs(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 45_000)
+    : timeoutMs;
+  const requestOptions = Number.isFinite(effectiveTimeout) && effectiveTimeout > 0 ? { timeout: effectiveTimeout } : undefined;
+  let response;
+  try {
+    response = await context.request.get(endpoint, requestOptions);
+  } catch (error) {
+    throw requestBudget ? requestBudget.translateTimeout(error) : error;
+  }
   if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
   if (response.status() === 403) throw new ShimoWorkerError('DOCUMENT_NOT_ACCESSIBLE', UNREADABLE_DOCUMENT_MESSAGE, 403);
   if (!response.ok()) {
@@ -273,6 +368,307 @@ export async function fetchRangeValues(context, fileId, sheetName, cellRange, { 
     throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口没有返回二维数组。', 502);
   }
   return payload.values;
+}
+
+// The values endpoint trims leading/trailing blank rows and columns and does not
+// return the surviving range coordinates. That shape is fine for ordinary
+// reads, whose contract is an ordered list of rows, but it cannot be aligned to
+// an absolute A1 range for a write precondition. Exact write reads therefore
+// subdivide an ambiguous response until every returned value has an unambiguous
+// coordinate. Dense ranges still take one request; sparse ranges fail closed
+// once the bounded probe budget is exhausted instead of guessing coordinates.
+export const MAX_EXACT_WRITE_READS = MAX_WRITE_OPERATION_READS;
+
+function rangeForCoordinates(startColumn, startRow, endColumn, endRow) {
+  return columnLabel(startColumn) + startRow + ':' + columnLabel(endColumn) + endRow;
+}
+
+function responseWidth(values) {
+  return values.reduce((maximum, row) => Math.max(maximum, row.length), 0);
+}
+
+// Shimo may omit trailing blank cells from individual rows. Once the response
+// still spans the full requested row count and at least one row reaches the
+// requested final column, the row/column origins are unambiguous and the short
+// rows can be padded safely.
+function hasAbsoluteShape(values, height, width) {
+  return values.length === height && responseWidth(values) === width;
+}
+
+function containsNonEmptyValue(values) {
+  return values.some(row => row.some(value => value !== undefined && value !== null && value !== ''));
+}
+
+function trimmedValuesShape(values) {
+  const isBlank = value => value === undefined || value === null || value === '';
+  const rows = values.map(row => row.map(value => (value === undefined || value === null ? '' : value)));
+  while (rows.length && rows[0].every(isBlank)) rows.shift();
+  while (rows.length && rows.at(-1).every(isBlank)) rows.pop();
+  if (!rows.length) return [];
+  while (rows[0].length && rows.every(row => isBlank(row[0]))) rows.forEach(row => row.shift());
+  while (rows[0].length && rows.every(row => isBlank(row.at(-1)))) rows.forEach(row => row.pop());
+  // The values endpoint may also omit blank cells at the end of an individual
+  // row. fetchExactRangeValues only uses the maximum returned width, so model
+  // that response shape here as well.
+  for (const row of rows) while (row.length && isBlank(row.at(-1))) row.pop();
+  return rows;
+}
+
+// Predict the exact-reader work from the matrix that should exist after a
+// write. This uses the same subdivision decisions as fetchExactRangeValues but
+// performs no network requests. A sparse desired shape that could exhaust the
+// post-write verification budget is therefore rejected before POST/PUT, rather
+// than modifying the sheet and only then discovering that it cannot be proved.
+export function estimateExactReadRequests(values, maxRequests = MAX_EXACT_WRITE_READS) {
+  let requests = 0;
+  const visit = (startColumn, startRow, endColumn, endRow) => {
+    requests += 1;
+    if (requests > maxRequests) return;
+    const subset = values
+      .slice(startRow, endRow + 1)
+      .map(row => row.slice(startColumn, endColumn + 1));
+    const observed = trimmedValuesShape(subset);
+    if (!containsNonEmptyValue(observed)) return;
+    const height = endRow - startRow + 1;
+    const width = endColumn - startColumn + 1;
+    const observedHeight = observed.length;
+    const observedWidth = responseWidth(observed);
+    if (hasAbsoluteShape(observed, height, width) || (height === 1 && width === 1)) return;
+    if (observedWidth < width && width > 1) {
+      const middleColumn = Math.floor((startColumn + endColumn) / 2);
+      visit(startColumn, startRow, middleColumn, endRow);
+      visit(middleColumn + 1, startRow, endColumn, endRow);
+      return;
+    }
+    if (observedHeight < height && height > 1) {
+      const middleRow = Math.floor((startRow + endRow) / 2);
+      visit(startColumn, startRow, endColumn, middleRow);
+      visit(startColumn, middleRow + 1, endColumn, endRow);
+    }
+  };
+  if (values.length && values[0]?.length) visit(0, 0, values[0].length - 1, values.length - 1);
+  return requests;
+}
+
+function assertDesiredShapeVerifiable(values) {
+  const requests = estimateExactReadRequests(values);
+  if (requests > MAX_EXACT_WRITE_READS) {
+    throw new ShimoWorkerError(
+      'EXACT_READ_TOO_COMPLEX',
+      `待写入矩阵包含较多空白边界，预计写后精确校验会超过 ${MAX_EXACT_WRITE_READS} 次读取；已在写入前停止，请把范围拆小后重新预览。`,
+      400,
+      { estimated_requests: requests, max_requests: MAX_EXACT_WRITE_READS },
+    );
+  }
+}
+
+export async function fetchExactRangeValues(context, fileId, sheetName, cellRange, {
+  timeoutMs,
+  maxRequests = MAX_EXACT_WRITE_READS,
+  requestBudget,
+} = {}) {
+  const requested = parseA1Range(cellRange);
+  const height = requested.endRow - requested.startRow + 1;
+  const width = requested.endColumn - requested.startColumn + 1;
+  const result = Array.from({ length: height }, () => Array(width).fill(''));
+  let requests = 0;
+
+  const read = async (startColumn, startRow, endColumn, endRow) => {
+    requests += 1;
+    if (requests > maxRequests) {
+      throw new ShimoWorkerError(
+        'EXACT_READ_TOO_COMPLEX',
+        `目标范围包含较多空白边界，精确定位超过 ${maxRequests} 次读取；请把写入范围拆小后重新预览。`,
+        400,
+      );
+    }
+    const range = rangeForCoordinates(startColumn, startRow, endColumn, endRow);
+    const values = await fetchRangeValues(context, fileId, sheetName, range, { timeoutMs, requestBudget });
+    if (!containsNonEmptyValue(values)) return;
+
+    const subHeight = endRow - startRow + 1;
+    const subWidth = endColumn - startColumn + 1;
+    const observedHeight = values.length;
+    const observedWidth = responseWidth(values);
+    if (observedHeight > subHeight || observedWidth > subWidth) {
+      throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口返回的数据超出了请求范围。', 502);
+    }
+    if (hasAbsoluteShape(values, subHeight, subWidth)) {
+      for (let rowOffset = 0; rowOffset < subHeight; rowOffset += 1) {
+        for (let columnOffset = 0; columnOffset < subWidth; columnOffset += 1) {
+          const value = values[rowOffset]?.[columnOffset];
+          result[startRow - requested.startRow + rowOffset][startColumn - requested.startColumn + columnOffset]
+            = value === undefined || value === null ? '' : value;
+        }
+      }
+      return;
+    }
+
+    if (subHeight === 1 && subWidth === 1) {
+      const value = values[0]?.[0];
+      result[startRow - requested.startRow][startColumn - requested.startColumn]
+        = value === undefined || value === null ? '' : value;
+      return;
+    }
+
+    // If Shimo shortened the width, split columns first. This isolates a fully
+    // blank leading/trailing column in O(log columns) probes instead of
+    // repeating the same ambiguity once per row. Only split rows first when
+    // the response retained the full width and shortened the height.
+    if (observedWidth < subWidth && subWidth > 1) {
+      const middleColumn = Math.floor((startColumn + endColumn) / 2);
+      await read(startColumn, startRow, middleColumn, endRow);
+      await read(middleColumn + 1, startRow, endColumn, endRow);
+      return;
+    }
+    if (observedHeight < subHeight && subHeight > 1) {
+      const middleRow = Math.floor((startRow + endRow) / 2);
+      await read(startColumn, startRow, endColumn, middleRow);
+      await read(startColumn, middleRow + 1, endColumn, endRow);
+      return;
+    }
+    throw new ShimoWorkerError('UPSTREAM_CHANGED', '石墨表格接口返回的数据无法映射到请求范围。', 502);
+  };
+
+  await read(requested.startColumn, requested.startRow, requested.endColumn, requested.endRow);
+  return { values: result, requests };
+}
+
+function matrixForRange(values, cellRange) {
+  const parsed = parseA1Range(cellRange);
+  const height = parsed.endRow - parsed.startRow + 1;
+  const width = parsed.endColumn - parsed.startColumn + 1;
+  return Array.from({ length: height }, (_, rowIndex) => Array.from({ length: width }, (_, columnIndex) => {
+    const value = values?.[rowIndex]?.[columnIndex];
+    return value === undefined || value === null ? '' : value;
+  }));
+}
+
+function matricesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function writeVerificationIndeterminate(error, action) {
+  return new ShimoWorkerError(
+    'WRITE_VERIFICATION_INDETERMINATE',
+    `石墨已接受${action}，但连接器未能完成写后回读；结果可能已经生效。请先检查目标范围，不要直接重复${action}。`,
+    502,
+    { write_may_have_succeeded: true, cause_code: error?.code || error?.name || 'UNKNOWN' },
+  );
+}
+
+function validateWriteMatrix(cellRange, values) {
+  const parsed = parseA1Range(cellRange);
+  const height = parsed.endRow - parsed.startRow + 1;
+  const width = parsed.endColumn - parsed.startColumn + 1;
+  if (!Array.isArray(values) || values.length !== height || values.some(row => !Array.isArray(row) || row.length !== width)) {
+    throw new ShimoWorkerError('INVALID_ARGUMENTS', `values 的尺寸必须与 ${cellRange} 完全一致（${height} 行 × ${width} 列）。`, 400);
+  }
+  if (values.some(row => row.some(value => typeof value !== 'string' && typeof value !== 'number'))) {
+    throw new ShimoWorkerError('INVALID_ARGUMENTS', '单元格值只支持文本和数字。', 400);
+  }
+  return parsed;
+}
+
+function writeTargetRange(anchorRange, values, startRow) {
+  const parsed = parseA1Range(anchorRange);
+  const width = values[0].length;
+  return columnLabel(parsed.startColumn) + startRow + ':'
+    + columnLabel(parsed.startColumn + width - 1) + (startRow + values.length - 1);
+}
+
+async function writeRangeValues(context, method, fileId, sheetName, cellRange, values, { timeoutMs } = {}) {
+  const endpoint = 'https://shimo.im/sdk/v2/api/files/' + fileId + '/sheets/values';
+  const options = { data: { range: sheetName + '!' + cellRange, resource: { values } } };
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) options.timeout = timeoutMs;
+  const response = method === 'append'
+    ? await context.request.put(endpoint, options)
+    : await context.request.post(endpoint, options);
+  if (response.status() === 401) throw new ShimoWorkerError('LOGIN_REQUIRED', '石墨登录会话已失效。', 409);
+  if (response.status() === 403) throw new ShimoWorkerError('DOCUMENT_NOT_WRITABLE', '当前石墨账号没有修改这份表格的权限。', 403);
+  if (!response.ok()) {
+    const body = await response.text().catch(() => '');
+    const excerpt = upstreamExcerpt(body);
+    throw new ShimoWorkerError('SHIMO_WRITE_ERROR', '石墨表格写入接口返回 HTTP ' + response.status() + '。' + (excerpt ? '上游返回：' + excerpt : ''), 502);
+  }
+}
+
+function rowIsEmpty(row, width) {
+  for (let index = 0; index < width; index += 1) {
+    const value = row?.[index];
+    if (value !== undefined && value !== null && value !== '') return false;
+  }
+  return true;
+}
+
+export async function inspectAppendPosition(context, fileId, sheetName, cellRange, { requestBudget } = {}) {
+  const parsed = parseA1Range(cellRange);
+  const width = parsed.endColumn - parsed.startColumn + 1;
+  const plan = planRowBands(cellRange);
+  if (plan.truncated) {
+    throw new ShimoWorkerError('RANGE_TOO_LARGE', '追加定位范围过大，请缩小到连续数据区域。', 400);
+  }
+  let requests = 0;
+  const readContainsValue = async (startRow, endRow) => {
+    const range = rangeForCoordinates(parsed.startColumn, startRow, parsed.endColumn, endRow);
+    const values = await fetchRangeValues(context, fileId, sheetName, range, { requestBudget });
+    requests += 1;
+    return containsNonEmptyValue(values);
+  };
+
+  // Locate the first populated row without relying on the row offset of a
+  // trimmed response. Range non-emptiness survives trimming, so a bounded
+  // binary search gives us an absolute row number.
+  let firstDataRow = null;
+  for (const band of plan.bands) {
+    if (!await readContainsValue(band.start_row, band.end_row)) continue;
+    let low = band.start_row;
+    let high = band.end_row;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (await readContainsValue(low, middle)) high = middle;
+      else low = middle + 1;
+    }
+    firstDataRow = low;
+    break;
+  }
+
+  if (firstDataRow === null) {
+    return {
+      inspected_at: new Date().toISOString(), requested_range: cellRange,
+      first_data_row: null, append_after_row: parsed.startRow - 1,
+      append_anchor_range: cellRange, requests, source_kind: 'native_sheet',
+    };
+  }
+
+  let appendAfterRow = firstDataRow - 1;
+  const scanRange = rangeForCoordinates(parsed.startColumn, firstDataRow, parsed.endColumn, parsed.endRow);
+  const scanPlan = planRowBands(scanRange);
+  for (const band of scanPlan.bands) {
+    // A later disconnected block must not move the tail past the first blank
+    // row. Check the first row separately before reading the whole band.
+    if (!await readContainsValue(band.start_row, band.start_row)) break;
+    const rows = await fetchRangeValues(context, fileId, sheetName, band.range, { requestBudget });
+    requests += 1;
+    const bandHeight = band.end_row - band.start_row + 1;
+    for (let offset = 0; offset < bandHeight; offset += 1) {
+      if (rowIsEmpty(rows[offset], width)) {
+        return {
+          inspected_at: new Date().toISOString(), requested_range: cellRange,
+          first_data_row: firstDataRow, append_after_row: appendAfterRow,
+          append_anchor_range: rangeForCoordinates(parsed.startColumn, firstDataRow, parsed.endColumn, parsed.endRow),
+          requests, source_kind: 'native_sheet',
+        };
+      }
+      appendAfterRow = band.start_row + offset;
+    }
+  }
+  return {
+    inspected_at: new Date().toISOString(), requested_range: cellRange,
+    first_data_row: firstDataRow, append_after_row: appendAfterRow,
+    append_anchor_range: rangeForCoordinates(parsed.startColumn, firstDataRow, parsed.endColumn, parsed.endRow),
+    requests, source_kind: 'native_sheet',
+  };
 }
 
 export function browserExecutable() {
@@ -656,6 +1052,165 @@ export class PlaywrightShimoEngine {
         merged_ranges: sliced.merged_ranges,
         sheet_max_row: grid.maxRow,
         sheet_max_column: columnLabel(grid.maxColumn),
+      };
+    });
+  }
+
+  async assertNativeSheetWritable(context, url, { operationBudget } = {}) {
+    const page = await context.newPage();
+    const bounded = timeout => operationBudget ? operationBudget.timeoutMs(timeout) : timeout;
+    let bodyText;
+    let hasSheetTabs;
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: bounded(this.timeoutMs) });
+      await page.waitForTimeout(operationBudget ? Math.min(2500, Math.max(0, operationBudget.timeLeft())) : 2500);
+      bodyText = await page.locator('body').innerText({ timeout: bounded(15_000) });
+      hasSheetTabs = await pageHasSheetTabs(page, bounded(5_000));
+    } catch (error) {
+      throw operationBudget ? operationBudget.translateTimeout(error) : error;
+    }
+    assertPageAccess(await page.title(), bodyText, { hasSheetTabs });
+    if (!hasSheetTabs) {
+      throw new ShimoWorkerError('PAGE_UNEXPECTED', '石墨页面里没有找到表格标签，无法安全写入。', 502);
+    }
+  }
+
+  async inspectSheetAppend(storageState, inputURL, sheetName, cellRange, { budgetStartedAt } = {}) {
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind !== 'sheet') {
+      throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
+    }
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
+    const operationBudget = createWriteOperationBudget(startedAt, { totalBudgetMs: this.totalBudgetMs, now: this.now });
+    return this.withContext(storageState, async context => {
+      await this.assertNativeSheetWritable(context, url, { operationBudget });
+      return inspectAppendPosition(context, fileId, sheetName, cellRange, { requestBudget: operationBudget });
+    });
+  }
+
+  async updateSheet(storageState, inputURL, sheetName, cellRange, values, expectedValues, { budgetStartedAt } = {}) {
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind !== 'sheet') {
+      throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
+    }
+    validateWriteMatrix(cellRange, values);
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
+    const operationBudget = createWriteOperationBudget(startedAt, { totalBudgetMs: this.totalBudgetMs, now: this.now });
+    return this.withContext(storageState, async context => {
+      await this.assertNativeSheetWritable(context, url, { operationBudget });
+      const expected = matrixForRange(expectedValues, cellRange);
+      const desired = matrixForRange(values, cellRange);
+      assertDesiredShapeVerifiable(desired);
+      const verificationRequests = estimateExactReadRequests(desired);
+      const current = (await fetchExactRangeValues(
+        context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+      )).values;
+      if (matricesEqual(current, desired)) {
+        return {
+          written_at: new Date().toISOString(), requested_range: cellRange,
+          before: current, after: current, verified: true, already_applied: true, source_kind: 'native_sheet',
+        };
+      }
+      if (!matricesEqual(current, expected)) {
+        throw new ShimoWorkerError('PRECONDITION_FAILED', '目标单元格在确认后已发生变化；已停止写入，请重新生成预览。', 409);
+      }
+      operationBudget.assertCanVerify(verificationRequests);
+      await writeRangeValues(context, 'update', fileId, sheetName, cellRange, values, {
+        timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
+      });
+      let after;
+      try {
+        after = (await fetchExactRangeValues(
+          context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+        )).values;
+      } catch (error) {
+        throw writeVerificationIndeterminate(error, '范围更新');
+      }
+      if (!matricesEqual(after, desired)) {
+        throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受写入，但回读结果与计划不一致；请人工检查目标范围。', 502);
+      }
+      return {
+        written_at: new Date().toISOString(), requested_range: cellRange,
+        before: current, after, verified: true, already_applied: false, source_kind: 'native_sheet',
+      };
+    });
+  }
+
+  async appendSheet(storageState, inputURL, sheetName, cellRange, values, expectedAppendAfterRow, { budgetStartedAt } = {}) {
+    const { url, fileId, kind } = validateShimoURL(inputURL, 'sheet');
+    if (kind !== 'sheet') {
+      throw new ShimoWorkerError('WRITE_UNSUPPORTED', '上传到石墨的 Excel 目前只支持读取；请先转换为石墨原生表格再写入。', 400);
+    }
+    if (!Array.isArray(values) || values.length === 0 || !Array.isArray(values[0]) || values[0].length === 0
+      || values.some(row => !Array.isArray(row) || row.length !== values[0].length
+        || row.some(value => typeof value !== 'string' && typeof value !== 'number'))) {
+      throw new ShimoWorkerError('INVALID_ARGUMENTS', 'values 必须是只含文本和数字的非空二维矩形。', 400);
+    }
+    const parsed = parseA1Range(cellRange);
+    const anchorWidth = parsed.endColumn - parsed.startColumn + 1;
+    if (values[0].length > anchorWidth) {
+      throw new ShimoWorkerError('INVALID_ARGUMENTS', '追加数据的列数不能超过定位范围的列数。', 400);
+    }
+    if (!Number.isInteger(expectedAppendAfterRow) || expectedAppendAfterRow < parsed.startRow - 1 || expectedAppendAfterRow > parsed.endRow) {
+      throw new ShimoWorkerError('INVALID_ARGUMENTS', 'expected_append_after_row 不在定位范围内。', 400);
+    }
+    const targetRange = writeTargetRange(cellRange, values, expectedAppendAfterRow + 1);
+    const startedAt = readStartedAt(budgetStartedAt, this.now);
+    const operationBudget = createWriteOperationBudget(startedAt, { totalBudgetMs: this.totalBudgetMs, now: this.now });
+    return this.withContext(storageState, async context => {
+      await this.assertNativeSheetWritable(context, url, { operationBudget });
+      const desired = matrixForRange(values, targetRange);
+      assertDesiredShapeVerifiable(desired);
+      const verificationRequests = estimateExactReadRequests(desired);
+      // Read the exact target before inspecting or writing. Besides proving
+      // that the target can be verified within the bounded probe budget, this
+      // makes a retry idempotent even when the appended rows sit just beyond
+      // the caller's anchor range and the anchor tail itself is unchanged.
+      const existingTarget = (await fetchExactRangeValues(
+        context, fileId, sheetName, targetRange, { requestBudget: operationBudget },
+      )).values;
+      if (matricesEqual(existingTarget, desired)) {
+        return {
+          written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
+          append_after_row: expectedAppendAfterRow, appended_rows: values.length,
+          after: existingTarget, verified: true, already_applied: true, source_kind: 'native_sheet',
+        };
+      }
+      const position = await inspectAppendPosition(
+        context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+      );
+      if (position.append_after_row !== expectedAppendAfterRow) {
+        throw new ShimoWorkerError('PRECONDITION_FAILED', '表格末尾在确认后已发生变化；已停止追加，请重新生成预览。', 409);
+      }
+      // Shimo documents PUT as an append operation whose range is the table
+      // search anchor. Start that anchor at the first populated row we found,
+      // so leading blank rows cannot change the upstream table boundary. An
+      // entirely blank anchor is initialized with an exact POST instead.
+      operationBudget.assertCanVerify(verificationRequests);
+      if (position.first_data_row === null) {
+        await writeRangeValues(context, 'update', fileId, sheetName, targetRange, values, {
+          timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
+        });
+      } else {
+        await writeRangeValues(context, 'append', fileId, sheetName, position.append_anchor_range, values, {
+          timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
+        });
+      }
+      let after;
+      try {
+        after = (await fetchExactRangeValues(
+          context, fileId, sheetName, targetRange, { requestBudget: operationBudget },
+        )).values;
+      } catch (error) {
+        throw writeVerificationIndeterminate(error, '追加');
+      }
+      if (!matricesEqual(after, desired)) {
+        throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受追加，但回读结果与计划不一致；请人工检查目标范围。', 502);
+      }
+      return {
+        written_at: new Date().toISOString(), requested_range: cellRange, written_range: targetRange,
+        append_after_row: expectedAppendAfterRow, appended_rows: values.length,
+        after, verified: true, already_applied: false, source_kind: 'native_sheet',
       };
     });
   }
