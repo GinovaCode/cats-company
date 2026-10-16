@@ -17,11 +17,26 @@ import (
 
 func newPublicationIntakeFixture(t *testing.T) (*publicationWorkspaceFixture, *publicationDeliveryTestStore, *publicationDeliveryWorker) {
 	t.Helper()
-	f, s, w := newPublicationDeliveryFixture(t)
-	s.mu.Lock()
-	s.entries = make(map[string]*store.SkillHubPublicationEntry)
-	s.creates = 0
-	s.mu.Unlock()
+	return newPublicationIntakeFixtureWithStore(t, nil)
+}
+
+func newPublicationIntakeFixtureWithStore(t *testing.T, wrap func(*publicationDeliveryTestStore) store.Store) (*publicationWorkspaceFixture, *publicationDeliveryTestStore, *publicationDeliveryWorker) {
+	t.Helper()
+	var s *publicationDeliveryTestStore
+	f := newPublicationWorkspaceFixtureWithStore(t, func(base *publicationWorkspaceTestStore) store.Store {
+		s = &publicationDeliveryTestStore{publicationWorkspaceTestStore: base, jobs: make(map[string]*publicationDeliveryTestJob)}
+		if wrap != nil {
+			return wrap(s)
+		}
+		return s
+	})
+	w := newPublicationDeliveryWorker(f.h)
+	if w == nil {
+		t.Fatal("missing worker")
+	}
+	f.h.publicationDelivery = w
+	w.running.Store(true)
+	t.Cleanup(w.cancel)
 	t.Cleanup(func() {
 		deadline := time.Now().Add(5 * time.Second)
 		for len(f.h.publicationAdmissions) != 0 && time.Now().Before(deadline) {
@@ -324,14 +339,16 @@ func (s *publicationIntakeFailureStore) CreateSkillHubPublicationEntry(ctx conte
 func TestSkillHubPublicationWorkspaceDurableUncertainCommitAndLookup(t *testing.T) {
 	for _, commit := range []bool{false, true} {
 		t.Run(strconv.FormatBool(commit), func(t *testing.T) {
-			f, s, _ := newPublicationIntakeFixture(t)
-			backend := &publicationIntakeFailureStore{publicationDeliveryTestStore: s}
-			if commit {
-				backend.afterCommitErr = errors.New("secret commit connection lost")
-			} else {
-				backend.readErr = errors.New("secret read connection lost")
-			}
-			f.h.db = backend
+			var backend *publicationIntakeFailureStore
+			f, s, _ := newPublicationIntakeFixtureWithStore(t, func(s *publicationDeliveryTestStore) store.Store {
+				backend = &publicationIntakeFailureStore{publicationDeliveryTestStore: s}
+				if commit {
+					backend.afterCommitErr = errors.New("secret commit connection lost")
+				} else {
+					backend.readErr = errors.New("secret read connection lost")
+				}
+				return backend
+			})
 			f.h.handleThinToolRPCRequest(f.owner, publicationIntakeRPC())
 			reply := publicationIntakeResponse(t, f.owner)
 			if reply.Error == nil || reply.Error.Code != "publication.admission_uncertain" || len(f.runtime.send) != 0 {
