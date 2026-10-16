@@ -304,6 +304,69 @@ function containsNonEmptyValue(values) {
   return values.some(row => row.some(value => value !== undefined && value !== null && value !== ''));
 }
 
+function trimmedValuesShape(values) {
+  const isBlank = value => value === undefined || value === null || value === '';
+  const rows = values.map(row => row.map(value => (value === undefined || value === null ? '' : value)));
+  while (rows.length && rows[0].every(isBlank)) rows.shift();
+  while (rows.length && rows.at(-1).every(isBlank)) rows.pop();
+  if (!rows.length) return [];
+  while (rows[0].length && rows.every(row => isBlank(row[0]))) rows.forEach(row => row.shift());
+  while (rows[0].length && rows.every(row => isBlank(row.at(-1)))) rows.forEach(row => row.pop());
+  // The values endpoint may also omit blank cells at the end of an individual
+  // row. fetchExactRangeValues only uses the maximum returned width, so model
+  // that response shape here as well.
+  for (const row of rows) while (row.length && isBlank(row.at(-1))) row.pop();
+  return rows;
+}
+
+// Predict the exact-reader work from the matrix that should exist after a
+// write. This uses the same subdivision decisions as fetchExactRangeValues but
+// performs no network requests. A sparse desired shape that could exhaust the
+// post-write verification budget is therefore rejected before POST/PUT, rather
+// than modifying the sheet and only then discovering that it cannot be proved.
+export function estimateExactReadRequests(values, maxRequests = MAX_EXACT_WRITE_READS) {
+  let requests = 0;
+  const visit = (startColumn, startRow, endColumn, endRow) => {
+    requests += 1;
+    if (requests > maxRequests) return;
+    const subset = values
+      .slice(startRow, endRow + 1)
+      .map(row => row.slice(startColumn, endColumn + 1));
+    const observed = trimmedValuesShape(subset);
+    if (!containsNonEmptyValue(observed)) return;
+    const height = endRow - startRow + 1;
+    const width = endColumn - startColumn + 1;
+    const observedHeight = observed.length;
+    const observedWidth = responseWidth(observed);
+    if (hasAbsoluteShape(observed, height, width) || (height === 1 && width === 1)) return;
+    if (observedWidth < width && width > 1) {
+      const middleColumn = Math.floor((startColumn + endColumn) / 2);
+      visit(startColumn, startRow, middleColumn, endRow);
+      visit(middleColumn + 1, startRow, endColumn, endRow);
+      return;
+    }
+    if (observedHeight < height && height > 1) {
+      const middleRow = Math.floor((startRow + endRow) / 2);
+      visit(startColumn, startRow, endColumn, middleRow);
+      visit(startColumn, middleRow + 1, endColumn, endRow);
+    }
+  };
+  if (values.length && values[0]?.length) visit(0, 0, values[0].length - 1, values.length - 1);
+  return requests;
+}
+
+function assertDesiredShapeVerifiable(values) {
+  const requests = estimateExactReadRequests(values);
+  if (requests > MAX_EXACT_WRITE_READS) {
+    throw new ShimoWorkerError(
+      'EXACT_READ_TOO_COMPLEX',
+      `待写入矩阵包含较多空白边界，预计写后精确校验会超过 ${MAX_EXACT_WRITE_READS} 次读取；已在写入前停止，请把范围拆小后重新预览。`,
+      400,
+      { estimated_requests: requests, max_requests: MAX_EXACT_WRITE_READS },
+    );
+  }
+}
+
 export async function fetchExactRangeValues(context, fileId, sheetName, cellRange, {
   timeoutMs,
   maxRequests = MAX_EXACT_WRITE_READS,
@@ -919,9 +982,10 @@ export class PlaywrightShimoEngine {
     validateWriteMatrix(cellRange, values);
     return this.withContext(storageState, async context => {
       await this.assertNativeSheetWritable(context, url);
-      const current = (await fetchExactRangeValues(context, fileId, sheetName, cellRange)).values;
       const expected = matrixForRange(expectedValues, cellRange);
       const desired = matrixForRange(values, cellRange);
+      assertDesiredShapeVerifiable(desired);
+      const current = (await fetchExactRangeValues(context, fileId, sheetName, cellRange)).values;
       if (matricesEqual(current, desired)) {
         return {
           written_at: new Date().toISOString(), requested_range: cellRange,
@@ -965,6 +1029,7 @@ export class PlaywrightShimoEngine {
     return this.withContext(storageState, async context => {
       await this.assertNativeSheetWritable(context, url);
       const desired = matrixForRange(values, targetRange);
+      assertDesiredShapeVerifiable(desired);
       // Read the exact target before inspecting or writing. Besides proving
       // that the target can be verified within the bounded probe budget, this
       // makes a retry idempotent even when the appended rows sit just beyond

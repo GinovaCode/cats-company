@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   budgetBoundedTimeout, budgetExhaustedOr, cleanDocumentText, collectSheetValues, DEFAULT_TOTAL_READ_BUDGET_MS,
-  downloadUploadedFileBytes, fetchExactRangeValues, fetchRangeValues, htmlShellVerdict, inspectAppendPosition, loadUploadedWorkbook, looksLikeAccessDeniedPage,
+  downloadUploadedFileBytes, estimateExactReadRequests, fetchExactRangeValues, fetchRangeValues, htmlShellVerdict, inspectAppendPosition, loadUploadedWorkbook, looksLikeAccessDeniedPage,
   looksLikeLoginPromptPage, looksLikeUnreadableDocument, parseA1Range, planRowBands,
   MAX_UPLOADED_WINDOW_CELLS, PlaywrightShimoEngine, readBudgetFor, readStartedAt, ShimoWorkerError, sliceXlsxGrid,
   UNREADABLE_DOCUMENT_MESSAGE,
@@ -384,6 +384,7 @@ function trimmedGridContext(grid) {
         if (rows.length) {
           while (rows[0].length && rows.every(row => isBlank(row[0]))) rows.forEach(row => row.shift());
           while (rows[0].length && rows.every(row => isBlank(row.at(-1)))) rows.forEach(row => row.pop());
+          for (const row of rows) while (row.length && isBlank(row.at(-1))) row.pop();
         }
         const payload = { values: rows };
         return {
@@ -419,6 +420,15 @@ test('写入精确读取按缺失列拆分，数百行整列空白不会耗尽�
   );
   assert.deepEqual(trailing.values, trailingBlankColumn);
   assert.ok(trailing.requests <= 3);
+});
+
+test('写前能离线识别会耗尽写后精确校验预算的稀疏矩阵', () => {
+  const alternatingBlankRows = Array.from(
+    { length: 800 },
+    (_, index) => (index % 2 === 0 ? [`row-${index + 1}`, index + 1] : ['', '']),
+  );
+  assert.ok(estimateExactReadRequests(alternatingBlankRows) > 512);
+  assert.equal(estimateExactReadRequests(Array.from({ length: 300 }, (_, index) => ['', `row-${index + 1}`])), 3);
 });
 
 test('追加定位在前导空行后找到真实连续表尾', async () => {
@@ -656,23 +666,43 @@ test('追加先精确读取目标并在锚点外识别已应用计划，避免�
   assert.equal(putCalls, 1);
 });
 
-test('追加目标无法在探测预算内精确定位时会在 PUT 前停止', async () => {
+test('范围更新的待写结果过于稀疏时会在 POST 前停止', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  let postCalls = 0;
+  const request = {
+    async get() { throw new Error('desired-shape preflight must run before range reads'); },
+    async post() { postCalls += 1; throw new Error('must fail before POST'); },
+  };
+  const expected = Array.from({ length: 800 }, (_, index) => [`old-${index + 1}`, index + 1]);
+  const values = Array.from(
+    { length: 800 },
+    (_, index) => (index % 2 === 0 ? [`new-${index + 1}`, index + 1] : ['', '']),
+  );
+  await assert.rejects(
+    () => engineFor(page, request).updateSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B800', values, expected,
+    ),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'EXACT_READ_TOO_COMPLEX'
+      && error.details.estimated_requests > error.details.max_requests,
+  );
+  assert.equal(postCalls, 0);
+});
+
+test('追加的待写结果过于稀疏时会在 PUT 前停止', async () => {
   const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
   let putCalls = 0;
-  const ambiguous = { values: [['ambiguous']] };
   const request = {
-    async get() {
-      return {
-        status: () => 200, ok: () => true,
-        text: async () => JSON.stringify(ambiguous), json: async () => ambiguous,
-      };
-    },
+    async get() { throw new Error('desired-shape preflight must run before range reads'); },
     async put() { putCalls += 1; throw new Error('must fail before PUT'); },
   };
-  const values = Array.from({ length: 130 }, (_, index) => ['', `new-${index + 1}`]);
+  const values = Array.from(
+    { length: 800 },
+    (_, index) => (index % 2 === 0 ? [`new-${index + 1}`, index + 1] : ['', '']),
+  );
   await assert.rejects(
     () => engineFor(page, request).appendSheet(
-      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B130', values, 130,
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B2', values, 2,
     ),
     error => error instanceof ShimoWorkerError && error.code === 'EXACT_READ_TOO_COMPLEX',
   );
