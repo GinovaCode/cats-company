@@ -22,10 +22,13 @@ the first blank row. The matrix input cap is 5000 cells. Coordinate restoration 
 discovery and post-write verification. The same operation has a 65-second budget beginning when
 the request reaches the Worker, so queue and page-load time count too. Before POST or PUT, the
 Worker simulates the exact-reader plan against the desired matrix using Shimo's trimming rules
-and reserves enough request and time capacity for the final reread. Exceptionally sparse or late
-operations are therefore rejected before the sheet is modified and must be split or retried.
-Append also exact-reads the target before writing, so that preflight detects an already-applied
-append outside the anchor and prevents a retry from adding duplicate rows.
+and reserves the upper end of the observed 100-350ms request interval for every predicted reread,
+with separate five-second floors for verification and mutation. Exceptionally sparse or late
+operations are therefore rejected before the sheet is modified and must be split or retried. If
+Shimo accepts the mutation but an unexpected failure still interrupts the final reread, the Worker
+returns `WRITE_VERIFICATION_INDETERMINATE`; callers must inspect the target instead of immediately
+repeating the write. Append also exact-reads the target before writing, so that preflight detects
+an already-applied append outside the anchor and prevents a retry from adding duplicate rows.
 
 Shimo's official values API defines `POST /sheets/values` as an exact-range update and
 `PUT /sheets/values` as an append that searches for the table tail inside the supplied range.

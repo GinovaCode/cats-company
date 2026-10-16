@@ -59,9 +59,13 @@ verification all consume the same counter. The same operation also has a 65-seco
 starts when the Worker receives the request, including queue and page-load time. Before any POST
 or PUT, the Worker applies Shimo's blank-edge trimming rules to the desired matrix in memory,
 predicts its verification cost, and reserves both request and time capacity for the final reread.
-If either capacity is insufficient, the write stops before the sheet is modified. Append also
-exact-reads its target before writing, which recognizes an already-applied plan even when the
-appended rows lie just beyond the anchor range.
+The time reservation uses the upper end of the observed 100-350ms values-request interval, keeps
+at least five seconds for verification, and separately keeps five seconds for the mutation call.
+If either capacity is insufficient, the write stops before the sheet is modified. If Shimo accepts
+the mutation but an unexpected upstream failure still prevents the final reread, the Worker returns
+`WRITE_VERIFICATION_INDETERMINATE` and tells the caller to inspect the target instead of blindly
+retrying. Append also exact-reads its target before writing, which recognizes an already-applied
+plan even when the appended rows lie just beyond the anchor range.
 
 A Shimo "spreadsheet" link has two shapes and the connector accepts both on the same
 endpoints. `/sheets/{id}` is a native Shimo spreadsheet with a cell-values API; the Worker

@@ -54,8 +54,12 @@ export const DEFAULT_TOTAL_READ_BUDGET_MS = 65_000;
 // finish inside 65s and reserve a conservative amount before mutating data.
 export const DEFAULT_TOTAL_WRITE_BUDGET_MS = 65_000;
 export const MAX_WRITE_OPERATION_READS = 512;
-export const WRITE_VERIFY_RESERVE_MS_PER_READ = 125;
+// Existing production notes in this file put a same-context values request at
+// 100-350ms. Reserve the upper end rather than the optimistic edge: a write
+// must not be admitted when its final exact reread only works at <=125ms.
+export const WRITE_VERIFY_RESERVE_MS_PER_READ = 350;
 export const MIN_WRITE_VERIFY_RESERVE_MS = 5_000;
+export const MIN_WRITE_MUTATION_BUDGET_MS = 5_000;
 // 页面加载阶段的最小可用预算：剩余不足这个数时不再启动浏览器，直接按「忙、可重试」上报。
 export const MIN_PAGE_BUDGET_MS = 3_000;
 // 上传件走的是「整份下载再解析」，没有分块可退，所以体积必须在上游收口：
@@ -241,8 +245,9 @@ export function createWriteOperationBudget(startedAt, {
         );
       }
       const requiredMs = Math.max(MIN_WRITE_VERIFY_RESERVE_MS, estimatedRequests * WRITE_VERIFY_RESERVE_MS_PER_READ);
-      if (timeLeft() < requiredMs) {
-        throw exhausted(`剩余时间不足以完成写后校验（至少需要预留 ${requiredMs} 毫秒）；已在写入前停止，请稍后重试。`);
+      const requiredTotalMs = requiredMs + MIN_WRITE_MUTATION_BUDGET_MS;
+      if (timeLeft() < requiredTotalMs) {
+        throw exhausted(`剩余时间不足以完成写入并预留写后校验（至少需要 ${requiredTotalMs} 毫秒）；已在写入前停止，请稍后重试。`);
       }
     },
     mutationTimeoutMs(defaultTimeoutMs, estimatedVerificationRequests) {
@@ -252,7 +257,7 @@ export function createWriteOperationBudget(startedAt, {
         estimatedVerificationRequests * WRITE_VERIFY_RESERVE_MS_PER_READ,
       );
       const availableMs = timeLeft() - requiredMs;
-      if (availableMs <= 0) {
+      if (availableMs < MIN_WRITE_MUTATION_BUDGET_MS) {
         throw exhausted(`剩余时间不足以完成写入并保留 ${requiredMs} 毫秒写后校验预算；已在写入前停止，请稍后重试。`);
       }
       return budgetBoundedTimeout(defaultTimeoutMs, availableMs);
@@ -528,6 +533,15 @@ function matrixForRange(values, cellRange) {
 
 function matricesEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function writeVerificationIndeterminate(error, action) {
+  return new ShimoWorkerError(
+    'WRITE_VERIFICATION_INDETERMINATE',
+    `石墨已接受${action}，但连接器未能完成写后回读；结果可能已经生效。请先检查目标范围，不要直接重复${action}。`,
+    502,
+    { write_may_have_succeeded: true, cause_code: error?.code || error?.name || 'UNKNOWN' },
+  );
 }
 
 function validateWriteMatrix(cellRange, values) {
@@ -1091,9 +1105,14 @@ export class PlaywrightShimoEngine {
       await writeRangeValues(context, 'update', fileId, sheetName, cellRange, values, {
         timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
       });
-      const after = (await fetchExactRangeValues(
-        context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
-      )).values;
+      let after;
+      try {
+        after = (await fetchExactRangeValues(
+          context, fileId, sheetName, cellRange, { requestBudget: operationBudget },
+        )).values;
+      } catch (error) {
+        throw writeVerificationIndeterminate(error, '范围更新');
+      }
       if (!matricesEqual(after, desired)) {
         throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受写入，但回读结果与计划不一致；请人工检查目标范围。', 502);
       }
@@ -1164,9 +1183,14 @@ export class PlaywrightShimoEngine {
           timeoutMs: operationBudget.mutationTimeoutMs(this.timeoutMs, verificationRequests),
         });
       }
-      const after = (await fetchExactRangeValues(
-        context, fileId, sheetName, targetRange, { requestBudget: operationBudget },
-      )).values;
+      let after;
+      try {
+        after = (await fetchExactRangeValues(
+          context, fileId, sheetName, targetRange, { requestBudget: operationBudget },
+        )).values;
+      } catch (error) {
+        throw writeVerificationIndeterminate(error, '追加');
+      }
       if (!matricesEqual(after, desired)) {
         throw new ShimoWorkerError('WRITE_VERIFICATION_FAILED', '石墨已接受追加，但回读结果与计划不一致；请人工检查目标范围。', 502);
       }

@@ -756,11 +756,33 @@ test('追加定位也计入整次共享预算并在 PUT 前为回读留足额度
   assert.equal(putCalls, 0);
 });
 
+test('范围更新按 350ms 实测上界预留回读时间并在 POST 前停止', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const expected = Array.from({ length: 1600 }, (_, index) => [`old-${index + 1}`, index + 1]);
+  const desired = Array.from(
+    { length: 1600 },
+    (_, index) => (index % 4 === 3 ? ['', ''] : [`new-${index + 1}`, index + 1]),
+  );
+  assert.equal(estimateExactReadRequests(desired), 479);
+  let postCalls = 0;
+  const request = trimmedGridContext(expected).request;
+  request.post = async () => { postCalls += 1; throw new Error('must stop before POST'); };
+  await assert.rejects(
+    () => engineFor(page, request).updateSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B1600', desired, expected,
+    ),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'WRITE_BUDGET_EXHAUSTED'
+      && /写入并预留写后校验/.test(error.message),
+  );
+  assert.equal(postCalls, 0);
+});
+
 test('写操作在变更前为写后校验保留时间预算', () => {
   let clock = 1_000_000;
   const budget = createWriteOperationBudget(clock, { totalBudgetMs: 65_000, now: () => clock });
   budget.consumeRead();
-  assert.equal(budget.mutationTimeoutMs(45_000, 400), 15_000);
+  assert.equal(budget.mutationTimeoutMs(45_000, 100), 30_000);
   clock += 61_000;
   assert.throws(
     () => budget.assertCanVerify(1),
@@ -768,6 +790,59 @@ test('写操作在变更前为写后校验保留时间预算', () => {
       && error.code === 'WRITE_BUDGET_EXHAUSTED'
       && error.status === 503,
   );
+});
+
+test('update 已获石墨成功响应但回读失败时返回结果不确定，而不是普通可重试错误', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  let getCalls = 0;
+  let postCalls = 0;
+  const before = { values: [['旧客户', 8000]] };
+  const request = {
+    async get() {
+      getCalls += 1;
+      if (getCalls > 1) throw new Error('simulated verification timeout');
+      return { status: () => 200, ok: () => true, text: async () => JSON.stringify(before), json: async () => before };
+    },
+    async post() {
+      postCalls += 1;
+      return { status: () => 204, ok: () => true, text: async () => '' };
+    },
+  };
+  await assert.rejects(
+    () => engineFor(page, request).updateSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B1', [['新客户', 9000]], before.values,
+    ),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'WRITE_VERIFICATION_INDETERMINATE'
+      && error.details.write_may_have_succeeded === true
+      && /不要直接重复范围更新/.test(error.message),
+  );
+  assert.equal(postCalls, 1);
+});
+
+test('append 已获石墨成功响应但回读失败时返回结果不确定', async () => {
+  const page = fakeSheetPage({ title: '项目表', bodyText: '客户 金额', tabs: ['项目表'] });
+  const grid = [['客户', '金额'], ['旧客户', 8000], ['', '']];
+  const request = trimmedGridContext(grid).request;
+  const originalGet = request.get;
+  let putCalls = 0;
+  request.get = async (...args) => {
+    if (putCalls > 0) throw new Error('simulated verification timeout');
+    return originalGet(...args);
+  };
+  request.put = async () => {
+    putCalls += 1;
+    return { status: () => 204, ok: () => true, text: async () => '' };
+  };
+  await assert.rejects(
+    () => engineFor(page, request).appendSheet(
+      {}, 'https://shimo.im/sheets/Abc123/', '项目表', 'A1:B3', [['新客户', 9000]], 2,
+    ),
+    error => error instanceof ShimoWorkerError
+      && error.code === 'WRITE_VERIFICATION_INDETERMINATE'
+      && error.details.write_may_have_succeeded === true,
+  );
+  assert.equal(putCalls, 1);
 });
 
 test('追加会把 PUT 锚点规范到前导空行后的第一条数据', async () => {
