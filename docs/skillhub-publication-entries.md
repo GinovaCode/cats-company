@@ -752,7 +752,8 @@ cancellation, then send a late receipt through actual HTTPS into PostgreSQL and
 replay it after reopening the adapter. Receipt tests cover strict scope, renewal,
 expiry, lost authority, concurrent replay/cancel, cross-entry task/event collisions,
 failed inserts and immutable evidence. Migration tests start from the frozen
-relevant-table baseline plus unchanged migrations through 000036, including a
+relevant-table baseline, the frozen pre-receipt connection-generation ledger
+from `9b06eecf`, and unchanged migrations through 000036, including a
 stored grant predating the new table, in both startup-first and SQL-first order.
 These use synthetic Cloud receipt requests and a simulated runtime, not a live
 Cloud outbox worker or XiaoBa deployment.

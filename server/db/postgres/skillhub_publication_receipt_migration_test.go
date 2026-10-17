@@ -34,6 +34,11 @@ func TestPostgresSkillHubPublicationReceiptMigration(t *testing.T) {
 					t.Fatal(err)
 				}
 				deliveryExec(t, db, string(b))
+				b, err = os.ReadFile("testdata/skillhub_publication_pre_receipt_generations.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				deliveryExec(t, db, string(b))
 			}
 			for _, sql := range []string{publicationMigrationSQL(t, "up"), publicationDeliveryMigration(t, "up"), publicationCancellationMigration(t, "up"), publicationUploadMigration(t, "up")} {
 				deliveryExec(t, db, sql)
