@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strconv"
@@ -290,5 +294,46 @@ func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 	response = runPeer(t, peer, request, 200)
 	if strings.TrimSpace(response.Body.String()) != `{"active":false,"schemaVersion":1}` {
 		t.Fatal("cancelled grant active through peer API")
+	}
+	// A delayed Cloud receipt is evidence, not a live token check. Exercise
+	// actual HTTPS + PostgreSQL after cancellation, then replay after reopening.
+	// Cloud's sender is a synthetic request here, not its future outbox worker.
+	t.Setenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_RECEIPTS_ENABLED", "true")
+	callback := publicationCloudReceiptRequest{SchemaVersion: 1, EntryRequestID: entry.ID,
+		CandidateRevision: 1, AcceptanceEpoch: grant.Epoch, RequestHash: upload.RequestHash,
+		SourceSnapshotHash: upload.SourceSnapshotHash, RequestBytes: upload.RequestBytes,
+		DelegationID: grant.ID, IdempotencyKey: grant.IdempotencyKey,
+		TaskID: "pubtask_11111111-1111-4111-8111-111111111111", EventID: "pubevent_22222222-2222-4222-8222-222222222222"}
+	for i := 0; i < 2; i++ {
+		func() {
+			db := open()
+			if err := db.CreateSchema(); err != nil {
+				t.Fatal(err)
+			}
+			ts := httptest.NewTLSServer(http.HandlerFunc(NewSkillHubPublicationPeerHandlerFromEnv(db).Handle))
+			defer ts.Close()
+			data, _ := json.Marshal(callback)
+			r, _ := http.NewRequest("POST", ts.URL+SkillHubPublicationCloudReceiptPath, bytes.NewReader(data))
+			r.Header.Set("Authorization", "Bearer "+peerSecret)
+			r.Header.Set("Content-Type", "application/json")
+			resp, err := ts.Client().Do(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var ack map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != 200 || len(ack) != 7 || ack["recorded"] != true || ack["localIntentCancelled"] != true || ack["commitAllowed"] != false || ack["taskId"] != callback.TaskID || ack["eventId"] != callback.EventID {
+				t.Fatalf("late receipt: %+v", ack)
+			}
+		}()
+	}
+	if err := scoped.QueryRow(`SELECT count(*) FROM skillhub_publication_cloud_receipts WHERE entry_id=$1`, entry.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatal("receipt not durable/idempotent")
+	}
+	if _, _, err := a2.IssueSkillHubPublicationUploadGrant(context.Background(), upload); err == nil {
+		t.Fatal("late callback revived issuance")
 	}
 }
