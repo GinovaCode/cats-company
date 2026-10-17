@@ -610,9 +610,94 @@ to invoke a model repair.
 Cancellation can occur immediately afterward. The future Cloud client must pin
 the configured HTTPS origin and exact route, reject redirects, redact both
 headers, validate the exact response schema/scope/expiry and independently hash
-the actual candidate bytes. That client, durable task association and the
-cancel/commit protocol are not implemented here. Keep production disabled until
-those pieces and trusted private capture/issuance pass joint isolation tests.
+the actual candidate bytes. Cloud implements its introspection client and held
+intake separately. The receipt receiver below does not implement Cloud delivery
+or the cancel/commit protocol. Keep production disabled until those pieces and
+trusted private capture/issuance pass joint isolation tests.
+
+## Cloud acceptance receipt receiver
+
+`POST /api/skillhub/publications/internal/cloud-receipts` records the association
+between an existing CatsCo intent/grant and a held Cloud task. It is independently
+disabled by default (`CATSCO_SKILLHUB_PUBLICATION_CLOUD_RECEIPTS_ENABLED=true` opts
+in). No deployment configuration enables it. It uses the same explicitly
+configured issuer, Cloud audience, peer secret and HTTPS/proxy policy as
+introspection; a user JWT, Bot key or cookie cannot authenticate this endpoint.
+The adapter must support `SkillHubPublicationCloudReceiptStore` or it fails closed.
+
+The strict JSON object has exactly these fields:
+
+```json
+{
+  "schemaVersion": 1,
+  "entryRequestId": "pubentry_0123456789abcdef0123456789abcdef",
+  "candidateRevision": 1,
+  "acceptanceEpoch": 1,
+  "requestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sourceSnapshotHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requestBytes": 1234,
+  "delegationId": "pubgrant_0123456789abcdef0123456789abcdef",
+  "idempotencyKey": "pubcandidate_0123456789abcdef0123456789abcdef",
+  "taskId": "pubtask_11111111-1111-4111-8111-111111111111",
+  "eventId": "pubevent_22222222-2222-4222-8222-222222222222"
+}
+```
+
+`acceptanceEpoch` is Cloud's immutable **first acceptance** epoch, not the latest
+upload token epoch. Cloud's sender must derive it and the remaining fields from
+its persisted association/task/outbox, not from a model or browser callback.
+For revision 1, `sourceSnapshotHash` is the accepted candidate hash. Issuer and
+audience come from CatsCo configuration; the actor/Bot remain those of the stored
+entry. No actor UID, namespace, issuer URL, file, status or upload credential is
+accepted in JSON. The upload-grant header is explicitly rejected: a durable
+callback must not carry short-lived bearer material.
+
+The receiver uses the existing 4 KiB body cap, five-second deadline, 16 shared
+in-flight slots, peer rate limit, strict transport/JSON rules and no-store error
+redaction. Receipts have their own per-entry limit of 30/minute, burst 5.
+HTTP 200 is returned only after durable commit or an exact replay. Unknown or
+conflicting scope/task/event returns generic 409 `publication.receipt_conflict`;
+storage uncertainty returns 503 and may be retried with the **same** receipt.
+
+Migration `000037` and matching startup DDL add one immutable receipt per entry,
+with unique Cloud-audience/task and Cloud-audience/event pairs. The receiver locks
+the entry before reading the grant, serializing with issuance and local cancel.
+It requires the same grant ID/key, issuer/audience, revision, exact request/source
+digests and byte count, and `1 <= acceptanceEpoch <= stored grant epoch <= 8`.
+A replay must match every stored receipt field, including its original epoch.
+It never changes the entry, delivery outbox, grant, token or publication state.
+
+Receipt delivery is historical reconciliation, not an online authority check.
+Expiry, renewal, disconnect, Owner transfer or account disablement must not erase
+evidence of an earlier Cloud acceptance. These events therefore do not prevent a
+matching authenticated receipt from being saved, but saving it restores **no**
+authority. The reply contains only `schemaVersion: 1`, `recorded: true`, the
+entry/task/event IDs, `localIntentCancelled` and `commitAllowed: false`.
+`localIntentCancelled` is a transaction-time observation, not remote cancellation
+confirmation; false is never permission to execute. Cloud must continue holding
+the task regardless of this flag until the future commit-permit protocol permits
+publication.
+
+If local cancel wins the entry lock, the late receipt is retained and the intent
+stays cancelled. If a receipt is already recorded, the existing **pre-Cloud-only**
+cancel action returns conflict instead of claiming a distributed cancellation.
+An already cancelled intent remains idempotently cancelled after receipt arrival.
+The callback acknowledgement is never sufficient to mark a Cloud task cancelled.
+
+Receipt evidence survives restart and candidate expiry. Update/delete guards and
+the entry foreign key prevent accidental rewriting or deletion; down migration
+refuses populated tables and permits empty rollback only. An explicit lifecycle
+for tombstones and cleanup remains a production activation gate. Older binaries
+do not understand the receipt-aware cancellation guard: do not roll back to them
+with retained receipts. Disable admission/receipt ingestion and deploy a compatible
+binary instead; stopping ingestion alone is not permission to delete evidence.
+
+This change implements the CatsCo receiver only. Cloud outbox delivery/recovery,
+owner-private Cloud status projection, distributed cancellation, commit permits,
+legacy issuer verification and runtime capture/upload remain separate integration
+work. Current entry/source-status projections are unchanged and must not be used
+to infer Cloud task execution or success. No UI, model billing or production Bot
+change is included.
 
 ## Remaining integration
 
@@ -663,7 +748,15 @@ rate/concurrency guards, actual TLS and an actual slow-body read deadline. New
 PostgreSQL tests verify canonical identity, read-only state, reopened adapters,
 authority invalidation, rotation and concurrent cancellation. The two existing
 PostgreSQL delivery-recovery tests also call the real peer handler before/after
-cancellation. Those use a simulated runtime, not live Cloud/XiaoBa deployment.
+cancellation, then send a late receipt through actual HTTPS into PostgreSQL and
+replay it after reopening the adapter. Receipt tests cover strict scope, renewal,
+expiry, lost authority, concurrent replay/cancel, cross-entry task/event collisions,
+failed inserts and immutable evidence. Migration tests start from the frozen
+relevant-table baseline, the frozen pre-receipt connection-generation ledger
+from `9b06eecf`, and unchanged migrations through 000036, including a
+stored grant predating the new table, in both startup-first and SQL-first order.
+These use synthetic Cloud receipt requests and a simulated runtime, not a live
+Cloud outbox worker or XiaoBa deployment.
 
 Without `CATS_PG_TEST_DSN`, database tests skip; this is not evidence of database
 correctness. User manual testing waits for the XiaoBa source-probe adapter and

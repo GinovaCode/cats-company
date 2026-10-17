@@ -22,30 +22,35 @@ import (
 )
 
 const SkillHubPublicationIntrospectionPath = "/api/skillhub/publications/internal/upload-grants/introspect"
+const SkillHubPublicationCloudReceiptPath = "/api/skillhub/publications/internal/cloud-receipts"
 const publicationPeerBodyLimit = 4096
 
 var publicationPeerSecretPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var publicationGrantIDPattern = regexp.MustCompile(`^pubgrant_[a-f0-9]{32}$`)
 var publicationUploadKeyPattern = regexp.MustCompile(`^pubcandidate_[a-f0-9]{32}$`)
 
-// This service-only handler never authenticates a user, issues a grant or
-// changes entry/task state. All config is independent of legacy auth switches.
+// Service-only introspection and separately gated historical receipt ingestion.
+// Neither endpoint issues grants or changes entry/task execution state.
 type SkillHubPublicationPeerHandler struct {
-	enabled    bool
-	ready      bool
-	issuer     string
-	audience   string
-	secretHash [32]byte
-	proxies    []netip.Prefix
-	reader     store.SkillHubPublicationUploadIntrospector
-	limits     *HTTPRateLimiter
-	slots      chan struct{}
+	enabled         bool
+	receiptsEnabled bool
+	ready           bool
+	issuer          string
+	audience        string
+	secretHash      [32]byte
+	proxies         []netip.Prefix
+	reader          store.SkillHubPublicationUploadIntrospector
+	receipts        store.SkillHubPublicationCloudReceiptStore
+	limits          *HTTPRateLimiter
+	slots           chan struct{}
 }
 
 func NewSkillHubPublicationPeerHandlerFromEnv(db store.Store) *SkillHubPublicationPeerHandler {
 	v := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_INTROSPECTION_ENABLED"))
 	h := &SkillHubPublicationPeerHandler{enabled: v == "1" || strings.EqualFold(v, "true"), limits: NewHTTPRateLimiter(), slots: make(chan struct{}, 16)}
-	if !h.enabled {
+	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_RECEIPTS_ENABLED"))
+	h.receiptsEnabled = v == "1" || strings.EqualFold(v, "true")
+	if !h.enabled && !h.receiptsEnabled {
 		return h
 	}
 	h.issuer = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_ISSUER"))
@@ -71,7 +76,8 @@ func NewSkillHubPublicationPeerHandlerFromEnv(db store.Store) *SkillHubPublicati
 		}
 	}
 	h.reader, _ = db.(store.SkillHubPublicationUploadIntrospector)
-	h.ready = h.reader != nil
+	h.receipts, _ = db.(store.SkillHubPublicationCloudReceiptStore)
+	h.ready = true
 	return h
 }
 
@@ -165,11 +171,13 @@ func (h *SkillHubPublicationPeerHandler) Handle(w http.ResponseWriter, r *http.R
 		w.Header().Set("Connection", "close")
 		skillHubPublicationReadError(w, status, code)
 	}
-	if h == nil || !h.enabled || r.URL.Path != SkillHubPublicationIntrospectionPath || r.URL.RawPath != "" {
+	receipt := r.URL.Path == SkillHubPublicationCloudReceiptPath
+	if h == nil || r.URL.RawPath != "" || (receipt && !h.receiptsEnabled) ||
+		(!receipt && (!h.enabled || r.URL.Path != SkillHubPublicationIntrospectionPath)) {
 		fail(404, "publication.not_found")
 		return
 	}
-	if !h.ready {
+	if !h.ready || (receipt && h.receipts == nil) || (!receipt && h.reader == nil) {
 		fail(503, "publication.peer_unavailable")
 		return
 	}
@@ -216,14 +224,23 @@ func (h *SkillHubPublicationPeerHandler) Handle(w http.ResponseWriter, r *http.R
 		return
 	}
 	headers := r.Header.Values("X-SkillHub-Upload-Grant")
-	if len(headers) != 1 {
-		fail(400, "publication.invalid_request")
-		return
-	}
-	token, err := store.ParseSkillHubPublicationUploadToken(headers[0])
-	if err != nil {
-		fail(400, "publication.invalid_request")
-		return
+	var token store.SkillHubPublicationUploadToken
+	if receipt {
+		// A durable callback never carries a short-lived upload bearer token.
+		if len(headers) != 0 {
+			fail(400, "publication.invalid_request")
+			return
+		}
+	} else {
+		if len(headers) != 1 {
+			fail(400, "publication.invalid_request")
+			return
+		}
+		token, err = store.ParseSkillHubPublicationUploadToken(headers[0])
+		if err != nil {
+			fail(400, "publication.invalid_request")
+			return
+		}
 	}
 	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_peer", Limit: 120, Window: time.Minute, Burst: 20}, "cloud") {
 		w.Header().Set("Retry-After", "5")
@@ -253,6 +270,10 @@ func (h *SkillHubPublicationPeerHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if err := controller.SetReadDeadline(time.Time{}); err != nil {
 		fail(503, "publication.peer_unavailable")
+		return
+	}
+	if receipt {
+		h.recordCloudReceipt(ctx, w, data, fail)
 		return
 	}
 	body, err := decodePublicationPeerRequest(data)

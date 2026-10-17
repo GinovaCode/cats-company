@@ -53,6 +53,15 @@ func (a *Adapter) CancelSkillHubPublicationEntry(ctx context.Context, actorUID i
 	}
 	switch e.State {
 	case "waiting_runtime":
+		var linked bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM skillhub_publication_cloud_receipts WHERE entry_id=$1)`, id).Scan(&linked); err != nil {
+			return nil, err
+		}
+		if linked {
+			// Cloud acceptance is known. Local-only cancellation must not claim
+			// that remote work has stopped; the distributed protocol is pending.
+			return nil, store.ErrSkillHubPublicationConflict
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE skillhub_publication_entries SET state='cancelled' WHERE entry_id=$1`, id); err != nil {
 			return nil, err
 		}
