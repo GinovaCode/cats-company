@@ -1248,9 +1248,10 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
+		mentionNames := h.mentionNamesForAgentContext(topicID, identityUsers)
 		msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 		for _, message := range rawMsgs {
-			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
+			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers, mentionNames); formatted != nil {
 				msgs = append(msgs, formatted)
 			}
 		}
@@ -1387,7 +1388,7 @@ func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.
 	return users
 }
 
-func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message *types.Message, identityUsers map[int64]*types.User) map[string]interface{} {
+func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message *types.Message, identityUsers map[int64]*types.User, mentionNames map[string]string) map[string]interface{} {
 	formatted := h.historyAPIMessageForRecipient(agentUID, message, identityUsers)
 	if formatted == nil || message == nil {
 		return nil
@@ -1398,6 +1399,14 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	durable := isDurableAgentContextMessage(message, displayType)
 	eligible := durable
 	reason := "participant_message"
+	// Whether this is a peer's runtime traffic with nothing worth reading. This
+	// must use the fine-grained predicate, not `durable`: `durable` is false for
+	// any message that merely *contains* an internal block, so a peer's final
+	// answer wrapped as `thinking + assistant_text` counts as not-durable. Using
+	// it here would label that answer `other_agent_working`, and readers drop
+	// working traffic — silently losing the peer's actual reply. Only a message
+	// whose blocks are internal *and* carry no readable block is traffic.
+	peerWorking := isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks)
 	if message.FromUID == agentUID {
 		role = "assistant"
 		reason = "current_agent_message"
@@ -1407,13 +1416,7 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	} else if sender.AccountType == types.AccountBot {
 		role = "other_agent"
 		eligible = false
-		if !durable {
-			// Runtime traffic from a peer (tool calls, tool results, thinking,
-			// runtime plans). The judged transcript already drops it, and a
-			// reader must not mistake it for that Agent's conversation: one
-			// group ran away because a bare "execute_shell" was read as a peer
-			// message. A distinct reason keeps "peer said something" and "peer
-			// is working" separable, which one shared reason cannot express.
+		if peerWorking {
 			reason = "other_agent_working"
 		} else {
 			reason = "other_agent_message"
@@ -1426,7 +1429,7 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	// the tokens to names on the Agent's read copy; the stored value and human
 	// readers keep the raw token they already resolve themselves. The
 	// structured `mentions` array stays raw so activation matching is unchanged.
-	withMentionNamesForAgentCopy(formatted, identityUsers)
+	withMentionNamesForAgentCopy(formatted, mentionNames)
 
 	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
@@ -1567,6 +1570,52 @@ func mentionValues(raw interface{}) []string {
 	}
 }
 
+// mentionNamesForAgentContext builds the `usr<id>` → display-name map used to
+// rewrite `@` tokens on an Agent's history read copy.
+//
+// The member list, not the page's senders, is the right source: a member who
+// has not spoken on this page is exactly who a peer cannot identify. Non-group
+// topics have no member list and no `@` addressing to resolve, so they get
+// nothing and the rewrite is a no-op there.
+func (h *MessageHandler) mentionNamesForAgentContext(topicID string, identityUsers map[int64]*types.User) map[string]string {
+	groupID := extractGroupID(topicID)
+	if groupID <= 0 || h == nil || h.db == nil {
+		return nil
+	}
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil || len(members) == 0 {
+		return nil
+	}
+	names := make(map[string]string, len(members)+1)
+	for _, member := range members {
+		if member == nil || member.UserID <= 0 {
+			continue
+		}
+		if name := strings.TrimSpace(firstNonEmpty(member.DisplayName, member.Username)); name != "" {
+			names[formatUID(member.UserID)] = name
+		}
+	}
+	// A page sender missing from the member list (left the group, or a store
+	// without joined fields) still gets a name when identityUsers has one.
+	for uid, user := range identityUsers {
+		if uid <= 0 || user == nil {
+			continue
+		}
+		key := formatUID(uid)
+		if _, exists := names[key]; exists {
+			continue
+		}
+		if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+			names[key] = name
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	names[structuredMentionAllBots] = "所有人"
+	return names
+}
+
 // withMentionNamesForAgentCopy rewrites raw `@usr<id>` tokens into `@<name>` on
 // the Agent's read copy only.
 //
@@ -1577,23 +1626,16 @@ func mentionValues(raw interface{}) []string {
 // that way and said so in the room. The structured `mentions` array stays raw
 // (activation matching compares it against `usr<id>`), and the stored value and
 // human copies are untouched.
-func withMentionNamesForAgentCopy(formatted map[string]interface{}, identityUsers map[int64]*types.User) {
-	if formatted == nil || len(identityUsers) == 0 {
+//
+// `names` maps `usr<id>` (and the `all` sentinel) to a display name. It is built
+// once per history page by the caller: building it per message would repeat the
+// same work for every row, and a name map keyed off `identityUsers` alone would
+// miss every member who has not spoken on this page — exactly the case the
+// rewrite exists for.
+func withMentionNamesForAgentCopy(formatted map[string]interface{}, names map[string]string) {
+	if formatted == nil || len(names) == 0 {
 		return
 	}
-	names := make(map[string]string, len(identityUsers))
-	for uid, user := range identityUsers {
-		if uid <= 0 || user == nil {
-			continue
-		}
-		if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
-			names[formatUID(uid)] = name
-		}
-	}
-	if len(names) == 0 {
-		return
-	}
-	names[structuredMentionAllBots] = "所有人"
 
 	if content, ok := formatted["content"].(string); ok && content != "" {
 		formatted["content"] = replaceMentionTokens(content, names)
