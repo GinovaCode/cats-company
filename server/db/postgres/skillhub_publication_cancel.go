@@ -22,8 +22,39 @@ func (a *Adapter) CancelSkillHubPublicationEntry(ctx context.Context, actorUID i
 		return nil, err
 	}
 	defer tx.Rollback()
-	// Same lock order as delivery: entry, human, Bot config. A receipt either
-	// commits before this cancellation or observes cancelled and cannot save.
+	e, err := lockPublicationCancellationAuthority(ctx, tx, actorUID, id)
+	if err != nil {
+		return nil, err
+	}
+	switch e.State {
+	case "waiting_runtime":
+		var linked bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM skillhub_publication_cloud_receipts WHERE entry_id=$1)`, id).Scan(&linked); err != nil {
+			return nil, err
+		}
+		if linked {
+			// Cloud acceptance is known. Keep the existing local-only HTTP
+			// cancellation behavior until the distributed adapter is complete.
+			return nil, store.ErrSkillHubPublicationConflict
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE skillhub_publication_entries SET state='cancelled' WHERE entry_id=$1`, id); err != nil {
+			return nil, err
+		}
+		e.State = "cancelled"
+	case "cancelled":
+	default:
+		return nil, store.ErrSkillHubPublicationConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// Shared by local cancellation and the new internal intent store. Same lock
+// order as delivery: entry, human, Bot config. Late source-probe results cannot
+// revive intent; historical Cloud receipts may still be recorded separately.
+func lockPublicationCancellationAuthority(ctx context.Context, tx *sql.Tx, actorUID int64, id string) (*store.SkillHubPublicationEntry, error) {
 	e, err := scanPublicationEntry(tx.QueryRowContext(ctx, `SELECT `+publicationEntryColumns+`
 		FROM skillhub_publication_entries WHERE entry_id=$1 AND actor_uid=$2 FOR UPDATE`, id, actorUID))
 	if err != nil {
@@ -49,30 +80,6 @@ func (a *Adapter) CancelSkillHubPublicationEntry(ctx context.Context, actorUID i
 		return nil, store.ErrSkillHubPublicationDenied
 	}
 	if err != nil {
-		return nil, err
-	}
-	switch e.State {
-	case "waiting_runtime":
-		var linked bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM skillhub_publication_cloud_receipts WHERE entry_id=$1)`, id).Scan(&linked); err != nil {
-			return nil, err
-		}
-		if linked {
-			// Cloud acceptance is known. Local-only cancellation must not claim
-			// that remote work has stopped; the distributed protocol is pending.
-			return nil, store.ErrSkillHubPublicationConflict
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE skillhub_publication_entries SET state='cancelled' WHERE entry_id=$1`, id); err != nil {
-			return nil, err
-		}
-		e.State = "cancelled"
-	case "cancelled": // Same intent, idempotent success, even after reconnect.
-	default:
-		// Future capture/Cloud stages MUST implement their own cancellation and
-		// commit-permit ordering. Never claim those tasks cancelled locally.
-		return nil, store.ErrSkillHubPublicationConflict
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return e, nil

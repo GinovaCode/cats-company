@@ -763,6 +763,77 @@ work. Current entry/source-status projections are unchanged and must not be used
 to infer Cloud task execution or success. No UI, model billing or production Bot
 change is included.
 
+## Internal durable cancellation intent
+
+After Cloud PR36's held-task cancellation foundation, CatsCo now has an internal
+`SkillHubPublicationCancellationIntentStore`. There is **no HTTP/RPC adapter,
+worker, environment switch or production caller** for it. Deploying this schema
+does not activate cancellation delivery, change the existing browser capability
+or call Cloud. The existing local-only cancellation route still returns 409 for
+an uncancelled entry with a recorded Cloud receipt.
+
+`RequestSkillHubPublicationCancellation` requires the active original human to
+still own the Bot, using the same entry → human → Bot row-lock order as local
+cancellation. A future caller must derive actor UID from trusted human context,
+not model arguments. Offline/disabled/rebound Bots do not stop their current
+Owner cancelling an old intent. Neither a new Owner nor an ex-Owner can mutate
+another ownership period. No user token, source path or new publisher identity
+is stored in the cancellation record.
+
+Under the entry lock, this method cancels **local intent** and inserts one
+immutable cancellation ID/time in the same transaction. The record freezes
+whether retained upload authority or Cloud acceptance evidence exists. Failed
+insertion rolls back the local cancellation too. Repeated actions and lost
+replies reuse the same ID/time. Upload issuance, renewal and receipt recording
+share this ordering point, so cancellation cannot miss an issuance racing with
+it. A future commit-permit issuer must also share this ordering point and define
+pending/too-late outcomes before it can be enabled.
+
+| Internal state | Meaning |
+| --- | --- |
+| `local_only` | No retained upload grant or receipt exists; cancelled local intent prevents new upload grants |
+| `waiting_receipt` | Upload authority existed; absence of a receipt is not proof that Cloud did not accept |
+| `ready` | The original receipt is available for future cancellation delivery; not sent or remotely confirmed |
+
+`GetSkillHubPublicationCancellationIntent` reads one committed snapshot for the
+original active human. It derives waiting/ready from the retained receipt rather
+than updating a second mutable state: a late callback naturally makes the saved
+intent ready, including after process restart or Bot transfer. New Owners and
+friends do not inherit the history. Reads do not send anything or retry a job.
+The returned internal record contains only cancellation/entry IDs, state and
+requested time, and is not a browser response schema. Existing `cloud-status`
+still reports `executionState:unknown`.
+
+Migration 000038 and startup DDL add one bounded row per existing entry, with
+guards against rewriting/deleting its evidence, contradictory insertions and
+reviving the associated local intent. It does not alter original inputs, receipt
+evidence, capture outbox, grants, files, Bot definitions or model configuration.
+The migration does not auto-enrol old cancellations. An explicitly authorized
+call may adopt a legacy local cancellation; a policy for draining historical
+records after ownership loss is still a rollout prerequisite, not permission
+to guess authority or reassign an Owner.
+
+Apply the migration (or compatible startup DDL) before invoking the new store.
+Down refuses any retained cancellation intent and only removes an empty ledger,
+in reverse migration order without CASCADE. Existing legacy cancellation remains
+usable without this table. Rollback means disabling future admission/delivery
+while preserving compatible storage and recovery, not dropping pending work.
+
+This is not a durable sender: leases, bounded retries, independently authenticated
+service endpoints, exact receipt delivery to Cloud PR36, durable remote outcomes
+and operator recovery remain required. There is no cancellation-confirmed state
+or commit permit in this release, so no UI may use `ready` or local `cancelled`
+to promise remote completion. Full capture/upload, retention and isolated
+cross-repository acceptance remain production gates.
+
+New PostgreSQL tests cover all three states, process reconstruction, historical
+reads and authority changes, concurrent receipt/duplicate requests, upload-grant
+races, atomic failure/lost replies, immutable evidence, legacy API regression,
+populated rollback and missing-schema recovery. CI runs them in the existing
+publication database group with the race detector; local DSN skips are not
+database verification. These are real CatsCo database tests, not a complete
+Cloud cancellation transport or Bot end-to-end acceptance test.
+
 ## Remaining integration
 
 Durable **pre-probe** admission is implemented by v2. UI integration of delivery progress, safe resume, and the
