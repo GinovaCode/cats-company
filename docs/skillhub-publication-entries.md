@@ -87,17 +87,19 @@ request body or arbitrary source path. A display name is never an identity key.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, effective `sourceStatusReadsEnabled`, effective `workspaceCreateEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database or target-runtime health check. |
+| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `sourceStatusReadsEnabled`, `cloudStatusReadsEnabled`, effective `workspaceCreateEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database or target-runtime health check. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}` | When enabled on a supported store, reads the original publisher's record. Missing, wrong-publisher and disabled reads return the same 404. Bot ownership transfer does not grant historical record access to the new owner. |
 | `GET /api/skillhub/publications/requests/{requestId}` | Same private projection, using the original account-scoped request ID to recover a lost creation response. This does not reauthorize, create, replay or mutate an entry. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}/source-status` | Original publisher's historical source-probe progress, using the same read flag and private transport guards. Requires the optional PostgreSQL source-status reader. Never claims, settles or resumes a task. |
+| `GET /api/skillhub/publications/entries/{entryRequestId}/cloud-status` | Original publisher's local observation of Cloud acceptance evidence. Requires the optional PostgreSQL Cloud-status reader. No remote lookup, execution-state claim or write. |
 
 The entry response contains only `schemaVersion` and `entry` with
 `entryRequestId`, decimal-string `botUid`, `entrypoint`, `state` and UTC
 `createdAt`. It omits request keys, publisher identity, device/body/installation,
 workspace/source references, identity hash, candidates and credentials. The only
-currently supported state is `waiting_runtime`; it means durable intent, not
-capture, validation or publication success. Unknown states fail closed with 503
+currently supported states are `waiting_runtime` and `cancelled`; neither means
+capture, validation or publication success. Local cancellation does not confirm
+that a remote Cloud task has stopped. Unknown states fail closed with 503
 until their safe projection is implemented. No Cloud report is fetched here.
 
 Every handler response, including authentication failures, is `private, no-store`
@@ -156,6 +158,62 @@ intent, or trigger a model. An entry's orchestration state remains
 `waiting_runtime` even after `verified`; only a future Cloud result can claim
 publication. Clients must not present this observation as a live online/permission
 indicator or fabricate a repair action from infrastructure errors.
+
+### Cloud acceptance observation
+
+The additive `cloud-status` route reads only CatsCo's retained receipt ledger;
+it does not contact Cloud or poll a Bot. It uses the existing default-off reads
+flag, authenticated-human checks, shared entry/source-status polling budget,
+16 concurrent reads and five-second context. Its capability means adapter
+support and read enablement, not Cloud reachability or worker health. Missing
+tables/unsupported storage fail with 503 rather than reporting no receipt.
+
+The response has exactly `schemaVersion: 1`, `entryRequestId`, and `cloudStatus`:
+
+| Field | Meaning |
+| --- | --- |
+| `stage: not_observed` | No receipt visible in this database snapshot. Upload may already have happened while its callback is delayed, lost or blocked; this is not permission to create a new entry or reupload. |
+| `stage: acceptance_recorded` | CatsCo retained Cloud's historical acceptance receipt. Not validation success, completed publication, current execution permission or proof that candidate bytes still exist. |
+| `localIntentState` | `waiting_runtime` or `cancelled`, read in the same database statement as the receipt. A late receipt never hides cancellation. |
+| `executionState` | Always `unknown` in this protocol version. Neither accepted nor locally cancelled implies a remote execution result. |
+| `recordedAt` | UTC first receipt timestamp, present only for `acceptance_recorded`. Stable across callback retries and process reconstruction. |
+| `observedAt` | UTC database observation time, not a fresh check of Cloud or runtime authority. |
+
+Only the original active human publisher may read this history, even after Bot
+transfer, disconnect or disablement. New owners/friends do not inherit it.
+The database repeats the human/account-state filter; HTTP also checks the
+returned actor/entry and allowlisted state/timestamps. Unknown states, zero or
+future receipt times fail closed. No task/event IDs, grant IDs, candidate hashes,
+request keys, actor UID, source/route references, tokens or raw errors are exposed.
+
+Reading never writes the entry, outbox, grant or receipt, renews a token, resets
+retry budget, cancels or publishes a task. Consumers must use the original entry
+ID and treat missing observations as uncertainty; they must not infer a repair
+action from infrastructure failures. Cloud execution progress and delegated
+cancel/commit ordering remain separate protocol work. There is no new UI,
+schema migration, runtime capture/upload or production enablement in this slice.
+
+Before connecting consumers or enabling this flow, communicate the cancellation
+limit: an entry still in `waiting_runtime` with `acceptance_recorded` cannot be
+cancelled through the current local-only endpoint. It returns HTTP 409
+`publication.cancellation_conflict` until the distributed cancellation protocol
+is implemented. Do not advertise remote cancellation, endlessly retry that 409,
+delete retained evidence or create a replacement entry to bypass it. The
+`entryCancellationEnabled` capability reports route support, not cancellability
+of every entry. A `not_observed` read is not a cancellation preflight: the
+callback may arrive before POST, and even a successful local cancellation does
+not confirm that Cloud stopped. An already `cancelled` entry remains cancelled
+and its authorized cancellation replay remains idempotent after a late receipt.
+
+HTTP tests cover the exact projection, authentication, strict transport,
+default-off/unsupported cases, shared polling, deadlines, concurrent reads and
+safe failures. Real PostgreSQL tests cover absent/present receipts, token
+renewal/expiry, reopened adapters, unchanged ledger snapshots, transfer and
+disabled-account privacy, concurrent callback reads and late receipts after
+cancellation. Existing two-node recovery tests also read through the actual
+human HTTP handler before/after actual HTTPS receipt ingestion into PostgreSQL.
+The runtime and Cloud sender in those tests remain synthetic; this is not a
+deployed three-component publication test.
 
 ## Workspace source verification and entry admission
 
@@ -455,9 +513,15 @@ exist, do not roll back to those workers; stop admission/delivery and retain a
 cancellation-aware binary. Turning the cancellation flag off does not revive
 work. The down migration refuses to erase retained cancellations.
 
-There is no linked Cloud task, reachable upload-grant issuer or capture dispatcher yet. Future
-capture/Cloud stages need their own pending/too-late/commit-permit protocol;
-this endpoint must not mark an accepted Cloud publication cancelled. This PR
+Retained Cloud receipt associations now exist, but there is no reachable
+upload-grant issuer or capture dispatcher yet. For a `waiting_runtime` entry,
+the transaction rejects cancellation with 409 `publication.cancellation_conflict`
+if a Cloud receipt is already recorded; no local state changes in that case.
+Already-cancelled entries retain idempotent cancellation even after a late
+receipt, subject to the same actor/current-Owner checks. Future capture/Cloud
+stages need their own pending/too-late/commit-permit protocol; this endpoint
+must not claim remote cancellation. See the consumer limits in
+[Cloud acceptance observation](#cloud-acceptance-observation). This PR
 does not wire a UI button, enable production switches, uninstall Skills, revoke
 installed versions, or change model switching.
 

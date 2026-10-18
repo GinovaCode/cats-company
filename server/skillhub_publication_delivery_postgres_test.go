@@ -304,6 +304,30 @@ func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 		SourceSnapshotHash: upload.SourceSnapshotHash, RequestBytes: upload.RequestBytes,
 		DelegationID: grant.ID, IdempotencyKey: grant.IdempotencyKey,
 		TaskID: "pubtask_11111111-1111-4111-8111-111111111111", EventID: "pubevent_22222222-2222-4222-8222-222222222222"}
+	cloudPath := skillHubPublicationPrefix + "/entries/" + entry.ID + "/cloud-status"
+	readCloud := func(db *postgres.Adapter, stage string) *time.Time {
+		t.Helper()
+		response := runPublicationRead(t, NewSkillHubPublicationReadHandler(db, true), publicationReadRequest(t, "GET", cloudPath, actor), 200)
+		var view struct {
+			Cloud publicationCloudStatusView `json:"cloudStatus"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		if view.Cloud.Stage != stage || view.Cloud.LocalIntentState != "cancelled" || view.Cloud.ExecutionState != "unknown" {
+			t.Fatalf("private Cloud observation: %s", response.Body.String())
+		}
+		for _, hidden := range []string{callback.TaskID, callback.EventID, callback.DelegationID, callback.IdempotencyKey, callback.RequestHash, token.Reveal()} {
+			if strings.Contains(response.Body.String(), hidden) {
+				t.Fatal("private read leaked internal evidence")
+			}
+		}
+		return view.Cloud.RecordedAt
+	}
+	if readCloud(a2, "not_observed") != nil {
+		t.Fatal("fabricated receipt before callback")
+	}
+	var recordedAt *time.Time
 	for i := 0; i < 2; i++ {
 		func() {
 			db := open()
@@ -328,6 +352,11 @@ func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 			if resp.StatusCode != 200 || len(ack) != 7 || ack["recorded"] != true || ack["localIntentCancelled"] != true || ack["commitAllowed"] != false || ack["taskId"] != callback.TaskID || ack["eventId"] != callback.EventID {
 				t.Fatalf("late receipt: %+v", ack)
 			}
+			at := readCloud(db, "acceptance_recorded")
+			if at == nil || (recordedAt != nil && !at.Equal(*recordedAt)) {
+				t.Fatal("receipt read lost stable timestamp")
+			}
+			recordedAt = at
 		}()
 	}
 	if err := scoped.QueryRow(`SELECT count(*) FROM skillhub_publication_cloud_receipts WHERE entry_id=$1`, entry.ID).Scan(&count); err != nil || count != 1 {
