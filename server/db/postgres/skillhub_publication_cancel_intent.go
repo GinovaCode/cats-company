@@ -60,13 +60,20 @@ func (a *Adapter) RequestSkillHubPublicationCancellation(ctx context.Context, ac
 		return nil, err
 	}
 	if !exists {
+		// Resolve evidence while holding the entry lock, before INSERT. Reusing
+		// one parameter as both a VARCHAR assignment and a TEXT comparison in
+		// the INSERT subqueries produces PostgreSQL 42P08 type inference errors.
+		var requiresCloud bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM skillhub_publication_upload_grants WHERE entry_id=$1)
+			OR EXISTS(SELECT 1 FROM skillhub_publication_cloud_receipts WHERE entry_id=$1)`, id).Scan(&requiresCloud); err != nil {
+			return nil, err
+		}
 		suffix, err := uploadRandomHex(16)
 		if err != nil {
 			return nil, err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO skillhub_publication_cancel_intents(entry_id,cancel_id,requires_cloud)
-			VALUES($1,$2,EXISTS(SELECT 1 FROM skillhub_publication_upload_grants WHERE entry_id=$1)
-				OR EXISTS(SELECT 1 FROM skillhub_publication_cloud_receipts WHERE entry_id=$1))`, id, "pubcancel_"+suffix)
+			VALUES($1,$2,$3)`, id, "pubcancel_"+suffix, requiresCloud)
 		if err != nil {
 			return nil, err
 		}
