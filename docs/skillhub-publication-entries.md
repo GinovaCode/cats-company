@@ -193,6 +193,18 @@ action from infrastructure failures. Cloud execution progress and delegated
 cancel/commit ordering remain separate protocol work. There is no new UI,
 schema migration, runtime capture/upload or production enablement in this slice.
 
+Before connecting consumers or enabling this flow, communicate the cancellation
+limit: an entry still in `waiting_runtime` with `acceptance_recorded` cannot be
+cancelled through the current local-only endpoint. It returns HTTP 409
+`publication.cancellation_conflict` until the distributed cancellation protocol
+is implemented. Do not advertise remote cancellation, endlessly retry that 409,
+delete retained evidence or create a replacement entry to bypass it. The
+`entryCancellationEnabled` capability reports route support, not cancellability
+of every entry. A `not_observed` read is not a cancellation preflight: the
+callback may arrive before POST, and even a successful local cancellation does
+not confirm that Cloud stopped. An already `cancelled` entry remains cancelled
+and its authorized cancellation replay remains idempotent after a late receipt.
+
 HTTP tests cover the exact projection, authentication, strict transport,
 default-off/unsupported cases, shared polling, deadlines, concurrent reads and
 safe failures. Real PostgreSQL tests cover absent/present receipts, token
@@ -501,9 +513,15 @@ exist, do not roll back to those workers; stop admission/delivery and retain a
 cancellation-aware binary. Turning the cancellation flag off does not revive
 work. The down migration refuses to erase retained cancellations.
 
-There is no linked Cloud task, reachable upload-grant issuer or capture dispatcher yet. Future
-capture/Cloud stages need their own pending/too-late/commit-permit protocol;
-this endpoint must not mark an accepted Cloud publication cancelled. This PR
+Retained Cloud receipt associations now exist, but there is no reachable
+upload-grant issuer or capture dispatcher yet. For a `waiting_runtime` entry,
+the transaction rejects cancellation with 409 `publication.cancellation_conflict`
+if a Cloud receipt is already recorded; no local state changes in that case.
+Already-cancelled entries retain idempotent cancellation even after a late
+receipt, subject to the same actor/current-Owner checks. Future capture/Cloud
+stages need their own pending/too-late/commit-permit protocol; this endpoint
+must not claim remote cancellation. See the consumer limits in
+[Cloud acceptance observation](#cloud-acceptance-observation). This PR
 does not wire a UI button, enable production switches, uninstall Skills, revoke
 installed versions, or change model switching.
 
