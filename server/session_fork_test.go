@@ -54,6 +54,98 @@ func (s *forkTestStore) CompleteSessionFork(_ context.Context, uid int64, req ty
 }
 func (s *forkTestStore) SessionForkWritable(context.Context, string) (bool, error) { return false, nil }
 
+type forkCreationTestStore struct {
+	*forkTestStore
+	store.ConversationTaskStatusStore
+	status  string
+	owner   int64
+	created []types.SessionForkRequest
+}
+
+func (s *forkCreationTestStore) GetBotOwner(int64) (int64, error) {
+	return s.owner, nil
+}
+
+func (s *forkCreationTestStore) GetConversationTaskStatuses([]string) (map[string]*types.ConversationTaskStatus, error) {
+	return map[string]*types.ConversationTaskStatus{
+		"p2p_7_9": {TopicID: "p2p_7_9", SourceUID: 9, State: s.status},
+	}, nil
+}
+
+func (s *forkCreationTestStore) CreateSessionFork(_ context.Context, req types.SessionForkRequest) (*types.SessionFork, error) {
+	s.created = append(s.created, req)
+	return &types.SessionFork{
+		ActorUserID: req.ActorUserID, AgentUID: req.AgentUID, BodyID: req.BodyID,
+		RequestID: req.RequestID, SourceTopicID: req.SourceTopicID,
+		TargetTopicID: "grp_20", State: "pending",
+	}, nil
+}
+
+func TestSessionForkCloudStatusGate(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, wantError string
+		actor, owner            int64
+		offline                 bool
+		wantCode                int
+	}{
+		{"stale reaches runtime", "stale", "", 7, 7, false, 200},
+		{"completed reaches runtime", "completed", "", 7, 7, false, 200},
+		{"running stays busy", "running", "session_fork_source_busy", 7, 7, false, 409},
+		{"waiting stays busy", "waiting", "session_fork_source_busy", 7, 7, false, 409},
+		{"stale requires online body", "stale", "session_fork_agent_offline", 7, 7, true, 409},
+		{"stale requires ownership", "stale", "session_fork_forbidden", 7, 8, false, 403},
+		{"stale requires human", "stale", "session_fork_requires_human", 9, 7, false, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &forkCreationTestStore{forkTestStore: &forkTestStore{}, status: tc.status, owner: tc.owner}
+			hub := NewHub(db, nil)
+			client := &Client{uid: 9, accountType: types.AccountBot, bodyID: "body-test", connectionID: "connection-test", send: make(chan []byte, 4)}
+			if !tc.offline {
+				if _, err := hub.bodyLeases.acquire(9, client.bodyID, client.connectionID); err != nil {
+					t.Fatal(err)
+				}
+				hub.addRegisteredClient(client)
+			}
+			r := httptest.NewRequest(http.MethodPost, "/api/conversations/fork", strings.NewReader(`{"request_id":"one","source_topic_id":"p2p_7_9"}`))
+			r = r.WithContext(context.WithValue(r.Context(), uidKey, tc.actor))
+			w := httptest.NewRecorder()
+			NewConversationHandler(db, hub).HandleFork(w, r)
+			if w.Code != tc.wantCode {
+				t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+			}
+			if tc.wantError != "" {
+				if len(db.created) != 0 || !strings.Contains(w.Body.String(), `"error":"`+tc.wantError+`"`) {
+					t.Fatalf("rejected request created a fork or returned wrong error: %s", w.Body.String())
+				}
+				select {
+				case raw := <-client.send:
+					t.Fatalf("rejected request dispatched: %s", raw)
+				default:
+				}
+				return
+			}
+			if len(db.created) != 1 || db.created[0].ActorUserID != 7 || db.created[0].AgentUID != 9 || db.created[0].BodyID != client.bodyID {
+				t.Fatalf("creation lost actor/agent/current body: %+v", db.created)
+			}
+			if !strings.Contains(w.Body.String(), `"state":"pending"`) {
+				t.Fatalf("fork must await runtime validation: %s", w.Body.String())
+			}
+			select {
+			case raw := <-client.send:
+				var envelope ServerMessage
+				if err := json.Unmarshal(raw, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				if envelope.SessionFork == nil || envelope.SessionFork.SourceTopicID != "p2p_7_9" || envelope.SessionFork.TargetTopicID != "grp_20" || envelope.SessionFork.RequestID != "one" {
+					t.Fatalf("missing runtime fork control: %s", raw)
+				}
+			default:
+				t.Fatal("missing runtime dispatch for local idle/interruption checks")
+			}
+		})
+	}
+}
+
 func TestSessionForkGetIsUserScoped(t *testing.T) {
 	db := &forkTestStore{record: &types.SessionFork{ActorUserID: 7, RequestID: "one", TargetTopicID: "grp_20", State: "pending"}}
 	h := NewConversationHandler(db, nil)

@@ -1,5 +1,8 @@
 # Server Session Fork Candidate
 
+Historical audit manifest for the original reviewed candidate, before PR #671
+follow-up fixes. Paths and hashes below are historical, not the current tree.
+
 Baseline HEAD: d660ab03163ab417e96e998d42d6a9eb23eb5569
 Spec: session-fork-task/spec.md r3. Reviewed candidate prepared for PR on 2026-10-19.
 Only four SQL migration trailing blank lines were removed after review; their hashes below reflect that whitespace-only cleanup.

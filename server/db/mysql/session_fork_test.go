@@ -123,6 +123,9 @@ func TestSessionForkMySQLSchemaPermissionFailureIsActionableAndClosed(t *testing
 				}
 			}
 			err = (&Adapter{db: db}).ensureSessionForkSchema()
+			if !errors.Is(err, ErrSessionForkSchema) {
+				t.Fatalf("required schema failure must stop startup in every environment: %v", err)
+			}
 			var got *driver.MySQLError
 			if !errors.As(err, &got) || got != cause {
 				t.Fatalf("permission error must remain fatal and unwrap to original cause: %v", err)
@@ -211,8 +214,38 @@ func TestSessionForkMySQLSchemaOtherErrorsAndReinstall(t *testing.T) {
 			err = (&Adapter{db: db}).ensureSessionForkSchema()
 			if code == 0 && err != nil {
 				t.Fatalf("existing schema must reinstall: %v", err)
-			} else if code != 0 && (!errors.Is(err, cause) || strings.Contains(err.Error(), "administrator")) {
+			} else if code != 0 && (!errors.Is(err, ErrSessionForkSchema) || !errors.Is(err, cause) || strings.Contains(err.Error(), "administrator")) {
 				t.Fatalf("non-permission error misclassified: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSessionForkMySQLSchemaNonDriverFailure(t *testing.T) {
+	// Any incomplete fork initialization must stop startup, including failures
+	// after earlier DDL has committed. Preserve non-driver causes too.
+	for failedStatement := range sessionForkSchema {
+		t.Run(fmt.Sprint(failedStatement), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			cause := errors.New("connection lost")
+			for i, statement := range sessionForkSchema[:failedStatement+1] {
+				expect := mock.ExpectExec(regexp.QuoteMeta(statement))
+				if i == failedStatement {
+					expect.WillReturnError(cause)
+				} else {
+					expect.WillReturnResult(sqlmock.NewResult(0, 0))
+				}
+			}
+			err = (&Adapter{db: db}).ensureSessionForkSchema()
+			if !errors.Is(err, ErrSessionForkSchema) || !errors.Is(err, cause) {
+				t.Fatalf("required schema failure must preserve its cause: %v", err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

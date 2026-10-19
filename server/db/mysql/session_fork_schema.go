@@ -3,8 +3,13 @@ package mysql
 import (
 	"errors"
 	"fmt"
+
 	driver "github.com/go-sql-driver/mysql"
 )
+
+// ErrSessionForkSchema marks necessary fork initialization failures. MySQL DDL
+// may already have committed, so startup must stop even outside production.
+var ErrSessionForkSchema = errors.New("session fork schema")
 
 var sessionForkSchema = []string{
 	`ALTER TABLE topics ADD COLUMN history_revision BIGINT NOT NULL DEFAULT 0;`,
@@ -63,10 +68,10 @@ func (a *Adapter) ensureSessionForkSchema() error {
 				case 1060, 1359:
 					continue
 				case 1419, 1142, 1143, 1227:
-					return fmt.Errorf("session fork schema: database administrator action required: verify database-scoped schema privileges including CREATE, ALTER and TRIGGER; with binary logging enabled, configure log_bin_trust_function_creators=1 before startup; do not grant SUPER or global administrative privileges to the application account; the server will not change global settings or skip required triggers: %w", err)
+					return fmt.Errorf("%w: database administrator action required: verify database-scoped schema privileges including CREATE, ALTER and TRIGGER; with binary logging enabled, configure log_bin_trust_function_creators=1 before startup; do not grant SUPER or global administrative privileges to the application account; the server will not change global settings or skip required triggers: %w", ErrSessionForkSchema, err)
 				}
 			}
-			return fmt.Errorf("session fork schema: %w", err)
+			return fmt.Errorf("%w: %w", ErrSessionForkSchema, err)
 		}
 	}
 	return nil

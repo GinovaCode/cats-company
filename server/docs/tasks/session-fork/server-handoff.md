@@ -5,7 +5,8 @@ applicable builder-check.md refinements and parent review clarification to avoid
 Repository: D:/codex_workspace/cats-company-session-fork.
 Baseline HEAD: d660ab03163ab417e96e998d42d6a9eb23eb5569.
 Uncommitted server candidate is frozen and independently reviewed by Bohr.
-Exact changed/new product, migration and test contents: [candidate.sha256](candidate.sha256).
+Historical candidate contents: [candidate.sha256](candidate.sha256); these hashes
+predate the PR #671 follow-up fixes below.
 No webapp/XiaoBa edits, commits, pushes, deployment or existing-data reset.
 
 The user-confirmed r3 scope copies the source's existing cloud history and actual
@@ -18,6 +19,21 @@ closed, without substituting cloud text. This r3 update changes documentation
 only: Go/SQL and the frozen candidate hashes are unchanged. No new database test
 run was performed; the verification and review results below are retained evidence
 from the previously tested server candidate, not a new r3 runtime acceptance run.
+
+## PR #671 follow-up fixes
+
+- PostgreSQL uses `000042_session_forks` (up/down); latest main at `b987e59a`
+  owns `000041_skillhub_publication_commit_deliveries`. MySQL filenames retain
+  `000041_session_forks`. The PostgreSQL DDL itself is unchanged.
+- Stale cloud task status permits dispatch to the current local runtime for its
+  locked idle/interruption checks. Running/waiting status still rejects creation.
+- Necessary MySQL fork schema initialization errors stop startup in every
+  environment, preserving the original error and administrator guidance.
+  Unrelated non-production schema errors retain the existing logging behavior.
+
+The verification results below describe the historical candidate, not these
+follow-up fixes. No concurrent writers during PostgreSQL initialization and a
+single-node fork rollout remain deployment requirements.
 
 ## Implemented
 

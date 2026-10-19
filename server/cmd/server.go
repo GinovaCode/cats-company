@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -69,6 +70,10 @@ func isProductionEnv() bool {
 		}
 	}
 	return false
+}
+
+func schemaInitializationFatal(err error) bool {
+	return err != nil && (isProductionEnv() || errors.Is(err, mysql.ErrSessionForkSchema))
 }
 
 func configureJWTSecret() error {
@@ -278,7 +283,7 @@ func main() {
 	defer db.Close()
 
 	if err := db.CreateSchema(); err != nil {
-		if isProductionEnv() {
+		if schemaInitializationFatal(err) {
 			log.Fatalf("schema initialization failed: %v", err)
 		}
 		log.Printf("schema creation (may already exist): %v", err)

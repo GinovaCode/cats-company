@@ -82,7 +82,9 @@ func (h *ConversationHandler) HandleFork(w http.ResponseWriter, r *http.Request)
 			writeSessionFork(w, nil, err)
 			return
 		}
-		if s := values[req.SourceTopicID]; s != nil && (s.State == "running" || s.State == "waiting" || s.State == "stale") {
+		// A stale cloud status may outlive a completed local turn. Let the
+		// runtime's locked idle/interruption checks decide whether it can fork.
+		if s := values[req.SourceTopicID]; s != nil && (s.State == "running" || s.State == "waiting") {
 			writeJSON(w, 409, map[string]string{"error": "session_fork_source_busy"})
 			return
 		}

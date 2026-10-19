@@ -8,7 +8,7 @@ import (
 )
 
 func TestSessionForkPostgresMigrationMatchesStartup(t *testing.T) {
-	raw, err := os.ReadFile("../migrations/postgres/000041_session_forks.up.sql")
+	raw, err := os.ReadFile("../migrations/postgres/000042_session_forks.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
