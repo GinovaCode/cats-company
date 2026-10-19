@@ -309,11 +309,11 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 	if replay.Error != "" || replay.Permit["permitId"] != durable.ID || replay.Permit["authorizedAt"] != durable.AuthorizedAt.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("lost-response replay %+v", replay)
 	}
-	if _, err := reopened.CancelSkillHubPublicationEntry(ctx, actor, first.Receipt.EntryRequestID); err != nil {
-		t.Fatal(err)
+	if _, err := reopened.RequestSkillHubPublicationCancellation(ctx, actor, first.Receipt.EntryRequestID); err != nil {
+		t.Fatal("request Cloud-linked cancellation after permit", err)
 	}
-	if _, err := reopened.CancelSkillHubPublicationEntry(ctx, actor, stopped.Receipt.EntryRequestID); err != nil {
-		t.Fatal(err)
+	if _, err := reopened.RequestSkillHubPublicationCancellation(ctx, actor, stopped.Receipt.EntryRequestID); err != nil {
+		t.Fatal("request Cloud-linked cancellation before permit", err)
 	}
 	expectError(stopped, false, "cancelled")
 	if _, err := scoped.Exec("UPDATE bot_config SET enabled=false WHERE user_id=$1", bot); err != nil {
