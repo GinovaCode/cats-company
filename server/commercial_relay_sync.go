@@ -720,6 +720,65 @@ func commercialRelayBudgetsMatch(budgets, expected map[string]float64) bool {
 	return true
 }
 
+// commercialRelayTextSeedBudgets is the exact seed Relay applies to a
+// brand-new key: the catalog defaults of the single-model provider configs.
+// The image lane lists several models in one provider and therefore
+// contributes no default budget, which is why the seed is text-only.
+var commercialRelayTextSeedBudgets = map[string]float64{
+	"MiniMax-M2.7":   1000,
+	"MiniMax-M3":     500,
+	"deepseek-flash": 100,
+	"glm-5.3-flash":  100,
+}
+
+// commercialRelayBudgetsAreFreePoolSubset reports whether a Relay key reports
+// the text seed of a brand-new key at Free prices, optionally plus the rest of
+// the Free pool.
+//
+// Relay seeds a new key's per-model budgets from the catalog defaults, but only
+// for provider configs that list exactly one model. The image lane is a single
+// provider listing several models, so it contributes no default budget at all.
+// A freshly created key therefore legitimately reports only the text models
+// (MiniMax-M2.7/MiniMax-M3/deepseek-flash/glm-5.3-flash, ¥1700) instead of the
+// full nine-model Free pool. That combination matched no known Free generation
+// and fell through to the legacy branch, freezing every new signup into the
+// "internal retention" package.
+//
+// Both conditions matter:
+//
+//   - every reported model must be a Free model carrying exactly the Free
+//     amount, so an operator grant with a different amount, or a model that
+//     never belonged to Free, still resolves to legacy;
+//   - the complete text seed must be present, so an unrelated custom pool that
+//     happens to use Free prices — a single model, or the image lane alone — is
+//     not silently upgraded into the full Free package.
+func commercialRelayBudgetsAreFreePoolSubset(budgets map[string]float64) bool {
+	if len(budgets) == 0 {
+		return false
+	}
+	normalized := make(map[string]float64, len(budgets))
+	for model, amount := range budgets {
+		normalized[normalizeRelayModelName(model)] = amount
+	}
+	expected := make(map[string]float64, len(commercialRelayFreeBudgets))
+	for model, amount := range commercialRelayFreeBudgets {
+		expected[normalizeRelayModelName(model)] = amount
+	}
+	for model, amount := range normalized {
+		want, ok := expected[model]
+		if !ok || !nearlyEqual(amount, want) {
+			return false
+		}
+	}
+	for model, want := range commercialRelayTextSeedBudgets {
+		got, ok := normalized[normalizeRelayModelName(model)]
+		if !ok || !nearlyEqual(got, want) {
+			return false
+		}
+	}
+	return true
+}
+
 // commercialRelayKnownFreePoolModels is the union of every model that has
 // ever belonged to a Free pool generation. A shared-pool key is only upgraded
 // when all of its models fall inside this set, so a custom pool that happens
@@ -953,6 +1012,12 @@ func commercialRelayBaseline(relayUser *commercialRelayUsageUser) (string, map[s
 	if commercialRelayBudgetsMatch(budgets, commercialRelayV4EraFreeBudgets) ||
 		commercialRelayBudgetsMatch(budgets, commercialRelayLegacyFreeBudgets) ||
 		commercialRelayBudgetsMatch(budgets, commercialRelayGlmEraFreeBudgets) {
+		return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy()
+	}
+	// A key seeded only from the single-model catalog providers carries a
+	// subset of the Free pool at Free prices. Upgrade it to the full baseline
+	// instead of mistaking the partial default for a pre-migration pool.
+	if commercialRelayBudgetsAreFreePoolSubset(budgets) {
 		return commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy()
 	}
 	return commercialRelayBaselineProfileLegacy, budgets
