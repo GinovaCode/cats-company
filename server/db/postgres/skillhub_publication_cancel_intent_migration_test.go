@@ -27,6 +27,7 @@ func TestPostgresSkillHubPublicationCancellationIntentMigration(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			db, _, in, _ := uploadGrantFixture(t)
 			up, down := publicationCancelIntentMigration(t, "up"), publicationCancelIntentMigration(t, "down")
+			deliveryExec(t, db, publicationCancelDeliveryMigration(t, "down"))
 			deliveryExec(t, db, down)
 			deliveryExec(t, db, down)
 			ctx := context.Background()
@@ -81,6 +82,7 @@ func TestPostgresSkillHubPublicationCancellationIntentMigration(t *testing.T) {
 
 func TestPostgresSkillHubPublicationCancellationIntentMissingSchema(t *testing.T) {
 	db, _, in, _ := uploadGrantFixture(t)
+	deliveryExec(t, db, publicationCancelDeliveryMigration(t, "down"))
 	deliveryExec(t, db, publicationCancelIntentMigration(t, "down"))
 	ctx := context.Background()
 	if _, err := db.RequestSkillHubPublicationCancellation(ctx, in.Binding.ActorUID, in.EntryID); err == nil {

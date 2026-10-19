@@ -60,7 +60,7 @@ jobs:
         run: go test ./server/...
 
       - name: Test race-sensitive concurrency
-        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|Peer)' -count=1
+        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|Peer|CancellationTransport|CancellationDispatcher)' -count=1
 
       - name: Scan Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
@@ -96,6 +96,56 @@ jobs:
         env:
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: go test ./server/db/mysql -run '^TestMySQLService' -count=1 -v
+
+  publication_cancel_contract:
+    name: CatsCo and Cloud cancellation recovery contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: cancellation_contract
+          POSTGRES_USER: contract
+          POSTGRES_PASSWORD: contract_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U contract -d cancellation_contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CATS_PG_TEST_DSN: postgres://contract:contract_test@127.0.0.1:5432/cancellation_contract?sslmode=disable
+      SKILLHUB_DATABASE_URL: postgres://contract:contract_test@127.0.0.1:5432/cancellation_contract?sslmode=disable
+      CATSCO_REQUIRE_CANCELLATION_CONTRACT: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: buildsense-ai/catsco-skillhub-cloud
+          # PR37: actual authenticated control handler and terminal cancel store.
+          ref: 98ea7b8282df01710fd9462d7905fdf420933ab3
+          path: .contract-cloud
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: .contract-cloud/package-lock.json
+      - name: Prepare isolated Cloud database
+        working-directory: .contract-cloud
+        run: |
+          npm ci --ignore-scripts
+          npm run db:migrate
+      - name: Test real cancellation sender and peer recovery
+        env:
+          SKILLHUB_CONTROL_CONTRACT_ROOT: ${{ github.workspace }}/.contract-cloud
+          SKILLHUB_CONTROL_CONTRACT_REVISION: 98ea7b8282df01710fd9462d7905fdf420933ab3
+        run: go test -race ./server -run '^TestSkillHubPublicationCancellationCloudContract$' -count=1 -v -timeout 3m
 
   node_sdk:
     name: TypeScript SDK tests
@@ -371,6 +421,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - backend
+      - publication_cancel_contract
       - node_sdk
       - bot_example
       - shimo_worker
@@ -384,6 +435,7 @@ jobs:
       - name: Check parallel job results
         env:
           BACKEND: ${{ needs.backend.result }}
+          PUBLICATION_CANCEL_CONTRACT: ${{ needs.publication_cancel_contract.result }}
           NODE_SDK: ${{ needs.node_sdk.result }}
           BOT_EXAMPLE: ${{ needs.bot_example.result }}
           SHIMO_WORKER: ${{ needs.shimo_worker.result }}
@@ -394,7 +446,7 @@ jobs:
         run: |
           printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nshimo-worker=%s\nwebapp=%s\ndependency-review=%s\nvalidation=%s\ndocker-images=%s\n' \
             "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$SHIMO_WORKER" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
-          if [[ "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
+          if [[ "$PUBLICATION_CANCEL_CONTRACT" != success || "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
                 "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
                 ("$DEPENDENCY_REVIEW" != success && "$DEPENDENCY_REVIEW" != skipped) ]]; then
             echo 'One or more CI suites did not succeed.' >&2

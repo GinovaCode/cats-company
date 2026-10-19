@@ -858,6 +858,64 @@ still need to be connected and jointly tested.
 Repair conversations, automatic formatting repairs, approvals, model billing,
 Chinese guides and frontend redesign are not part of this change.
 
+## Durable cancellation delivery
+
+After PR661's immutable cancellation intent, `PublicationCancellationDispatcher`
+can deliver that exact intent to Cloud PR37's authenticated control endpoint.
+Construction is explicit and default off. There is no environment switch, Hub
+registration, user-route change, browser projection or production caller yet.
+
+Migration 000039 and startup DDL add a separate delivery ledger without modifying
+the immutable intent/receipt. Claim selects only retained cancelled intents with
+a matching historical receipt and configured issuer/audience. Missing receipts
+wait without spending attempts; receipt arrival makes them eligible. Local-only
+and legacy cancellations without the new intent are never auto-enrolled.
+
+Claims use the entry lock, a random lease token, 30-second expiry, SKIP LOCKED and
+eight persisted attempts. SQL never holds a lock across HTTPS. Finish matches the
+exact receipt, cancellation ID, attempt, lease token and expiry. A stale process
+cannot overwrite a newer result. Retries use persisted exponential backoff from
+five seconds to five minutes; crashes also consume attempts. Exhaustion is not
+cancellation success. The polling loop runs every five seconds, with at most four
+concurrent run-once calls per dispatcher.
+
+The HTTPS client uses a fixed configured audience, a dedicated service secret,
+normal certificate verification, no proxy environment, no redirects, six-second
+transport budget and 4 KiB response limit. It rejects malformed/duplicate/unknown
+fields, nulls, encodings and caching. Confirmation requires the exact task, entry,
+event and cancellation IDs, revision 1, `cancelled`, unavailable candidate bytes
+and valid cancellation/observation times. It does not infer success from local
+state, HTTP 202, an unknown reference, conflict, timeout or connection loss.
+
+| Result | Persisted delivery state |
+| --- | --- |
+| Exact Cloud cancellation acknowledgement | `confirmed`, immutable remote timestamps |
+| Lost reply, timeout, authentication/configuration/transport failure | `pending` with retry backoff, eventually `exhausted` |
+| Exact authenticated unknown-reference or execution-conflict reply | `needs_attention`, no success timestamp |
+
+Delivery completes an already authorized action and may finish after human
+disablement, Bot transfer or disconnect. It never creates a new cancellation.
+Historical result reads still require the original active human; the new Bot
+Owner and friends cannot inherit them. No raw secrets, source bytes or errors
+are stored in this ledger. Confirmed/blocked/exhausted evidence cannot be reset
+or deleted, and populated down migration refuses rollback. Recovery from a
+terminal failure needs a future explicit reconciliation procedure, not row deletion.
+
+CI includes the existing real-PG suite plus a required two-repository contract
+pinned to Cloud PR37. That contract uses both actual PostgreSQL stores, the real
+CatsCo sender and Cloud HTTPS handler: cancel before delayed receipt, committed
+Cloud cancellation with lost response, CatsCo retry state, reopened adapter and
+dispatcher, replay confirmation with the original timestamp, and no resending
+after confirmation. Intake authority in that fixture is injected from a real
+CatsCo grant; runtime capture and live upload introspection are not exercised by
+this contract and it is not full Bot publication acceptance.
+
+Next: exact commit intent/permit and cancel-versus-commit ordering, then runtime
+capture/upload, historical task state, retention and isolated user-flow wiring.
+Do not expose the new cancellation path or activate the dispatcher until those
+rollout prerequisites are satisfied. Existing HTTP cancellation semantics and
+Cloud-status responses remain unchanged.
+
 ## Verification
 
 Pure store tests cover bounded inputs, policies and immutable identity fields.
