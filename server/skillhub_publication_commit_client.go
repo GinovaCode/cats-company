@@ -23,6 +23,10 @@ const publicationCommitCloudPath = "/api/skills/publication-delegations/commit"
 
 var errPublicationCommitCloud = errors.New("publication Cloud commit unavailable")
 var errPublicationCommitCloudDisabled = errors.New("publication Cloud commit disabled")
+var errPublicationCommitConfirmationRequired = errors.New("publication version confirmation required")
+var errPublicationCommitRejected = errors.New("publication candidate rejected")
+var errPublicationCommitNotFound = errors.New("publication Cloud task not found")
+var errPublicationCommitStorageLimit = errors.New("publication Cloud storage limit reached")
 var publicationPackageID = regexp.MustCompile(`^pkg_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$`)
 
 type PublicationCommitCloudConfig struct {
@@ -146,9 +150,16 @@ func (c *PublicationCommitCloudClient) send(ctx context.Context, r store.SkillHu
 		return nil, store.ErrSkillHubPublicationSettled
 	case res.StatusCode == 409 && code == "skillhub.delegated_commit_conflict":
 		return nil, store.ErrSkillHubPublicationConflict
+	case res.StatusCode == 409 && code == "skillhub.delegated_commit_confirmation_required":
+		return nil, errPublicationCommitConfirmationRequired
+	case res.StatusCode == 422 && code == "skillhub.delegated_commit_rejected":
+		return nil, errPublicationCommitRejected
+	case res.StatusCode == 404 && code == "skillhub.delegated_commit_not_found":
+		return nil, errPublicationCommitNotFound
+	case res.StatusCode == 429 && code == "skillhub.delegated_commit_storage_limit":
+		return nil, errPublicationCommitStorageLimit
 	}
-	// Missing plans, rejection and confirmation-required are not success, approval
-	// or automatic format-repair instructions. Higher adapters handle them later.
+	// Unrecognized responses are never approval or automatic repair instructions.
 	return nil, errPublicationCommitCloud
 }
 

@@ -263,3 +263,33 @@ func TestSkillHubPublicationCommitClientBoundedConcurrencyAndContext(t *testing.
 		t.Fatal("slot leaked")
 	}
 }
+
+func TestSkillHubPublicationCommitClientErrorStatusPairs(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   string
+		want   error
+	}{
+		{403, "publisher_changed", store.ErrSkillHubPublicationDenied}, {409, "cancelled", store.ErrSkillHubPublicationSettled},
+		{409, "conflict", store.ErrSkillHubPublicationConflict}, {409, "confirmation_required", errPublicationCommitConfirmationRequired},
+		{422, "rejected", errPublicationCommitRejected}, {404, "not_found", errPublicationCommitNotFound},
+		{429, "storage_limit", errPublicationCommitStorageLimit}, {403, "conflict", errPublicationCommitCloud},
+		{200, "cancelled", errPublicationCommitCloud}, {503, "rejected", errPublicationCommitCloud},
+	} {
+		t.Run(tc.code+http.StatusText(tc.status), func(t *testing.T) {
+			peer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(tc.status)
+				json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "skillhub.delegated_commit_" + tc.code, "message": "private upstream detail"}})
+			}))
+			defer peer.Close()
+			r := cancellationTestLease(peer.URL).Receipt
+			c, _ := newPublicationCommitCloudClient(PublicationCommitCloudConfig{Enabled: true, Issuer: r.Query.Issuer, Audience: peer.URL, PeerSecret: strings.Repeat("a", 64)}, peer.Client().Transport)
+			err := callCommitClient(c, "plan", r)
+			if !errors.Is(err, tc.want) || strings.Contains(err.Error(), "private") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
