@@ -901,8 +901,10 @@ are stored in this ledger. Confirmed/blocked/exhausted evidence cannot be reset
 or deleted, and populated down migration refuses rollback. Recovery from a
 terminal failure needs a future explicit reconciliation procedure, not row deletion.
 
-CI includes the existing real-PG suite plus a required two-repository contract
-pinned to Cloud PR37. That contract uses both actual PostgreSQL stores, the real
+CatsCo CI includes the existing real-PG suite. The two-repository contract runs
+in the private Cloud repository (which can check out public CatsCo without
+sharing private-repository credentials), with a pinned CatsCo revision and the
+Cloud control implementation from PR37. That contract uses both actual PostgreSQL stores, the real
 CatsCo sender and Cloud HTTPS handler: cancel before delayed receipt, committed
 Cloud cancellation with lost response, CatsCo retry state, reopened adapter and
 dispatcher, replay confirmation with the original timestamp, and no resending
