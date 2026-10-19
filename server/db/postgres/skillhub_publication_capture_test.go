@@ -244,6 +244,78 @@ func TestPostgresSkillHubPublicationCaptureWriteFailure(t *testing.T) {
 	issueUpload(t, db, uploadForCapture(in))
 }
 
+func TestPostgresSkillHubPublicationCaptureRevokedReplay(t *testing.T) {
+	for _, mode := range []string{"cancel", "owner", "body", "disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			db, _, in, other := captureFixture(t)
+			ctx := context.Background()
+			first := recordCaptureForTest(t, db, in)
+			switch mode {
+			case "cancel":
+				if _, err := db.CancelSkillHubPublicationEntry(ctx, in.Binding.ActorUID, in.EntryID); err != nil {
+					t.Fatal(err)
+				}
+			case "owner":
+				deliveryExec(t, db, `UPDATE bot_config SET owner_id=$1 WHERE user_id=$2`, other, in.Binding.BotUID)
+			case "body":
+				deliveryExec(t, db, `UPDATE bot_config SET body_id='changed' WHERE user_id=$1`, in.Binding.BotUID)
+			case "disabled":
+				deliveryExec(t, db, `UPDATE users SET state=1 WHERE id=$1`, in.Binding.ActorUID)
+			}
+			if r, err := db.RecordSkillHubPublicationCapture(ctx, in); err == nil || r != nil {
+				t.Fatal("revoked replay returned evidence")
+			}
+			if _, _, err := db.IssueSkillHubPublicationUploadGrant(ctx, uploadForCapture(in)); err == nil {
+				t.Fatal("revoked receipt minted a grant")
+			}
+			tx, err := db.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			retained, err := readPublicationCapture(ctx, tx, in.EntryID)
+			if err != nil || retained == nil || *retained != *first {
+				t.Fatal("revocation deleted/changed evidence", err)
+			}
+		})
+	}
+}
+
+func TestPostgresSkillHubPublicationCaptureConflictingRace(t *testing.T) {
+	db, _, in, _ := captureFixture(t)
+	ctx := context.Background()
+	start := make(chan struct{})
+	type result struct {
+		record *store.SkillHubPublicationCaptureRecord
+		err    error
+	}
+	results := make(chan result, 2)
+	other := in
+	other.RequestHash = strings.Repeat("c", 64)
+	for _, candidate := range []store.SkillHubPublicationCaptureInput{in, other} {
+		go func(candidate store.SkillHubPublicationCaptureInput) {
+			<-start
+			r, err := db.RecordSkillHubPublicationCapture(ctx, candidate)
+			results <- result{r, err}
+		}(candidate)
+	}
+	close(start)
+	wins, conflicts := 0, 0
+	for n := 0; n < 2; n++ {
+		r := <-results
+		if r.err == nil && r.record != nil {
+			wins++
+		} else if errors.Is(r.err, store.ErrSkillHubPublicationConflict) {
+			conflicts++
+		} else {
+			t.Fatal("unexpected race result", r.err)
+		}
+	}
+	if wins != 1 || conflicts != 1 {
+		t.Fatal("conflicting candidates both accepted", wins, conflicts)
+	}
+}
+
 // Frozen pre-042 fixture. Do not use the current issuer to manufacture history
 // (it now correctly requires evidence). No capture is inferred from this row.
 func seedLegacyUploadGrant(t *testing.T, db *Adapter, in store.SkillHubPublicationUploadInput) (*store.SkillHubPublicationUploadGrant, store.SkillHubPublicationUploadToken) {
