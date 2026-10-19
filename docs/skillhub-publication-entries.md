@@ -912,11 +912,80 @@ after confirmation. Intake authority in that fixture is injected from a real
 CatsCo grant; runtime capture and live upload introspection are not exercised by
 this contract and it is not full Bot publication acceptance.
 
-Next: exact commit intent/permit and cancel-versus-commit ordering, then runtime
-capture/upload, historical task state, retention and isolated user-flow wiring.
+Next: authenticated commit coordination and Cloud-side commit/cancel ordering,
+then runtime capture/upload, historical task state, retention and isolated user-flow wiring.
 Do not expose the new cancellation path or activate the dispatcher until those
 rollout prerequisites are satisfied. Existing HTTP cancellation semantics and
 Cloud-status responses remain unchanged.
+
+## Frozen publication intent and CatsCo commit permits
+
+Migration 000040 and the matching startup DDL add two bounded, immutable records
+per entry: an exact publication intent and a one-task commit permit. They are
+internal storage methods, with no HTTP/RPC adapter, worker registration, feature
+enablement or change to existing browser status/cancellation responses.
+
+`RecordSkillHubPublicationCommitIntent` requires the original active human,
+current Bot ownership, active/enabled Bot and unchanged body, plus an exact
+already-recorded Cloud receipt. The future trusted admission adapter must derive
+the human from authenticated action context, verify Cloud publisher mapping and
+the frozen release/reservation, and satisfy any required human confirmations.
+Never decode a browser or model payload directly into this internal input; the
+store does not query Cloud or validate that its claimed publisher IDs exist.
+In particular, `confirmVersionPublish` is a recorded decision, not evidence that
+a human approved a newly generated description. Semantic repair approvals remain
+a separate rollout prerequisite; these methods do not authorize automatic repair.
+
+The intent freezes the receipt (entry/task/event, peer origins, first acceptance
+epoch, revision and source/request digests), Cloud candidate and manifest digests,
+Cloud publisher user/profile/namespace, Skill ID, reserved version/upload ID,
+release timestamp and version-confirmation choice. Changed retries conflict.
+The integrity hash is a CatsCo-local typed-JSON digest, not a cross-language JSON
+canonicalization contract. No candidate bytes or bearer token are saved here.
+
+`AuthorizeSkillHubPublicationCommit` must be called only by a future independently
+authenticated, fixed Cloud peer. It requires the exact stored receipt and intent,
+locks the entry before checking the current human/Bot authority, and writes one
+immutable permit ID and database timestamp. Current upload epoch is recorded
+separately from the receipt's first-acceptance epoch; it is not a global ownership
+epoch. The store rechecks live authority instead of treating a past grant as live.
+
+After upload, an expired upload token or ordinary transport disconnect/reconnect
+does not revoke the saved candidate. First permit issuance still fails on local
+cancellation, inactive human/Bot, Bot disablement, ownership or body change.
+There is no network or filesystem work under a database lock.
+
+| Order at the CatsCo entry lock | Result |
+| --- | --- |
+| Cancellation commits before first permit | No permit can be issued |
+| Permit commits before cancellation | Same permit remains recoverable; cancellation still needs Cloud confirmation |
+| Reply lost or process restarted | Exact replay returns the same permit and timestamp |
+| Different task, candidate, publisher, release or confirmation | Conflict, never a second authorization |
+
+Permit replay is recovery of an already-authorized action, so the exact service
+replay survives later local cancellation or authority loss. It is not permission
+to revive a Cloud-cancelled task. Cloud must atomically record the permit with its
+own commit transition, serialize that transition against cancellation, and keep
+its own publisher/package checks. **That Cloud integration is not in this slice.**
+Existing Cloud guards still reject delegated commits. Neither a permit nor local
+`cancelled` means published or remotely cancelled. `ready` in the internal cancel
+intent means only that a receipt is available to send; it does not promise that
+Cloud will accept cancellation after commit starts.
+
+Private historical reads require the original active human; transfer does not
+give a new Owner, a friend or the Bot access. SQL triggers reject updates/deletes
+and verify first-insert authority and epoch. Populated rollback fails closed;
+empty rollback must run before migration 000037/000028 rollback. Startup never
+creates intents or permits from old receipts. All new methods remain unused
+outside tests until admission authentication/approval, Cloud commit recovery and
+the cross-repository cancellation race contract are complete.
+
+Seven real PostgreSQL groups cover exact scope, concurrent replay and both cancel
+orders, restart/lost-reply recovery, authority loss before/after permit, offline
+completion, history privacy, repeated migrations/immutable guards and failed-write
+rollback. Unit tests cover bounded target validation and identity hashing. CI's
+existing publication PostgreSQL group runs them with the race detector; local
+skips without a DSN do not count as database verification.
 
 ## Verification
 
