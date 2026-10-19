@@ -58,8 +58,13 @@ func (a *Adapter) ensureSessionForkSchema() error {
 	for _, q := range sessionForkSchema {
 		if _, err := a.db.Exec(q); err != nil {
 			var dbErr *driver.MySQLError
-			if errors.As(err, &dbErr) && (dbErr.Number == 1060 || dbErr.Number == 1359) {
-				continue
+			if errors.As(err, &dbErr) {
+				switch dbErr.Number {
+				case 1060, 1359:
+					continue
+				case 1419, 1142, 1143, 1227:
+					return fmt.Errorf("session fork schema: database administrator action required: verify database-scoped schema privileges including CREATE, ALTER and TRIGGER; with binary logging enabled, configure log_bin_trust_function_creators=1 before startup; do not grant SUPER or global administrative privileges to the application account; the server will not change global settings or skip required triggers: %w", err)
+				}
 			}
 			return fmt.Errorf("session fork schema: %w", err)
 		}

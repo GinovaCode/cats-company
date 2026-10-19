@@ -59,6 +59,38 @@ jobs:
       - name: Test backend
         run: go test ./server/...
 
+      - name: Verify restricted MySQL schema failure
+        env:
+          MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
+          CATS_SESSION_FORK_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
+          CATS_SESSION_FORK_MYSQL_EXPECT_PERMISSION_DENIED: "1"
+        run: |
+          test "$(docker exec -e MYSQL_PWD=catsco_root_test "$MYSQL_CONTAINER_ID" mysql -uroot -Nse 'SELECT @@GLOBAL.log_bin, @@GLOBAL.log_bin_trust_function_creators')" = $'1\t0'
+          go test ./server/db/mysql -run '^TestSessionForkMySQLRestrictedSchema$' -count=1 -v
+
+      - name: Configure dedicated CI MySQL trigger prerequisite
+        env:
+          MYSQL_CONTAINER_ID: ${{ job.services.mysql.id }}
+        run: |
+          # Only this disposable service is configured as administrator. All Go
+          # integration tests still connect as the database-scoped catsco user.
+          docker exec -e MYSQL_PWD=catsco_root_test "$MYSQL_CONTAINER_ID" mysql -uroot -e 'SET GLOBAL log_bin_trust_function_creators = 1'
+          test "$(docker exec -e MYSQL_PWD=catsco_root_test "$MYSQL_CONTAINER_ID" mysql -uroot -Nse 'SELECT @@GLOBAL.log_bin, @@GLOBAL.log_bin_trust_function_creators')" = $'1\t1'
+
+      - name: Test MySQL session fork contract
+        env:
+          CATS_SESSION_FORK_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
+        run: |
+          test -n "$CATS_SESSION_FORK_MYSQL_TEST_DSN"
+          go test ./server/db/mysql -run '^TestSessionForkMySQL' -count=1 -v
+
+      - name: Test PostgreSQL session fork contract
+        env:
+          CATS_SESSION_FORK_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_SESSION_FORK_PG_TEST_DSN"
+          go test ./server/db/postgres -run '^TestSessionForkPostgres' -count=1 -v
+
       - name: Test race-sensitive concurrency
         run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|Peer|CancellationTransport|CancellationDispatcher)' -count=1
 
@@ -331,6 +363,7 @@ jobs:
           python3 deploy/website-nginx-config_test.py
           python3 deploy/nginx-config_test.py
           python3 deploy/compose-rollout_test.py
+          python3 deploy/session-fork-config_test.py
 
   docker_images:
     name: Docker image (${{ matrix.name }})

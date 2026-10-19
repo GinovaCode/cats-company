@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -11,7 +12,12 @@ func TestSessionForkPostgresMigrationMatchesStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(raw)) != strings.TrimSpace(migrateSessionForks) {
-		t.Fatal("session fork startup migration differs from numbered migration")
+	for _, eol := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("EOL=%q", eol), func(t *testing.T) {
+			migration := strings.ReplaceAll(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n", eol)
+			if strings.TrimSpace(strings.ReplaceAll(migration, "\r\n", "\n")) != strings.TrimSpace(strings.ReplaceAll(migrateSessionForks, "\r\n", "\n")) {
+				t.Fatal("session fork startup migration differs from numbered migration")
+			}
+		})
 	}
 }

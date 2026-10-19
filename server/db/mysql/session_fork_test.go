@@ -3,12 +3,15 @@ package mysql
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	driver "github.com/go-sql-driver/mysql"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -90,9 +93,130 @@ func TestSessionForkMySQLMigrationMatchesStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range sessionForkSchema {
-		if !strings.Contains(string(raw), statement) {
-			t.Fatalf("startup statement absent from migration: %s", statement)
-		}
+	for _, eol := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("EOL=%q", eol), func(t *testing.T) {
+			migration := strings.ReplaceAll(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n", eol)
+			for _, statement := range sessionForkSchema {
+				if !strings.Contains(strings.ReplaceAll(migration, "\r\n", "\n"), strings.ReplaceAll(statement, "\r\n", "\n")) {
+					t.Fatalf("startup statement absent from migration: %s", statement)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionForkMySQLSchemaPermissionFailureIsActionableAndClosed(t *testing.T) {
+	for _, code := range []uint16{1419, 1142, 1143, 1227} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			cause := &driver.MySQLError{Number: code, Message: "permission denied"}
+			for i, statement := range sessionForkSchema[:4] {
+				expect := mock.ExpectExec(regexp.QuoteMeta(statement))
+				if i == 3 {
+					expect.WillReturnError(cause)
+				} else {
+					expect.WillReturnResult(sqlmock.NewResult(0, 0))
+				}
+			}
+			err = (&Adapter{db: db}).ensureSessionForkSchema()
+			var got *driver.MySQLError
+			if !errors.As(err, &got) || got != cause {
+				t.Fatalf("permission error must remain fatal and unwrap to original cause: %v", err)
+			}
+			for _, want := range []string{"administrator", "log_bin_trust_function_creators=1", "TRIGGER", "will not change global settings", "SUPER"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("missing %q in startup diagnostic: %v", want, err)
+				}
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSessionForkMySQLIntegrationGrantGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		grants []string
+		ok     bool
+	}{
+		{"ordinary", []string{"GRANT USAGE ON *.* TO `catsco`@`%`", "GRANT ALL PRIVILEGES ON `cats\\_test`.* TO `catsco`@`%`"}, true},
+		{"unescaped_wildcard", []string{"GRANT ALL PRIVILEGES ON `cats_test`.* TO `catsco`@`%`"}, false},
+		{"double_escape", []string{"GRANT ALL PRIVILEGES ON `cats\\\\_test`.* TO `catsco`@`%`"}, false},
+		{"super", []string{"GRANT SUPER ON *.* TO `catsco`@`%`"}, false},
+		{"global_create", []string{"GRANT CREATE ON *.* TO `catsco`@`%`"}, false},
+		{"global_all", []string{"GRANT ALL PRIVILEGES ON *.* TO `catsco`@`%`"}, false},
+		{"global_dynamic", []string{"GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO `catsco`@`%`"}, false},
+		{"definer_privilege", []string{"GRANT SET_USER_ID ON *.* TO `catsco`@`%`"}, false},
+		{"grant_option", []string{"GRANT ALL PRIVILEGES ON `cats_test`.* TO `catsco`@`%` WITH GRANT OPTION"}, false},
+		{"role", []string{"GRANT `admin`@`%` TO `catsco`@`%`"}, false},
+		{"proxy", []string{"GRANT PROXY ON 'root'@'localhost' TO 'catsco'@'%'"}, false},
+		{"other_database", []string{"GRANT SELECT ON `other_db`.* TO `catsco`@`%`"}, false},
+		{"system_database", []string{"GRANT SELECT ON `mysql`.* TO `catsco`@`%`"}, false},
+		{"extra_database", []string{"GRANT ALL PRIVILEGES ON `cats_test`.* TO `catsco`@`%`", "GRANT SELECT ON `other_db`.* TO `catsco`@`%`"}, false},
+		{"no_evidence", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sessionForkMySQLCheckGrants("cats_test", tc.grants); (err == nil) != tc.ok {
+				t.Fatalf("grant guard error=%v wantAllowed=%v", err, tc.ok)
+			}
+		})
+	}
+}
+
+func TestSessionForkMySQLEscapedDatabaseGrantGuard(t *testing.T) {
+	if err := sessionForkMySQLCheckGrants("cats`test", []string{"GRANT ALL PRIVILEGES ON `cats``test`.* TO `catsco`@`%`"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionForkMySQLCheckGrants("cats`test", []string{"GRANT SELECT ON `cats_test`.* TO `catsco`@`%`"}); err == nil {
+		t.Fatal("escaped database name accepted a different scope")
+	}
+	if err := sessionForkMySQLCheckGrants("cats%test", []string{"GRANT SELECT ON `cats\\%test`.* TO `catsco`@`%`"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionForkMySQLCheckGrants("cats%test", []string{"GRANT SELECT ON `cats%test`.* TO `catsco`@`%`"}); err == nil {
+		t.Fatal("unescaped percent wildcard accepted as a literal database")
+	}
+}
+
+func TestSessionForkMySQLSchemaOtherErrorsAndReinstall(t *testing.T) {
+	for _, code := range []uint16{0, 1064} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			cause := &driver.MySQLError{Number: code, Message: "syntax error"}
+			if code != 0 {
+				mock.ExpectExec(regexp.QuoteMeta(sessionForkSchema[0])).WillReturnError(cause)
+			} else {
+				for i, statement := range sessionForkSchema {
+					expect := mock.ExpectExec(regexp.QuoteMeta(statement))
+					switch {
+					case i < 2:
+						expect.WillReturnError(&driver.MySQLError{Number: 1060})
+					case i >= 3:
+						expect.WillReturnError(&driver.MySQLError{Number: 1359})
+					default:
+						expect.WillReturnResult(sqlmock.NewResult(0, 0))
+					}
+				}
+			}
+			err = (&Adapter{db: db}).ensureSessionForkSchema()
+			if code == 0 && err != nil {
+				t.Fatalf("existing schema must reinstall: %v", err)
+			} else if code != 0 && (!errors.Is(err, cause) || strings.Contains(err.Error(), "administrator")) {
+				t.Fatalf("non-permission error misclassified: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

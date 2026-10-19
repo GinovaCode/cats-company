@@ -54,6 +54,11 @@ OC_DB_DSN=postgres://catsco:***@postgres.internal:5432/catsco?sslmode=prefer
 
 ## Required server files
 
+For a MySQL deployment, the DBA must first review and persist the
+[session-fork trigger prerequisite](../mysql-session-fork.md). This Compose/CD
+does not alter an external database's global settings or grant the application
+additional privileges. This MySQL setting does not apply to PostgreSQL.
+
 Before enabling automatic production deploys:
 
 1. Run `deploy/prod/bootstrap-server.sh` on the server, or let the workflow
