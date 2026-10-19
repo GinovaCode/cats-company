@@ -24,7 +24,7 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if h == nil || h.credits == nil {
+	if h == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker credit store unavailable"})
 		return
 	}
@@ -53,6 +53,28 @@ func (h *CloudWorkerHandler) HandleAdminProvision(w http.ResponseWriter, r *http
 	}
 	if input.UID <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "uid is required"})
+		return
+	}
+	// An account that already owns a worker must not get a second billable
+	// instance from this internal action. The console only offers "provision"
+	// when the account's worker count reads as zero, but a stale, failed or
+	// older-control-plane count must not be able to create a duplicate.
+	// Fail closed when the check itself fails: creating a paid instance is not
+	// recoverable by retrying.
+	existing, err := h.cloudWorkersOfOwner(input.UID)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "failed to check existing cloud workers"})
+		return
+	}
+	if len(existing) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error": "该账号已有云员工，不会重复创建；如确需追加实例，请先确认业务需求",
+			"code":  "cloud_worker_exists",
+		})
+		return
+	}
+	if h.credits == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker credit store unavailable"})
 		return
 	}
 	input.Username = strings.TrimSpace(input.Username)
