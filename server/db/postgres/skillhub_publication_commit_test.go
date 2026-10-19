@@ -284,6 +284,7 @@ func TestPostgresSkillHubPublicationCommitConcurrency(t *testing.T) {
 func TestPostgresSkillHubPublicationCommitMigrationAndGuards(t *testing.T) {
 	db, _, in, c, _ := commitFixture(t)
 	up, down := publicationCommitMigration(t, "up"), publicationCommitMigration(t, "down")
+	deliveryExec(t, db, commitDeliveryMigration(t, "down")) // reverse migration dependency order
 	for _, statement := range []string{down, down, up, up, down, up} {
 		deliveryExec(t, db, statement)
 	}
@@ -295,6 +296,7 @@ func TestPostgresSkillHubPublicationCommitMigrationAndGuards(t *testing.T) {
 		t.Fatal("history auto-authorized", err)
 	}
 	recordCommit(t, db, in.Binding.ActorUID, c)
+	deliveryExec(t, db, commitDeliveryMigration(t, "down")) // test 040 retention, not a dependent FK failure
 	if _, err := db.db.Exec(down); err == nil {
 		t.Fatal("removed retained intent")
 	}
@@ -325,6 +327,7 @@ func TestPostgresSkillHubPublicationCommitMigrationAndGuards(t *testing.T) {
 func TestPostgresSkillHubPublicationCommitFailureAtomicity(t *testing.T) {
 	db, _, in, c, _ := commitFixture(t)
 	ctx := context.Background()
+	deliveryExec(t, db, commitDeliveryMigration(t, "down"))
 	deliveryExec(t, db, publicationCommitMigration(t, "down"))
 	if _, err := db.RecordSkillHubPublicationCommitIntent(ctx, in.Binding.ActorUID, c); err == nil {
 		t.Fatal("missing schema succeeded")
