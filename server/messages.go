@@ -1399,20 +1399,10 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	durable := isDurableAgentContextMessage(message, displayType)
 	eligible := durable
 	reason := "participant_message"
-	// Whether this is a peer's runtime traffic with nothing worth reading.
-	//
-	// Note the predicate is wider than "internal blocks with no readable block":
-	// isInternalAgentWorkingMessage returns true immediately when the display
-	// type itself is a working kind (thinking, tool_use, tool_result, runtime
-	// plan, stream delta, task status), without inspecting the blocks. So a
-	// message whose type is a working kind is traffic even if it also carries
-	// readable text. Stored messages do not currently reach that branch —
-	// normalizeStoredMsgType stores those kinds as "text", and a production scan
-	// of group messages found no working-typed msg_type and no working-typed
-	// rich content — but a client that posts a rich object with a working `type`
-	// would be dropped on the peer side. Widening this to the narrower reading
-	// means changing the shared predicate, which six call sites depend on
-	// (including activation judging); that is a separate change.
+	// Whether this is a peer's runtime traffic with nothing worth reading. See
+	// isInternalAgentWorkingMessage for the predicate's full semantics — it is
+	// wider than "internal blocks with no readable block", because a working
+	// display type short-circuits the block scan.
 	//
 	// What this must NOT use is `durable`: it is false for any message that
 	// merely *contains* an internal block, so a peer's final answer wrapped as
