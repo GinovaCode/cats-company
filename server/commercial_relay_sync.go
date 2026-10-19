@@ -720,59 +720,36 @@ func commercialRelayBudgetsMatch(budgets, expected map[string]float64) bool {
 	return true
 }
 
-// commercialRelayTextSeedBudgets is the exact seed Relay applies to a
-// brand-new key: the catalog defaults of the single-model provider configs.
-// The image lane lists several models in one provider and therefore
-// contributes no default budget, which is why the seed is text-only.
-var commercialRelayTextSeedBudgets = map[string]float64{
-	"MiniMax-M2.7":   1000,
-	"MiniMax-M3":     500,
-	"deepseek-flash": 100,
-	"glm-5.3-flash":  100,
-}
-
 // commercialRelayBudgetsAreFreePoolSubset reports whether a Relay key reports
-// the text seed of a brand-new key at Free prices, optionally plus the rest of
-// the Free pool.
+// a subset of the Free pool at exactly Free prices.
 //
 // Relay seeds a new key's per-model budgets from the catalog defaults, but only
-// for provider configs that list exactly one model. The image lane is a single
-// provider listing several models, so it contributes no default budget at all.
-// A freshly created key therefore legitimately reports only the text models
-// (MiniMax-M2.7/MiniMax-M3/deepseek-flash/glm-5.3-flash, ¥1700) instead of the
-// full nine-model Free pool. That combination matched no known Free generation
-// and fell through to the legacy branch, freezing every new signup into the
-// "internal retention" package.
+// for provider configs that list exactly one model. What a brand-new key
+// reports is therefore whichever Free models happened to sit in a single-model
+// provider at that time — never the complete Free pool. Production has carried
+// several of these shapes: MiniMax only plus the five image models (¥2000), the
+// same set after glm-5.3-flash was added (¥2100), the four text models plus
+// gpt-image-2 (¥1800), and the text-only four-model seed (¥1700). None matched
+// a known Free generation, so every signup since the image providers were
+// merged into multi-model configs was frozen into the legacy "internal
+// retention" package.
 //
-// Both conditions matter:
-//
-//   - every reported model must be a Free model carrying exactly the Free
-//     amount, so an operator grant with a different amount, or a model that
-//     never belonged to Free, still resolves to legacy;
-//   - the complete text seed must be present, so an unrelated custom pool that
-//     happens to use Free prices — a single model, or the image lane alone — is
-//     not silently upgraded into the full Free package.
+// A pool qualifies when every reported model belongs to the Free pool and
+// carries exactly the Free amount. Anything else — a higher or discounted
+// amount, a model that never belonged to Free, an empty key — stays legacy.
+// This classifier only runs for accounts without any commercial entitlement or
+// grant, so an operator's custom pool is never re-classified by it.
 func commercialRelayBudgetsAreFreePoolSubset(budgets map[string]float64) bool {
 	if len(budgets) == 0 {
 		return false
-	}
-	normalized := make(map[string]float64, len(budgets))
-	for model, amount := range budgets {
-		normalized[normalizeRelayModelName(model)] = amount
 	}
 	expected := make(map[string]float64, len(commercialRelayFreeBudgets))
 	for model, amount := range commercialRelayFreeBudgets {
 		expected[normalizeRelayModelName(model)] = amount
 	}
-	for model, amount := range normalized {
-		want, ok := expected[model]
+	for model, amount := range budgets {
+		want, ok := expected[normalizeRelayModelName(model)]
 		if !ok || !nearlyEqual(amount, want) {
-			return false
-		}
-	}
-	for model, want := range commercialRelayTextSeedBudgets {
-		got, ok := normalized[normalizeRelayModelName(model)]
-		if !ok || !nearlyEqual(got, want) {
 			return false
 		}
 	}

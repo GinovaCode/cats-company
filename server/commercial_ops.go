@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -278,6 +279,12 @@ func (h *CommercialOpsHandler) HandleAdjustments(w http.ResponseWriter, r *http.
 	h.forward(w, r, "adjustments.apply", "user", h.admin.HandleCommercialAdjustment)
 }
 
+// HandleBaselineRepair repairs accounts frozen into the legacy baseline by the
+// Relay seed classifier. It writes only with apply=true.
+func (h *CommercialOpsHandler) HandleBaselineRepair(w http.ResponseWriter, r *http.Request) {
+	h.forward(w, r, "baseline.repair", "user", h.admin.HandleCommercialBaselineRepair)
+}
+
 func (h *CommercialOpsHandler) HandleAutoRenew(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "auto_renew.update", "user", h.admin.HandleCommercialAutoRenew)
 }
@@ -363,6 +370,19 @@ func commercialOpsTargetRef(r *http.Request) string {
 	for _, key := range []string{"order_no", "code", "slug", "uid"} {
 		if value, exists := body[key]; exists {
 			return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(toCommercialOpsString(value), "\""), "\""))
+		}
+	}
+	// Batch operations have no single target; record their shape so the audit
+	// trail still shows what the write covered.
+	if uids, exists := body["uids"]; exists {
+		if list, ok := uids.([]interface{}); ok {
+			return fmt.Sprintf("batch:%d", len(list))
+		}
+		return "batch"
+	}
+	if all, exists := body["all"]; exists {
+		if enabled, ok := all.(bool); ok && enabled {
+			return "all"
 		}
 	}
 	return ""

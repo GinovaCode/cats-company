@@ -528,6 +528,229 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"applied": true, "dry_run": updated})
 }
 
+// CommercialRelayBaselineRepairStore exposes the one-off repair for accounts
+// whose Free pool was written as a legacy baseline by the Relay seed
+// classifier. It is optional so lighter deployments keep compiling.
+type CommercialRelayBaselineRepairStore interface {
+	ListCommercialRelayLegacyBaselines() ([]*types.CommercialRelayBaselineCandidate, error)
+	RevokeCommercialRelayLegacyBaseline(uid int64, note string) (bool, error)
+}
+
+type commercialBaselineRepairEntry struct {
+	UID      int64   `json:"uid"`
+	Action   string  `json:"action"`
+	Reason   string  `json:"reason,omitempty"`
+	TotalCNY float64 `json:"total_cny"`
+}
+
+// commercialRelayBaselineSeedWindow bounds how far the baseline may be from
+// the account creation time. Relay writes the seed baseline during the first
+// sync, which production shows happening within minutes of signup; the
+// pre-commercial migration wrote its real legacy pools weeks to months later.
+// The window is what separates the two without hardcoding a date.
+const commercialRelayBaselineSeedWindow = time.Hour
+
+func commercialRelayBaselineLooksLikeSignupSeed(candidate *types.CommercialRelayBaselineCandidate) bool {
+	if candidate == nil || candidate.UserCreatedAt.IsZero() || candidate.StartsAt.IsZero() {
+		return false
+	}
+	gap := candidate.StartsAt.Sub(candidate.UserCreatedAt)
+	return gap >= -commercialRelayBaselineSeedWindow && gap <= commercialRelayBaselineSeedWindow
+}
+
+// commercialRelayBaselineRepairBlocker returns why a legacy baseline must be
+// kept, or an empty string when it is a misclassified Free pool.
+func commercialRelayBaselineRepairBlocker(candidate *types.CommercialRelayBaselineCandidate) string {
+	switch {
+	case candidate == nil:
+		return "baseline is missing"
+	case candidate.PaidActive > 0:
+		return "account holds a paid entitlement"
+	case candidate.ManualGrants > 0:
+		return "account holds a manual quota grant"
+	case len(candidate.Budgets) == 0:
+		return "baseline has no active grants"
+	case !commercialRelayBaselineLooksLikeSignupSeed(candidate):
+		return "baseline was not written at signup time"
+	case !commercialRelayBudgetsAreFreePoolSubset(candidate.Budgets):
+		return "baseline is not a subset of the Free pool"
+	}
+	return ""
+}
+
+func commercialRelayHasActiveFreeBaseline(summary *types.CommercialSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || !strings.EqualFold(strings.TrimSpace(entitlement.State), "active") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(entitlement.Source), commercialRelayBaselineProfileFree) ||
+			strings.EqualFold(strings.TrimSpace(entitlement.PlanSlug), "catsco-free") {
+			return true
+		}
+	}
+	return false
+}
+
+// HandleCommercialBaselineRepair repairs the accounts that were frozen into the
+// legacy baseline by the Relay seed classifier. It defaults to a dry run: the
+// caller must pass apply=true to revoke anything. Only baselines written by the
+// Relay migration reference within the signup window, priced exactly like the
+// Free pool, and free of any paid entitlement or manual grant are touched;
+// everything else is reported as skipped with a reason.
+//
+// A repair never relies on re-classifying the Relay snapshot: once an account
+// has been enforced, Relay reports the shared pool total on every model, which
+// no longer looks like a Free pool. The Free baseline is therefore rebuilt
+// deterministically, and the Relay sync only pushes it out.
+func (h *AccountAdminHandler) HandleCommercialBaselineRepair(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.requireCommercialStore(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		UIDs  []int64 `json:"uids"`
+		All   bool    `json:"all"`
+		Apply bool    `json:"apply"`
+		Limit int     `json:"limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid repair request"})
+		return
+	}
+	if !req.All && len(req.UIDs) == 0 {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "uids or all is required"})
+		return
+	}
+	repairStore, ok := store.(CommercialRelayBaselineRepairStore)
+	if !ok {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "baseline repair store unavailable"})
+		return
+	}
+	baselineStore, ok := store.(commercialRelayBaselineStore)
+	if !ok {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "baseline store unavailable"})
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	candidates, err := repairStore.ListCommercialRelayLegacyBaselines()
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	wanted := make(map[int64]bool, len(req.UIDs))
+	for _, uid := range req.UIDs {
+		if uid > 0 {
+			wanted[uid] = true
+		}
+	}
+	results := make([]commercialBaselineRepairEntry, 0, len(candidates))
+	pending := make([]*types.CommercialRelayBaselineCandidate, 0, len(candidates))
+	skipped := 0
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if !req.All && !wanted[candidate.UID] {
+			continue
+		}
+		if reason := commercialRelayBaselineRepairBlocker(candidate); reason != "" {
+			results = append(results, commercialBaselineRepairEntry{
+				UID: candidate.UID, Action: "skipped", Reason: reason,
+				TotalCNY: commercialRelayBudgetTotal(candidate.Budgets),
+			})
+			skipped++
+			continue
+		}
+		pending = append(pending, candidate)
+	}
+	remaining := 0
+	if req.Apply && len(pending) > limit {
+		remaining = len(pending) - limit
+		pending = pending[:limit]
+	}
+	repaired, failed := 0, 0
+	for index, candidate := range pending {
+		entry := commercialBaselineRepairEntry{
+			UID:      candidate.UID,
+			TotalCNY: commercialRelayBudgetTotal(candidate.Budgets),
+		}
+		if !req.Apply {
+			entry.Action = "would-repair"
+			results = append(results, entry)
+			continue
+		}
+		if err := r.Context().Err(); err != nil {
+			// The request is gone; stop before revoking anything else. The
+			// remaining accounts are reported so the caller can resume.
+			remaining += len(pending) - index
+			break
+		}
+		revoked, err := repairStore.RevokeCommercialRelayLegacyBaseline(candidate.UID, "撤销误判的内部保留套餐基线，重建免费版")
+		if err != nil {
+			entry.Action = "failed"
+			entry.Reason = err.Error()
+			failed++
+			results = append(results, entry)
+			continue
+		}
+		if !revoked {
+			entry.Action = "skipped"
+			entry.Reason = "baseline was already repaired"
+			skipped++
+			results = append(results, entry)
+			continue
+		}
+		// Rebuild deterministically instead of re-classifying the Relay
+		// snapshot, which reports the shared pool total on every model once
+		// the account has been enforced.
+		created, err := baselineStore.EnsureCommercialRelayBaseline(
+			candidate.UID, commercialRelayBaselineProfileFree, commercialRelayFreeBudgetsCopy(), candidate.StartsAt)
+		if err != nil {
+			entry.Action = "failed"
+			entry.Reason = "baseline revoked but Free baseline could not be created: " + err.Error()
+			failed++
+			results = append(results, entry)
+			continue
+		}
+		entry.Action = "repaired"
+		if !created {
+			entry.Action = "failed"
+			entry.Reason = "baseline revoked but another active baseline already exists"
+			failed++
+			results = append(results, entry)
+			continue
+		}
+		if h.commercialRelaySyncer != nil {
+			if _, syncErr := h.commercialRelaySyncer.SyncUID(r.Context(), candidate.UID); syncErr != nil {
+				// The Free baseline exists locally; the scheduled sync retries
+				// the push. Surface it without failing the batch.
+				entry.Reason = "Free baseline created but relay sync failed: " + syncErr.Error()
+			}
+		}
+		repaired++
+		results = append(results, entry)
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
+		"applied":   req.Apply,
+		"repaired":  repaired,
+		"skipped":   skipped,
+		"failed":    failed,
+		"remaining": remaining,
+		"limit":     limit,
+		"results":   results,
+	})
+}
+
 func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, store CommercialStore, uid int64) (*commercialRelayDryRun, error) {
 	summary, err := store.GetCommercialSummary(uid)
 	if err != nil {
