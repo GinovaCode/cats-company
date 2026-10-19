@@ -82,7 +82,9 @@ func sessionForkMySQLCheckGrants(database string, grants []string) error {
 	if len(grants) == 0 {
 		return errors.New("SHOW GRANTS returned no account evidence")
 	}
-	databaseScope := "`" + strings.ReplaceAll(database, "`", "``") + "`.*"
+	// Database grants treat _ and % as patterns even inside backticks.
+	escapedDatabase := strings.NewReplacer("\\", "\\\\", "_", "\\_", "%", "\\%", "`", "``").Replace(database)
+	databaseScope := "`" + escapedDatabase + "`.*"
 	for _, grant := range grants {
 		upper := strings.ToUpper(grant)
 		parts := strings.SplitN(grant, " ON ", 2)
