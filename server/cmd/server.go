@@ -1076,6 +1076,8 @@ func main() {
 	skillHubPublicationReadHandler := server.NewSkillHubPublicationReadHandlerFromEnv(db)
 	mux.HandleFunc("/api/skillhub/publications", skillHubPublicationReadHandler.Handle)
 	mux.HandleFunc("/api/skillhub/publications/", skillHubPublicationReadHandler.Handle)
+	publicationHumanCommit := server.NewSkillHubPublicationHumanCommitHandlerFromEnv(db)
+	mux.HandleFunc(server.SkillHubPublicationHumanCommitPrefix, publicationHumanCommit.Handle)
 	// Dedicated, default-off service authentication. Never wrap this in human
 	// JWT/Bot auth or let the read API issue credentials on its behalf.
 	publicationPeer := server.NewSkillHubPublicationPeerHandlerFromEnv(db)

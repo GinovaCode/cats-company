@@ -260,27 +260,38 @@ func (c *PublicationCommitCloudClient) Read(ctx context.Context, r store.SkillHu
 		return nil, err
 	}
 	out, err := decodePublicationCommitStatus(data)
-	if err != nil || out.Receipt != publicationControlReceipt(r) {
+	if err != nil || !validPublicationCommitObservation(&out, r) {
 		return nil, errPublicationCommitCloud
 	}
+	return &out, nil
+}
+
+// Validate before any human-facing projection, even for an alternate adapter.
+func validPublicationCommitObservation(out *PublicationCommitCloudStatus, r store.SkillHubPublicationCloudReceipt) bool {
+	if out == nil || out.SchemaVersion != 1 || out.Receipt != publicationControlReceipt(r) {
+		return false
+	}
+	if out.Target != nil && out.Target.Validate() != nil {
+		return false
+	}
 	if out.Target != nil && out.Target.CandidateHash != r.Query.SourceSnapshotHash {
-		return nil, errPublicationCommitCloud
+		return false
 	}
 	if publicationCloudCommitState(out.State) {
 		if out.Target == nil || out.PermitID == nil || !publicationPermitID.MatchString(*out.PermitID) {
-			return nil, errPublicationCommitCloud
+			return false
 		}
 	} else if (out.State != "delegated_pending" && out.State != "cancelled") || out.PermitID != nil {
-		return nil, errPublicationCommitCloud
+		return false
 	}
 	if out.State == "published" {
 		p := out.Result
 		t := out.Target
 		if p == nil || p.SkillID != t.SkillID || p.Version != t.Version || p.PublishedAt != t.ReleaseAt || !publicationPackageID.MatchString(p.PackageID) || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(p.Checksum) {
-			return nil, errPublicationCommitCloud
+			return false
 		}
 	} else if out.Result != nil {
-		return nil, errPublicationCommitCloud
+		return false
 	}
 	if out.ErrorCode != nil {
 		allowed := false
@@ -290,8 +301,8 @@ func (c *PublicationCommitCloudClient) Read(ctx context.Context, r store.SkillHu
 			}
 		}
 		if !allowed {
-			return nil, errPublicationCommitCloud
+			return false
 		}
 	}
-	return &out, nil
+	return true
 }

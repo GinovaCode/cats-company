@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -262,7 +263,7 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 		wire := publicationCommitPermitRequest{SchemaVersion: 1, Receipt: publicationCloudReceiptRequest{
 			SchemaVersion: 1, EntryRequestID: entry.ID, CandidateRevision: 1, AcceptanceEpoch: g.Epoch, RequestHash: in.RequestHash, SourceSnapshotHash: in.SourceSnapshotHash, RequestBytes: in.RequestBytes, DelegationID: g.ID, IdempotencyKey: g.IdempotencyKey,
 			TaskID: "pubtask_11111111-1111-4111-8111-111111111111", EventID: "pubevent_22222222-2222-4222-8222-222222222222"},
-			Target: store.SkillHubPublicationCommitTarget{CandidateHash: strings.Repeat("c", 64), ManifestHash: strings.Repeat("d", 64), PublisherUserID: "usr_test", PublisherProfileID: "pub_test", Namespace: "publisher", SkillID: "publisher/test", Version: "1.0.1", UploadID: "upl_test", ReleaseAt: "2026-10-19T00:00:00.000Z", ConfirmVersionPublish: true}}
+			Target: store.SkillHubPublicationCommitTarget{CandidateHash: in.SourceSnapshotHash, ManifestHash: strings.Repeat("d", 64), PublisherUserID: "usr_test", PublisherProfileID: "pub_test", Namespace: "publisher", SkillID: "publisher/test", Version: "1.0.1", UploadID: "upl_test", ReleaseAt: "2026-10-19T00:00:00.000Z", ConfirmVersionPublish: true}}
 		// Each entry has its own immutable Cloud task/event. Synthetic acceptance
 		// and trusted human intent seeding are explicit: not a full publishing E2E.
 		if requestID == "cancel-first" {
@@ -288,7 +289,11 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 		t.Fatal("service created intent", err)
 	}
 	for _, wire := range []publicationCommitPermitRequest{first, stopped} {
-		if _, err := a.RecordSkillHubPublicationCommitIntent(ctx, actor, wire.input(issuer, audience)); err != nil {
+		if !cloud {
+			// Real active-human JWT + HTTPS handler + PostgreSQL admission. The
+			// Cloud observation is synthetic here; real peers are covered separately.
+			admitHumanCommitPostgres(t, a, wire.input(issuer, audience), actor)
+		} else if _, err := a.RecordSkillHubPublicationCommitIntent(ctx, actor, wire.input(issuer, audience)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -327,5 +332,56 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 	if err := scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_permits").Scan(&count); err != nil || count != 1 {
 		t.Fatal("duplicate or cancelled permit", err)
 	}
-	t.Log("actual PG + HTTPS: no intent admission, exact scope, lost reply, reopened replay with identical timestamp, cancel-first denied, historical replay after cancel/disable; no Cloud package writes")
+	t.Log("actual PG + HTTPS: no service-side intent admission, exact scope, lost reply, reopened replay with identical timestamp, cancel-first denied, historical replay after cancel/disable; no Cloud package writes")
+}
+
+func admitHumanCommitPostgres(t *testing.T, db *postgres.Adapter, in store.SkillHubPublicationCommitInput, actor int64) {
+	t.Helper()
+	c := &humanCommitCloud{in: in, state: "delegated_pending", authorize: func(context.Context) error { return errPublicationCommitCloud }}
+	h := newPublicationHumanCommitHandler(db, c, true)
+	ts := httptest.NewTLSServer(http.HandlerFunc(h.Handle))
+	defer ts.Close()
+	call := func(action, body string, want int) []byte {
+		t.Helper()
+		r := humanCommitRequest(t, action, body, actor)
+		r.URL.Path = strings.Replace(r.URL.Path, publicationReadTestID, in.Receipt.Query.EntryID, 1)
+		r.URL.Scheme = "https"
+		r.URL.Host = strings.TrimPrefix(ts.URL, "https://")
+		r.RequestURI = ""
+		res, err := ts.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, err := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != want {
+			t.Fatalf("human PG %s: %d %s %v", action, res.StatusCode, b, err)
+		}
+		return b
+	}
+	data := call("plan", `{"schemaVersion":1,"confirmVersionPublish":true}`, 200)
+	var planned struct {
+		Plan struct {
+			Key string `json:"confirmationKey"`
+		} `json:"plan"`
+	}
+	if json.Unmarshal(data, &planned) != nil {
+		t.Fatal("plan decode")
+	}
+	hash, _ := in.IdentityHash()
+	if planned.Plan.Key != hash {
+		t.Fatal("different plan")
+	}
+	before, err := db.GetSkillHubPublicationCommitContext(context.Background(), actor, in.Receipt.Query.EntryID, true)
+	if err != nil || before == nil || before.Intent != nil {
+		t.Fatal("plan granted intent", err)
+	}
+	body := `{"schemaVersion":1,"confirmationKey":"` + hash + `"}`
+	call("confirm", body, 503)
+	call("confirm", body, 503)
+	after, err := db.GetSkillHubPublicationCommitContext(context.Background(), actor, in.Receipt.Query.EntryID, true)
+	if err != nil || after == nil || after.Intent == nil || after.Intent.Input != in {
+		t.Fatal("human intent not durable", err)
+	}
+	t.Log("real JWT/HTTPS/PostgreSQL human plan and confirmation recorded one exact intent; Cloud execution failure remains uncertain")
 }
