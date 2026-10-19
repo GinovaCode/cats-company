@@ -1,0 +1,36 @@
+.cc-fork-menu { position: relative; flex: 0 0 auto; }
+.v3-shell-actions:has(.cc-fork-menu [aria-expanded="true"]) { z-index: 41; }
+.cc-fork-menu-items {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 80;
+  width: 248px; max-width: calc(100vw - 24px); padding: 4px;
+  background: var(--cc-panel, #fff); color: var(--cc-text, #222);
+  border: 1px solid var(--cc-border, #ddd); border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+}
+.cc-fork-menu-items button, .cc-fork-notice button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 32px; padding: 5px 8px; border: 0; border-radius: 4px;
+  font: inherit; font-size: 13px; letter-spacing: 0; cursor: pointer;
+  color: inherit; background: transparent;
+}
+.cc-fork-menu-items button { width: 100%; justify-content: flex-start; }
+.cc-fork-help { margin: 4px 8px 6px; color: var(--cc-muted, #666); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.cc-fork-menu-items button:hover, .cc-fork-notice button:hover { background: var(--cc-control-surface, #eee); }
+.cc-fork-menu-items button:focus-visible, .cc-fork-notice button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring, #248b6a); outline-offset: 1px;
+}
+.cc-fork-menu-items button:disabled, .cc-fork-notice button:disabled { opacity: .5; cursor: default; }
+.cc-fork-notice {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+  padding: 7px 20px; flex: 0 0 auto; min-width: 0;
+  border-bottom: 1px solid var(--cc-border, #ddd);
+  color: var(--cc-text-secondary, #555); font-size: 13px; line-height: 1.5;
+}
+.cc-fork-notice > span { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.cc-fork-notice svg { flex-shrink: 0; }
+.cc-fork-notice[role="alert"] { color: var(--cc-danger-text, #b42318); }
+.cc-fork-provenance { padding-block: 5px; font-size: 12px; }
+@media (max-width: 600px) {
+  .cc-fork-notice { padding-inline: 12px; }
+  .v3-local-assistant-bar:has(.cc-fork-menu) > :is(.v3-shell-title, .v3-shell-title-input) { max-width: calc(100% - 180px); }
+}

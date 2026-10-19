@@ -83,6 +83,10 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req SendMessageRequest, beforeSave func() (func(), bool)) {
 	uid := UIDFromContext(r.Context())
 	req.TopicID = strings.TrimSpace(req.TopicID)
+	if code, text := sessionForkPublishError(h.db, req.TopicID); code != 0 {
+		writeJSON(w, code, map[string]string{"error": text})
+		return
+	}
 	if hasFileAnnotationsMetadata(req.Metadata) && !req.fileAnnotationsTrusted {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file_annotations require the dedicated annotation endpoint"})
 		return
@@ -715,6 +719,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
 		SeqID:         int(message.ID),
+		ReplyTo:       int(message.ReplyTo),
 		Content:       displayContent,
 		Type:          envelopeDisplayType,
 		MsgType:       message.MsgType,
@@ -744,6 +749,9 @@ func (h *Hub) historyAPIMessageForRecipient(recipientUID int64, message *types.M
 		"msg_type":   data.MsgType,
 		"metadata":   data.Metadata,
 		"created_at": message.CreatedAt,
+	}
+	if data.ReplyTo != 0 {
+		out["reply_to"] = data.ReplyTo
 	}
 	if len(data.ContentBlocks) > 0 {
 		out["content_blocks"] = data.ContentBlocks

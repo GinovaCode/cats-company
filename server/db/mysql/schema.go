@@ -157,7 +157,7 @@ func (a *Adapter) CreateSchema() error {
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
 	}
-	return nil
+	return a.ensureSessionForkSchema()
 }
 
 func (a *Adapter) ensureChannelAgentBindingUniqueIncludesAgent() error {

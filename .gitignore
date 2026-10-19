@@ -65,3 +65,7 @@ SECURITY_CLEANUP.md
 # 临时文件
 *.log
 server.log
+
+# Local session-fork verification assets
+webapp/.session-fork-preview/
+server/.session-fork-test/

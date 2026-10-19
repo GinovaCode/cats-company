@@ -267,6 +267,8 @@ vi.mock('../api', () => ({
   api: {
     getMessages: vi.fn(),
     getConversations: vi.fn(async () => ({ conversations: [] })),
+    getConversationFork: vi.fn(async () => { throw Object.assign(new Error('session_fork_not_found'), { status: 404 }); }),
+    forkConversation: vi.fn(),
     getFriends: vi.fn(),
     getAgents: vi.fn(),
     getAgentQuota: vi.fn(),
@@ -975,6 +977,47 @@ describe('MessagesView composer draft isolation', () => {
     } finally {
       Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
     }
+  });
+
+  it('copies an owned agent conversation and opens the normal target without sending a message', async () => {
+    const onActivateTopic = vi.fn();
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, topic_id: 'p2p_1_2', is_owner: true, display_name: 'Agent' }] });
+    api.forkConversation.mockImplementation(async payload => ({
+      ...payload, target_topic_id: 'grp_99', state: 'ready',
+    }));
+    await mountTopic(root, 'p2p_1_2', { onActivateTopic });
+    await act(async () => container.querySelector('[aria-label="会话操作"]').click());
+    const action = container.querySelector('[role="menuitem"]');
+    expect(action.textContent).toContain('复制为新会话');
+    await act(async () => action.click());
+    expect(container.textContent).toContain('新会话已就绪');
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent.includes('打开新会话')).click());
+    expect(onActivateTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'grp_99', isGroup: true, isAgentTask: true }));
+  });
+
+  it('does not offer a fork for a multi-human agent task or a human p2p', async () => {
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, is_owner: true }] });
+    api.getGroupInfo.mockResolvedValue({ group: { id: 10, kind: 'agent_task' }, members: [
+      { user_id: 1, role: 'owner' }, { user_id: 2, is_bot: true }, { user_id: 3 },
+    ] });
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+  });
+
+  it('disables the pending target composer and renders provenance outside message history', async () => {
+    api.getConversationFork.mockResolvedValueOnce({
+      request_id: 'pending-copy', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_99', state: 'pending',
+    });
+    await mountTopic(root, 'grp_99', { isGroup: true, groupId: 99 });
+    expect(container.querySelector('textarea').disabled).toBe(true);
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    expect(container.querySelector('[role="note"]').textContent).toContain('复制自 p2p_1_2');
+    expect(container.querySelector('.v3-timeline').textContent).not.toContain('复制自');
+    expect(container.textContent).toContain('暂不能发送消息');
+    expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
   it('loads around a search result, highlights its anchor, and returns to search', async () => {

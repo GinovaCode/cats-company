@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -120,27 +119,12 @@ func (s *FileOpenBindingStore) lookup(ref string, uid int64, fingerprint [32]byt
 // Width/height are NOT part of the matching descriptor: the server derives
 // them from the real attachment and clients must not be required to echo
 // undeclared optionals back.
-type fileAnnotationDescriptor struct {
-	TopicID         string `json:"topic_id"`
-	MessageID       int64  `json:"message_id"`
-	AttachmentIndex int64  `json:"attachment_index"`
-	Name            string `json:"name"`
-	URL             string `json:"url"`
-	FileKey         string `json:"file_key,omitempty"`
-	MimeType        string `json:"mime_type,omitempty"`
-	Type            string `json:"type"`
-	Size            int64  `json:"size"`
-}
+type fileAnnotationDescriptor = types.FileAnnotationDescriptor
 
 // fileAnnotationDescriptorDigest hashes the canonical JSON of the descriptor,
 // never a delimiter-joined string: names and URLs may contain '|'.
 func fileAnnotationDescriptorDigest(source fileAnnotationDescriptor) string {
-	raw, err := compactGatewayAnnotationsJSON(source)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return types.FileAnnotationDescriptorDigest(source)
 }
 
 // canonicalFileAnnotationSource derives the authoritative descriptor from an

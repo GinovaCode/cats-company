@@ -653,6 +653,13 @@ export const api = {
       options,
     ),
   getConversations: () => request('GET', '/api/conversations'),
+  forkConversation: (payload, options = {}) => request('POST', '/api/conversations/fork', payload, options),
+  getConversationFork: ({ requestId, topicId }, options = {}) => request(
+    'GET',
+    `/api/conversations/fork?${requestId ? `request_id=${encodeURIComponent(requestId)}` : `topic_id=${encodeURIComponent(topicId)}`}`,
+    undefined,
+    options,
+  ),
   setConversationNotificationsMuted: (topicId, muted) => request(
     'PUT',
     '/api/conversations/notification-preferences',

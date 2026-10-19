@@ -895,6 +895,9 @@ func main() {
 		pushTestUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
+	mux.HandleFunc("/api/conversations/fork", server.JWTAuthMiddlewareWithDB(db)(conversationHandler.HandleFork))
+	mux.HandleFunc("/api/bot/session-forks", server.BotAPIKeyMiddlewareWithDB(db)(conversationHandler.HandleBotFork))
+	mux.HandleFunc("/api/bot/session-forks/complete", server.BotAPIKeyMiddlewareWithDB(db)(conversationHandler.HandleForkComplete))
 	mux.HandleFunc("/api/conversations/notification-preferences", authWithDB(conversationHandler.HandleNotificationPreference))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
