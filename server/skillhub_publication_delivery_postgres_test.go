@@ -273,6 +273,11 @@ func testPublicationPostgresRecovery(t *testing.T, beforeFirstProbe bool) {
 		Issuer: "https://cats.example", Audience: "https://hub.example", Action: store.SkillHubPublicationUploadAction,
 		Revision: 1, RequestHash: body.RequestHash, SourceSnapshotHash: body.SourceSnapshotHash, RequestBytes: body.RequestBytes}
 	upload.Binding.Source.RouteGeneration = 2
+	// The worker above only probed the source. Captured evidence is explicitly
+	// supplied by a test adapter; this test does not prove live capture routing.
+	if _, err := a2.RecordSkillHubPublicationCapture(context.Background(), store.SkillHubPublicationCaptureInput{EntryID: upload.EntryID, Binding: upload.Binding, Revision: 1, RequestHash: upload.RequestHash, SourceSnapshotHash: upload.SourceSnapshotHash, RequestBytes: upload.RequestBytes}); err != nil {
+		t.Fatal(err)
+	}
 	grant, token, err := a2.IssueSkillHubPublicationUploadGrant(context.Background(), upload)
 	if err != nil {
 		t.Fatal(err)

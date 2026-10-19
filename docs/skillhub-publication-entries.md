@@ -1152,6 +1152,45 @@ observation adapter. It verifies dispatcher recovery after a lost permit reply,
 unchanged permit identity and cancellation-first refusal, not live Runtime upload.
 Production switches remain off pending isolated end-to-end acceptance.
 
+## Immutable runtime capture evidence
+
+Migration 000042 adds a retained capture receipt per entry, distinct from the
+read-only `source_verified` probe. It stores candidate revision 1, request SHA256,
+Cloud candidate SHA256, exact request byte count (at most 32 MiB), and the
+observed route generation/node/socket with a database timestamp. It stores no
+files, local paths, upload secrets or model content. UPDATE, DELETE and populated
+down migrations are rejected; startup/up never infer evidence from old probes
+or grants.
+
+`RecordSkillHubPublicationCapture` is an **internal store API**, not a new
+HTTP/RPC endpoint. A future trusted dispatcher must correlate a capture response
+with its own outstanding request and recheck the exact live Bot socket, device,
+body lease and installation before calling it. The database independently checks
+the original active human, Bot ownership/enabled state, immutable source selector
+and durable connection generation, under the same entry lock used by cancellation
+and grant issuance. A probe alone does not prove that an immutable envelope exists.
+
+First capture freezes the candidate. Exact replay, including an authenticated
+reconnect of the same source, returns the original evidence and time. New bytes,
+digests, device/body/installation, generation rollback or same-generation socket
+substitution cannot replace it. Replays still check current authority and reject
+cancelled entries. Source files are not copied, modified, executed or deleted by
+CatsCo.
+
+New upload grants and renewals now require that stored receipt and matching
+digests/size/revision/binding. Pre-042 grants are not retroactively converted into
+evidence: an unexpired grant remains introspectable until its original expiry,
+subject to the existing authority checks; renewal requires an actual matching
+capture receipt. A late receipt cannot contradict a candidate already frozen in
+a legacy grant. No new grants are backfilled or automatically issued.
+
+Tests explicitly seed trusted-runtime receipts where an upload is required;
+source-probe dispatch tests are **not** live capture tests. The Cloud commit-peer
+contract fixture must likewise record its actual captured digests when its CatsCo
+pin advances past this change. Live capture dispatch, authenticated runtime RPC,
+grant delivery and complete isolated publishing acceptance remain separate work.
+No production flag, capability, UI or background worker is enabled here.
+
 Pure store tests cover bounded inputs, policies and immutable identity fields.
 HTTP tests use real signed JWTs and adapter doubles to cover active-human-only
 access, repeat account checks, privacy/projection, strict routes and transports,

@@ -18,9 +18,11 @@ func uploadGrantFixture(t *testing.T) (*Adapter, string, store.SkillHubPublicati
 	if err := db.FinishSkillHubPublicationDelivery(context.Background(), *lease, ""); err != nil {
 		t.Fatal(err)
 	}
-	return db, dsn, store.SkillHubPublicationUploadInput{EntryID: id, Binding: b, Issuer: "https://cats.example", Audience: "https://hub.example",
+	in := store.SkillHubPublicationUploadInput{EntryID: id, Binding: b, Issuer: "https://cats.example", Audience: "https://hub.example",
 		Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: strings.Repeat("a", 64),
-		SourceSnapshotHash: strings.Repeat("b", 64), RequestBytes: 1234}, other
+		SourceSnapshotHash: strings.Repeat("b", 64), RequestBytes: 1234}
+	recordCaptureForTest(t, db, captureForUpload(in))
+	return db, dsn, in, other
 }
 
 func issueUpload(t *testing.T, db *Adapter, in store.SkillHubPublicationUploadInput) (*store.SkillHubPublicationUploadGrant, store.SkillHubPublicationUploadToken) {

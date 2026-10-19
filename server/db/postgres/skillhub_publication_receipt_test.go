@@ -229,6 +229,7 @@ func TestPostgresSkillHubPublicationReceiptCrossEntryCollision(t *testing.T) {
 	if err := db.FinishSkillHubPublicationDelivery(context.Background(), *lease, ""); err != nil {
 		t.Fatal(err)
 	}
+	recordCaptureForTest(t, db, captureForUpload(in))
 	g, _ = issueUpload(t, db, in)
 	second := receiptForGrant(g)
 	for _, kind := range []string{"task", "event"} {
