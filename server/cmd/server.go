@@ -1081,6 +1081,7 @@ func main() {
 	publicationPeer := server.NewSkillHubPublicationPeerHandlerFromEnv(db)
 	mux.HandleFunc(server.SkillHubPublicationIntrospectionPath, publicationPeer.Handle)
 	mux.HandleFunc(server.SkillHubPublicationCloudReceiptPath, publicationPeer.Handle)
+	mux.HandleFunc(server.SkillHubPublicationCommitPermitPath, publicationPeer.Handle)
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))

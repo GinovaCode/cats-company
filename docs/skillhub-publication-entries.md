@@ -922,8 +922,9 @@ Cloud-status responses remain unchanged.
 
 Migration 000040 and the matching startup DDL add two bounded, immutable records
 per entry: an exact publication intent and a one-task commit permit. They are
-internal storage methods, with no HTTP/RPC adapter, worker registration, feature
-enablement or change to existing browser status/cancellation responses.
+internal storage methods, with no human admission adapter or worker registration.
+The default-off service transport described below does not enable publishing or
+change existing browser status/cancellation responses.
 
 `RecordSkillHubPublicationCommitIntent` requires the original active human,
 current Bot ownership, active/enabled Bot and unchanged body, plus an exact
@@ -943,7 +944,7 @@ release timestamp and version-confirmation choice. Changed retries conflict.
 The integrity hash is a CatsCo-local typed-JSON digest, not a cross-language JSON
 canonicalization contract. No candidate bytes or bearer token are saved here.
 
-`AuthorizeSkillHubPublicationCommit` must be called only by a future independently
+`AuthorizeSkillHubPublicationCommit` must be called only by an independently
 authenticated, fixed Cloud peer. It requires the exact stored receipt and intent,
 locks the entry before checking the current human/Bot authority, and writes one
 immutable permit ID and database timestamp. Current upload epoch is recorded
@@ -976,9 +977,10 @@ Private historical reads require the original active human; transfer does not
 give a new Owner, a friend or the Bot access. SQL triggers reject updates/deletes
 and verify first-insert authority and epoch. Populated rollback fails closed;
 empty rollback must run before migration 000037/000028 rollback. Startup never
-creates intents or permits from old receipts. All new methods remain unused
-outside tests until admission authentication/approval, Cloud commit recovery and
-the cross-repository cancellation race contract are complete.
+creates intents or permits from old receipts. Intent admission remains internal;
+the separately gated service endpoint below only authorizes existing intents.
+Production activation still requires admission authentication/approval, Cloud
+commit recovery and the cross-repository cancellation race contract.
 
 Seven real PostgreSQL groups cover exact scope, concurrent replay and both cancel
 orders, restart/lost-reply recovery, authority loss before/after permit, offline
@@ -986,6 +988,39 @@ completion, history privacy, repeated migrations/immutable guards and failed-wri
 rollback. Unit tests cover bounded target validation and identity hashing. CI's
 existing publication PostgreSQL group runs them with the race detector; local
 skips without a DSN do not count as database verification.
+
+## Authenticated commit permit transport
+
+`POST /api/skillhub/publications/internal/commit-permits/authorize` is independently
+default-off under `CATSCO_SKILLHUB_PUBLICATION_COMMIT_PERMITS_ENABLED`. It reuses
+the configured issuer, Cloud audience, dedicated peer secret and explicit trusted
+TLS proxy CIDRs. The Host must match the issuer (default HTTPS port spellings are
+equivalent). Human/Bot sessions, upload grants, Origin and Cookie headers cannot
+authorize this endpoint. Introspection and receipt ingestion can remain off.
+
+The body has exactly `schemaVersion: 1`, the existing 11-field historical
+`receipt`, and the exact 10-field `target` defined above. Unknown, duplicate,
+case-mismatched, null or malformed fields fail closed. Issuer/audience come from
+configuration, never the caller. There is no intent-recording fallback: a trusted
+human admission path must have already stored the exact verified release facts.
+
+Success returns only `schemaVersion`, `receipt`, `target`, `permitId`,
+`intentHash`, `authorityEpoch` and `authorizedAt`. Timestamp precision is retained
+as RFC3339Nano; consumers must not round PostgreSQL microseconds to JS milliseconds.
+Only exact 403 `publication.commit_denied`, 409 `publication.commit_cancelled`
+and 409 `publication.commit_conflict` are stable policy outcomes; outages remain
+503. Replies are non-cacheable. The existing 4 KiB body, 5 second deadline,
+16 concurrent requests and global/per-entry rate limits apply.
+
+`TestSkillHubPublicationPeerCommitPostgres` uses real PostgreSQL and HTTPS in
+CatsCo CI. `TestSkillHubPublicationCommitCloudContract` additionally loads the
+actual Cloud Node client from `SKILLHUB_COMMIT_CONTRACT_ROOT`; Cloud CI pins this
+CatsCo checkout and requires the test dependencies. Both prove no service-side
+intent creation, exact-target rejection, permit commit followed by lost HTTP
+response, reopened-handler recovery with identical ID/time, cancel-before-permit
+denial and historical replay after later cancellation/disablement. Receipt and
+human intent are explicitly seeded test facts, not real user approval or a full
+publication E2E. No Cloud package-writing worker is registered by this transport.
 
 ## Verification
 
