@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -23,17 +24,20 @@ import (
 
 const SkillHubPublicationIntrospectionPath = "/api/skillhub/publications/internal/upload-grants/introspect"
 const SkillHubPublicationCloudReceiptPath = "/api/skillhub/publications/internal/cloud-receipts"
+const SkillHubPublicationCommitPermitPath = "/api/skillhub/publications/internal/commit-permits/authorize"
 const publicationPeerBodyLimit = 4096
 
 var publicationPeerSecretPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var publicationGrantIDPattern = regexp.MustCompile(`^pubgrant_[a-f0-9]{32}$`)
 var publicationUploadKeyPattern = regexp.MustCompile(`^pubcandidate_[a-f0-9]{32}$`)
 
-// Service-only introspection and separately gated historical receipt ingestion.
-// Neither endpoint issues grants or changes entry/task execution state.
+// Service-only introspection, historical receipts and separately gated commit
+// permits. Permits authorize only an already-recorded exact intent; none of
+// these endpoints admits user approval or executes a publication task.
 type SkillHubPublicationPeerHandler struct {
 	enabled         bool
 	receiptsEnabled bool
+	permitsEnabled  bool
 	ready           bool
 	issuer          string
 	audience        string
@@ -41,6 +45,7 @@ type SkillHubPublicationPeerHandler struct {
 	proxies         []netip.Prefix
 	reader          store.SkillHubPublicationUploadIntrospector
 	receipts        store.SkillHubPublicationCloudReceiptStore
+	permits         store.SkillHubPublicationCommitStore
 	limits          *HTTPRateLimiter
 	slots           chan struct{}
 }
@@ -50,7 +55,9 @@ func NewSkillHubPublicationPeerHandlerFromEnv(db store.Store) *SkillHubPublicati
 	h := &SkillHubPublicationPeerHandler{enabled: v == "1" || strings.EqualFold(v, "true"), limits: NewHTTPRateLimiter(), slots: make(chan struct{}, 16)}
 	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_CLOUD_RECEIPTS_ENABLED"))
 	h.receiptsEnabled = v == "1" || strings.EqualFold(v, "true")
-	if !h.enabled && !h.receiptsEnabled {
+	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_COMMIT_PERMITS_ENABLED"))
+	h.permitsEnabled = v == "1" || strings.EqualFold(v, "true")
+	if !h.enabled && !h.receiptsEnabled && !h.permitsEnabled {
 		return h
 	}
 	h.issuer = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_ISSUER"))
@@ -77,6 +84,7 @@ func NewSkillHubPublicationPeerHandlerFromEnv(db store.Store) *SkillHubPublicati
 	}
 	h.reader, _ = db.(store.SkillHubPublicationUploadIntrospector)
 	h.receipts, _ = db.(store.SkillHubPublicationCloudReceiptStore)
+	h.permits, _ = db.(store.SkillHubPublicationCommitStore)
 	h.ready = true
 	return h
 }
@@ -172,18 +180,36 @@ func (h *SkillHubPublicationPeerHandler) Handle(w http.ResponseWriter, r *http.R
 		skillHubPublicationReadError(w, status, code)
 	}
 	receipt := r.URL.Path == SkillHubPublicationCloudReceiptPath
+	permit := r.URL.Path == SkillHubPublicationCommitPermitPath
 	if h == nil || r.URL.RawPath != "" || (receipt && !h.receiptsEnabled) ||
-		(!receipt && (!h.enabled || r.URL.Path != SkillHubPublicationIntrospectionPath)) {
+		(permit && !h.permitsEnabled) || (!receipt && !permit && (!h.enabled || r.URL.Path != SkillHubPublicationIntrospectionPath)) {
 		fail(404, "publication.not_found")
 		return
 	}
-	if !h.ready || (receipt && h.receipts == nil) || (!receipt && h.reader == nil) {
+	if !h.ready || (receipt && h.receipts == nil) || (permit && h.permits == nil) || (!receipt && !permit && h.reader == nil) {
 		fail(503, "publication.peer_unavailable")
 		return
 	}
 	if !h.secureTransport(r) {
 		fail(403, "publication.secure_transport_required")
 		return
+	}
+	if permit {
+		// Pin the receiving authority, including Go/Node's equivalent default
+		// HTTPS port spellings. Browser credentials never belong on this route.
+		u, _ := url.Parse(h.issuer)
+		matchesHost := r.Host == u.Host
+		if u.Port() == "" || u.Port() == "443" {
+			matchesHost = matchesHost || r.Host == u.Hostname() || r.Host == u.Hostname()+":443"
+		}
+		if !matchesHost {
+			fail(403, "publication.secure_transport_required")
+			return
+		}
+		if len(r.Header.Values("Origin")) != 0 || len(r.Header.Values("Cookie")) != 0 {
+			fail(400, "publication.invalid_request")
+			return
+		}
 	}
 	auth := r.Header.Values("Authorization")
 	if len(auth) != 1 || !strings.HasPrefix(auth[0], "Bearer ") {
@@ -225,7 +251,7 @@ func (h *SkillHubPublicationPeerHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	headers := r.Header.Values("X-SkillHub-Upload-Grant")
 	var token store.SkillHubPublicationUploadToken
-	if receipt {
+	if receipt || permit {
 		// A durable callback never carries a short-lived upload bearer token.
 		if len(headers) != 0 {
 			fail(400, "publication.invalid_request")
@@ -274,6 +300,10 @@ func (h *SkillHubPublicationPeerHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if receipt {
 		h.recordCloudReceipt(ctx, w, data, fail)
+		return
+	}
+	if permit {
+		h.authorizeCommitPermit(ctx, w, data, fail)
 		return
 	}
 	body, err := decodePublicationPeerRequest(data)
