@@ -46,8 +46,8 @@ func (a *Adapter) RequestSkillHubPublicationCancellation(ctx context.Context, ac
 		return nil, store.ErrSkillHubPublicationConflict
 	}
 	// The entry lock serializes with upload issuance/rotation, receipt recording
-	// and local cancellation. Future commit-permit issuance MUST share it and
-	// implement pending/too-late semantics before any such issuer is enabled.
+	// and local cancellation. Internal commit-permit issuance shares it; the
+	// Cloud adapter must implement pending/too-late before either is enabled.
 	// This state cancels LOCAL intent only; the distinct record below describes
 	// outstanding Cloud work. Never project it as remote cancellation success.
 	if e.State != "cancelled" {
