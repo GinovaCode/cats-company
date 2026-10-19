@@ -52,4 +52,3 @@ FOR EACH ROW EXECUTE FUNCTION guard_skillhub_publication_commit_authority();
 DROP TRIGGER IF EXISTS guard_skillhub_publication_commit_permit ON skillhub_publication_commit_permits;
 CREATE TRIGGER guard_skillhub_publication_commit_permit BEFORE INSERT OR UPDATE OR DELETE ON skillhub_publication_commit_permits
 FOR EACH ROW EXECUTE FUNCTION guard_skillhub_publication_commit_authority();
-

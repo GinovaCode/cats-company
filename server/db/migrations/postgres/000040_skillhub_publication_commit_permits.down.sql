@@ -17,4 +17,3 @@ BEGIN
     DROP FUNCTION IF EXISTS guard_skillhub_publication_commit_authority();
 END;
 $$;
-
