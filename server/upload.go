@@ -595,7 +595,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Cache-Control", "no-store")
 	if forceDownload {
-		w.Header().Set("Content-Disposition", "attachment")
+		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, true))
 	}
 	if subDir == "files" {
 		if !forceDownload {
@@ -605,6 +605,8 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 			w.Header().Set("Content-Type", videoMime)
 		} else if audioMime, ok := inlineAudioMimeType(ext); ok {
 			w.Header().Set("Content-Type", audioMime)
+		} else if textMime, ok := staticUploadTextMimeType(ext); ok {
+			w.Header().Set("Content-Type", textMime)
 		}
 		if isHTMLUploadExtension(ext) && !forceDownload {
 			// Uploaded HTML may contain active content. Let browsers render it for
@@ -1051,9 +1053,26 @@ func requestAbsoluteURL(path string) (string, error) {
 	return origin + path, nil
 }
 
+// staticUploadTextMimeType pins the Content-Type of text uploads whose type the
+// runtime MIME database cannot supply. Go's builtin table has no entry for
+// Markdown, and the server image installs no mailcap package, so there is no
+// /etc/mime.types either. Left unpinned, http.ServeFile sniffs the body and
+// reports text/plain.
+func staticUploadTextMimeType(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".md":
+		return "text/markdown; charset=utf-8", true
+	}
+	return "", false
+}
+
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {
 	if forceDownload {
-		return "attachment"
+		// Always name the file. With a bare "attachment" the browser derives the
+		// saved name from the URL, and a query string (?download=1) makes Chrome
+		// stop trusting the URL extension: it then falls back to the type-derived
+		// suffix, so a text/plain response for a .md upload lands as .txt.
+		return fmt.Sprintf("attachment; filename=%q", fileName)
 	}
 	disposition := "attachment"
 	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext) || isInlineAudioExt(ext) {
