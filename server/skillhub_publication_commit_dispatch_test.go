@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,5 +221,71 @@ func TestSkillHubPublicationCommitDispatcherConcurrencyAndStop(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("stop waited for timer")
+	}
+}
+
+func TestSkillHubPublicationCommitDispatcherHTTPSLostReply(t *testing.T) {
+	w, db, c := commitDispatchFixture()
+	var authorized atomic.Bool
+	var calls atomic.Int32
+	permit := "pubpermit_" + strings.Repeat("b", 32)
+	peer := httptest.NewTLSServer(http.HandlerFunc(func(out http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != publicationCommitCloudPath || r.Header.Get("Authorization") != "Bearer "+strings.Repeat("a", 64) {
+			t.Error("wrong transport scope")
+		}
+		var in struct {
+			Schema  int                            `json:"schemaVersion"`
+			Action  string                         `json:"action"`
+			Receipt publicationCloudReceiptRequest `json:"receipt"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil || in.Schema != 1 || in.Receipt != publicationControlReceipt(c.in.Receipt) {
+			t.Error("changed receipt")
+		}
+		out.Header().Set("Content-Type", "application/json")
+		out.Header().Set("Cache-Control", "no-store")
+		switch in.Action {
+		case "read":
+			s := &PublicationCommitCloudStatus{SchemaVersion: 1, Receipt: in.Receipt, State: "delegated_pending", Target: &c.in.Target}
+			if authorized.Load() {
+				s.State = "committing"
+				s.PermitID = &permit
+			}
+			json.NewEncoder(out).Encode(s)
+		case "authorize":
+			calls.Add(1)
+			authorized.Store(true)
+			conn, _, err := http.NewResponseController(out).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			conn.Close()
+		default:
+			t.Error("unexpected action", in.Action)
+			out.WriteHeader(400)
+		}
+	}))
+	defer peer.Close()
+	c.in.Receipt.Query.Audience = peer.URL
+	db.lease.Intent.Input = c.in
+	db.lease.Intent.IdentityHash, _ = c.in.IdentityHash()
+	w.scope.Audience = peer.URL
+	newClient := func() *PublicationCommitCloudClient {
+		t.Helper()
+		client, err := newPublicationCommitCloudClient(PublicationCommitCloudConfig{Enabled: true, Issuer: w.scope.Issuer, Audience: peer.URL, PeerSecret: strings.Repeat("a", 64)}, peer.Client().Transport)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	w.cloud = newClient()
+	if err := w.RunOnce(context.Background()); err != nil || len(db.out) != 1 || db.out[0].Kind != "retry" {
+		t.Fatal("lost reply", db.out, err)
+	}
+	// Reconstruct client and worker. The unit ledger is synthetic; PG fencing and
+	// retained permit checks run separately in the required database contract.
+	restarted := &PublicationCommitDispatcher{enabled: true, scope: w.scope, ledger: db, cloud: newClient()}
+	if err := restarted.RunOnce(context.Background()); err != nil || len(db.out) != 2 || db.out[1].Kind != "accepted" || db.out[1].PermitID != permit || calls.Load() != 1 {
+		t.Fatal("recovery changed authorization", db.out, err)
 	}
 }

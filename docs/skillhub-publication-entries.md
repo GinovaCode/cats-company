@@ -1137,7 +1137,7 @@ Historical permit recovery does not require a live Bot/current Owner, but first
 permit issuance still rechecks authority and serializes against cancellation.
 
 Transient failures retry with durable backoff, at most eight transport attempts
-(distinct from three Cloud publishing attempts and three semantic repair rounds).
+(distinct from three Cloud publishing attempts and three bounded format-repair rounds).
 Cancellation, denied authority, target conflict and missing task stop in
 `needs_attention`; budget depletion is `exhausted`. These states mean automatic
 delivery stopped, not proof that an uncertain remote commit rolled back. Terminal
