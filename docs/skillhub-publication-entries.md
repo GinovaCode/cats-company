@@ -1022,6 +1022,38 @@ denial and historical replay after later cancellation/disablement. Receipt and
 human intent are explicitly seeded test facts, not real user approval or a full
 publication E2E. No Cloud package-writing worker is registered by this transport.
 
+## Cloud plan and execution transport
+
+`NewPublicationCommitCloudClient` is an explicit, default-off service client for
+Cloud's fixed `/api/skills/publication-delegations/commit` HTTPS endpoint. It
+supports `Plan`, `Authorize` and read-only `Read`. The original complete receipt
+must match configured issuer/audience. No browser/model identity or upload grant
+is substituted for service authentication; no caller URL, proxy fallback or
+redirect is followed. Replies are bounded to 8 KiB, headers to 8 KiB, calls to
+22 seconds and concurrent operations to four, with strict nested JSON/echo checks.
+
+`Plan` returns one exact frozen target and verifies candidate/confirmation
+binding. Its boolean is not human authorization. A trusted human admission
+adapter must independently validate authority and required confirmations and
+record that exact intent before `Authorize`. This transport does not write an
+intent, issue permits, retry work, register a Hub worker, read a browser account,
+or enable any production switch. Receipt access itself must be authorized by
+that future adapter; do not expose this client as a generic RPC/model tool.
+
+An authorize ACK distinguishes committing, queued, failed and published, but
+contains no package result. Only `Read` with a validated published result supplies
+the exact Skill/version/package/checksum/time. Held and cancelled observations
+cannot contain a permit or final result; post-commit observations must contain
+the frozen target and permit. Private source, internal proof and upstream error
+text are not exposed. Wire results are internal, not a user-facing projection.
+
+TLS tests cover scope, malformed/duplicate/null/extra fields, status consistency,
+untrusted certificates, redirect and response-loss failures, bounded concurrency
+and context cancellation. The race CI group explicitly includes CommitClient.
+The paired Cloud contract exercises this actual Go client against its real Node
+handler/coordinator/worker and both PostgreSQL adapters. Human intent and Runtime
+source probing remain test setup, not a live user publishing experience.
+
 ## Verification
 
 Pure store tests cover bounded inputs, policies and immutable identity fields.
