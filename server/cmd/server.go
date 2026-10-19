@@ -813,6 +813,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers/import", commercialOpsHandler.HandleCloudWorkerImport)
 	mux.HandleFunc("/api/account/commercial-ops/cloud-workers/billing", commercialOpsHandler.HandleCloudWorkerBilling)
 	mux.HandleFunc("/api/account/commercial-ops/adjustments", commercialOpsHandler.HandleAdjustments)
+	mux.HandleFunc("/api/account/commercial-ops/baseline-repair", commercialOpsHandler.HandleBaselineRepair)
 	mux.HandleFunc("/api/account/commercial-ops/auto-renew", commercialOpsHandler.HandleAutoRenew)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)

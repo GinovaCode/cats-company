@@ -63,25 +63,44 @@ func TestCommercialRelayBaselineUpgradesSeedPlusExtraFreeModels(t *testing.T) {
 	}
 }
 
-func TestCommercialRelayBaselineKeepsIncompleteFreePricedSeedsLegacy(t *testing.T) {
-	// Free prices alone are not enough. A partial catalog resolution, a
-	// single-model pool or an image-only pool must stay legacy instead of being
-	// silently expanded into the full Free package.
+func TestCommercialRelayBaselineUpgradesEveryObservedNewKeySeed(t *testing.T) {
+	// Relay only seeds catalog defaults onto single-model provider configs, so
+	// what a brand-new key reports depends on how the Free models were split
+	// across providers at signup time. Every shape below was observed in
+	// production on accounts whose baseline was written within seconds of
+	// signup; all of them are the Free pool, not a custom retention package.
 	cases := map[string]map[string]float64{
-		"single model":          {"MiniMax-M2.7": 1000},
-		"two models":            {"MiniMax-M2.7": 1000, "MiniMax-M3": 500},
-		"image only":            {"gpt-image-2": 100},
-		"seed missing one":      {"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-flash": 100},
-		"seed missing deepseek": {"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "glm-5.3-flash": 100},
+		"two models": {"MiniMax-M2.7": 1000, "MiniMax-M3": 500},
+		"three models": {
+			"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "glm-5.3-flash": 100,
+		},
+		"text seed": {
+			"MiniMax-M2.7": 1000, "MiniMax-M3": 500,
+			"deepseek-flash": 100, "glm-5.3-flash": 100,
+		},
+		"seed plus one image": {
+			"MiniMax-M2.7": 1000, "MiniMax-M3": 500,
+			"deepseek-flash": 100, "glm-5.3-flash": 100, "gpt-image-2": 100,
+		},
+		"minimax plus image lane": {
+			"MiniMax-M2.7": 1000, "MiniMax-M3": 500,
+			"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100,
+			"gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100,
+		},
+		"minimax image lane plus glm": {
+			"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "glm-5.3-flash": 100,
+			"gpt-image-2": 100, "gpt-image-2.5": 100, "gpt-image-2.5-flare": 100,
+			"gpt-image-2.5-sunburst": 100, "chatgpt-image-latest": 100,
+		},
 	}
 	for name, budgets := range cases {
 		t.Run(name, func(t *testing.T) {
-			profile, preserved := commercialRelayBaseline(relayUserWithBudgets(0, budgets))
-			if profile != commercialRelayBaselineProfileLegacy {
-				t.Fatalf("profile=%q want %q (budgets=%v)", profile, commercialRelayBaselineProfileLegacy, budgets)
+			profile, upgraded := commercialRelayBaseline(relayUserWithBudgets(0, budgets))
+			if profile != commercialRelayBaselineProfileFree {
+				t.Fatalf("profile=%q want %q (budgets=%v)", profile, commercialRelayBaselineProfileFree, budgets)
 			}
-			if len(preserved) == 0 {
-				t.Fatalf("legacy budgets must be preserved, got %v", preserved)
+			if !commercialRelayBudgetsMatch(upgraded, commercialRelayFreeBudgets) {
+				t.Fatalf("upgraded budgets=%v want the full free pool", upgraded)
 			}
 		})
 	}
@@ -182,11 +201,14 @@ func TestCommercialRelayBudgetsAreFreePoolSubset(t *testing.T) {
 		{"full pool", commercialRelayFreeBudgetsCopy(), true},
 		{"text seed", newKeyTextOnlyBudgets, true},
 		{"seed plus one image", seedPlusImage, true},
-		{"single model", map[string]float64{"MiniMax-M3": 500}, false},
-		{"image only", map[string]float64{"gpt-image-2": 100}, false},
+		{"single model", map[string]float64{"MiniMax-M3": 500}, true},
+		{"image only", map[string]float64{"gpt-image-2": 100}, true},
+		{"minimax only", map[string]float64{
+			"MiniMax-M2.7": 1000, "MiniMax-M3": 500,
+		}, true},
 		{"seed missing deepseek", map[string]float64{
 			"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "glm-5.3-flash": 100,
-		}, false},
+		}, true},
 		{"price above free", map[string]float64{
 			"MiniMax-M2.7": 1000, "MiniMax-M3": 501, "deepseek-flash": 100, "glm-5.3-flash": 100,
 		}, false},
@@ -196,6 +218,9 @@ func TestCommercialRelayBudgetsAreFreePoolSubset(t *testing.T) {
 		{"foreign model on top of seed", map[string]float64{
 			"MiniMax-M2.7": 1000, "MiniMax-M3": 500, "deepseek-flash": 100, "glm-5.3-flash": 100,
 			"claude-sonnet-5-5": 100,
+		}, false},
+		{"retired v4 model", map[string]float64{
+			"MiniMax-M2.7": 1000, "deepseek-v4-flash": 100,
 		}, false},
 		{"case insensitive model", map[string]float64{
 			"minimax-m2.7": 1000, "minimax-m3": 500, "deepseek-flash": 100, "glm-5.3-flash": 100,

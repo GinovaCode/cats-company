@@ -337,6 +337,22 @@ type CommercialSummary struct {
 	TotalCNY           float64                  `json:"total_cny"`
 }
 
+// CommercialRelayBaselineCandidate is one active legacy baseline entitlement
+// together with the data needed to decide whether it was really a custom
+// pre-migration pool or a Free pool that the Relay seed classifier
+// misclassified. Budgets holds the active grants created from that baseline.
+type CommercialRelayBaselineCandidate struct {
+	UID           int64
+	PlanID        int64
+	PlanSlug      string
+	SourceRef     string
+	StartsAt      time.Time
+	UserCreatedAt time.Time
+	Budgets       map[string]float64
+	PaidActive    int
+	ManualGrants  int
+}
+
 // CloudWorkerLifecycle tracks monthly package expiry and delayed deletion.
 type CloudWorkerLifecycle struct {
 	BillingMode       string
