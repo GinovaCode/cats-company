@@ -1056,6 +1056,62 @@ source probing remain test setup, not a live user publishing experience.
 
 ## Verification
 
+### Human publication confirmation
+
+An independently default-off `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`
+registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with three
+actions. It uses the existing fixed issuer, Cloud audience and dedicated peer
+secret configuration. It is not a model/RPC tool and cannot use Bot/API-key or
+service credentials in place of the active original human's Bearer JWT.
+
+- `POST plan` takes exactly `{schemaVersion:1,confirmVersionPublish:boolean}`.
+  The server loads the original retained receipt, checks current Bot ownership,
+  body and enabled state, and obtains the immutable Cloud plan. The response
+  displays only Skill ID, version, publisher namespace, the version choice and a
+  `confirmationKey` bound to the complete plan and receipt. Planning never writes
+  human intent. A required new-version confirmation returns 409, not auto-approval.
+- `POST confirm` takes exactly `{schemaVersion:1,confirmationKey:string}`. It
+  retrieves the current immutable Cloud target independently; the caller cannot
+  send receipt, target, publisher, source, permit or actor fields. A changed key
+  returns 409. The exact human action is recorded by the existing SQL transaction,
+  which rechecks current authority and serializes against cancellation; only
+  after this commit is Cloud authorization attempted. The key is a content
+  binding, not a bearer credential or proof of authority by itself.
+- `GET status` has no body/query and reads verified execution state and, only
+  when published, Skill/version/package/checksum/time. Original active-human
+  privacy survives Bot ownership transfer; new owners do not inherit history.
+  Internal receipt/permit IDs, paths and manifest hashes are never projected.
+
+Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
+if its ACK claims published. Only verified status supplies the final result.
+Timeout/lost reply after intent recording is uncertain, not proof of rollback:
+read status, then retry the same entry/key if appropriate. No new version or
+intent is created by exact replay. A missing receipt means acceptance has not
+been observed, not that uploading never happened.
+
+Four calls may be in flight, with bounded per-actor/entry rates, a 2 KiB body,
+five-second body deadline and a 55-second operation context. Slots remain held
+until the actual call settles. Responses recheck original-account access after
+peer IO. Errors are static and private/no-store; no upstream SQL/content/token
+is returned. Cookies are not authentication; incidental browser cookies are
+ignored. Duplicate/unknown/null fields and malformed paths fail closed.
+
+This slice handles publication of an already accepted immutable candidate; it
+does not approve semantic repairs or synthesize description text. Future repair
+revisions require their own exact draft confirmation before being eligible for
+this publication step. No UI, Runtime capture/upload or automatic CatsCo intent
+dispatch is enabled. Cloud's separately gated delegated scheduler can execute
+only commits for which authorization already completed. Keep all new production
+switches off until isolated end-to-end acceptance.
+
+Tests cover signed human JWTs, exact plan binding, privacy, authority changes,
+cancel/deny/write failure, lost-reply replay, result consistency and concurrency.
+The existing required PostgreSQL peer test also drives the human handler over
+real TLS/JWT/PostgreSQL, with a synthetic Cloud plan/status adapter and a forced
+execution-call failure; it verifies durable exact intent before actual peer
+permit recovery. The separate dual-store contract tests real Cloud and CatsCo
+clients/handlers. Neither test is represented as a live UI/Runtime E2E.
+
 Pure store tests cover bounded inputs, policies and immutable identity fields.
 HTTP tests use real signed JWTs and adapter doubles to cover active-human-only
 access, repeat account checks, privacy/projection, strict routes and transports,
