@@ -38,7 +38,9 @@ func TestSkillHubPublicationCancellationCloudContract(t *testing.T) {
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	// Cleanup runs LIFO: let the peer drain stdin/close cleanly before cancelling
+	// its process context. A function defer would kill it before t.Cleanup runs.
+	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, "node", filepath.Join("testdata", "publication-control-cloud.mjs"))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -223,4 +225,5 @@ func TestSkillHubPublicationCancellationCloudContract(t *testing.T) {
 	if last.Count != 2 {
 		t.Fatal("confirmed job resent")
 	}
+	t.Log("real two-store recovery: delayed receipt, committed cancellation/lost reply, reopened sender, same remote timestamp, no resend")
 }
