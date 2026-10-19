@@ -302,7 +302,29 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 	changed.Target.Version = "1.0.2"
 	expectError(changed, false, "conflict")
 	lose.Store(true)
-	expectError(first, false, "unavailable")
+	if cloud {
+		expectError(first, false, "unavailable")
+	} else {
+		// The real human route saved intent before its failed Cloud call. A new
+		// dispatcher must recover that exact intent. This Cloud observation is a
+		// test adapter; its authorization traverses the real TLS permit handler.
+		observation := &humanCommitCloud{in: first.input(issuer, audience), state: "delegated_pending"}
+		dispatchCloud := &commitDispatchCloud{read: observation.Read, authorize: func(_ context.Context, r store.SkillHubPublicationCloudReceipt) (*PublicationCommitCloudStatus, error) {
+			if r != observation.in.Receipt {
+				t.Fatal("dispatcher changed receipt")
+			}
+			expectError(first, false, "unavailable")
+			return nil, errPublicationCommitCloud
+		}}
+		worker := &PublicationCommitDispatcher{enabled: true, scope: store.SkillHubPublicationCancellationScope{Issuer: issuer, Audience: audience}, ledger: a, cloud: dispatchCloud}
+		if err := worker.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		s, err := a.GetSkillHubPublicationCommitDelivery(ctx, actor, first.Receipt.EntryRequestID)
+		if err != nil || s == nil || s.State != "pending" || s.Attempts != 1 {
+			t.Fatal("lost reply was not retained", s, err)
+		}
+	}
 	durable, err := a.GetSkillHubPublicationCommitPermit(ctx, actor, first.Receipt.EntryRequestID)
 	if err != nil || durable == nil {
 		t.Fatal("permit did not commit before loss", err)
@@ -331,6 +353,50 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 	expectError(changed, false, "conflict")
 	if err := scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_permits").Scan(&count); err != nil || count != 1 {
 		t.Fatal("duplicate or cancelled permit", err)
+	}
+	if !cloud {
+		if _, err := scoped.Exec(`UPDATE skillhub_publication_commit_deliveries SET next_attempt_at='1970-01-01' WHERE entry_id=$1`, first.Receipt.EntryRequestID); err != nil {
+			t.Fatal(err)
+		}
+		dispatchCloud := &commitDispatchCloud{
+			read: func(_ context.Context, r store.SkillHubPublicationCloudReceipt) (*PublicationCommitCloudStatus, error) {
+				wire := stopped
+				if r == first.input(issuer, audience).Receipt {
+					wire = first
+				}
+				out := &PublicationCommitCloudStatus{SchemaVersion: 1, Receipt: publicationControlReceipt(r), State: "delegated_pending", Target: &wire.Target}
+				if wire.Receipt == first.Receipt {
+					out.State = "committing"
+					out.PermitID = &durable.ID
+				}
+				return out, nil
+			},
+			authorize: func(_ context.Context, r store.SkillHubPublicationCloudReceipt) (*PublicationCommitCloudStatus, error) {
+				if r != stopped.input(issuer, audience).Receipt {
+					t.Fatal("reauthorized accepted intent")
+				}
+				expectError(stopped, false, "cancelled")
+				return nil, store.ErrSkillHubPublicationSettled
+			},
+		}
+		worker := &PublicationCommitDispatcher{enabled: true, scope: store.SkillHubPublicationCancellationScope{Issuer: issuer, Audience: audience}, ledger: reopened, cloud: dispatchCloud}
+		for n := 0; n < 2; n++ {
+			if err := worker.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, tc := range []struct {
+			id, state string
+			attempts  int
+		}{{first.Receipt.EntryRequestID, "accepted", 2}, {stopped.Receipt.EntryRequestID, "needs_attention", 1}} {
+			s, err := reopened.GetSkillHubPublicationCommitDelivery(ctx, actor, tc.id)
+			if err != nil || s == nil || s.State != tc.state || s.Attempts != tc.attempts {
+				t.Fatal("dispatcher restart/cancellation", s, err)
+			}
+		}
+		if err := scoped.QueryRow("SELECT count(*) FROM skillhub_publication_commit_permits").Scan(&count); err != nil || count != 1 {
+			t.Fatal("dispatcher duplicated permit", err)
+		}
 	}
 	t.Log("actual PG + HTTPS: no service-side intent admission, exact scope, lost reply, reopened replay with identical timestamp, cancel-first denied, historical replay after cancel/disable; no Cloud package writes")
 }

@@ -305,6 +305,8 @@ func main() {
 	publicationCtx, stopPublicationDelivery := context.WithCancel(context.Background())
 	defer stopPublicationDelivery()
 	go hub.RunPublicationDeliveries(publicationCtx)
+	stopCommitDispatch := server.StartSkillHubPublicationCommitDispatch(publicationCtx, db)
+	defer stopCommitDispatch()
 
 	server.SetBotStats(hub.BotStats())
 
@@ -1198,6 +1200,7 @@ func main() {
 	<-quit
 	log.Println("shutting down gracefully...")
 	stopPublicationDelivery()
+	stopCommitDispatch()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

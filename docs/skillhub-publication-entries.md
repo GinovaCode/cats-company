@@ -1112,6 +1112,46 @@ execution-call failure; it verifies durable exact intent before actual peer
 permit recovery. The separate dual-store contract tests real Cloud and CatsCo
 clients/handlers. Neither test is represented as a live UI/Runtime E2E.
 
+### Durable delivery of confirmed publication intents
+
+`CATSCO_SKILLHUB_PUBLICATION_COMMIT_DISPATCH_ENABLED` defaults off. When enabled,
+the server starts an independent bounded worker using the dedicated publication
+issuer, Cloud audience and peer secret. It requires the PostgreSQL adapter and
+migration 000041 (also mirrored in startup DDL), the Cloud commit service and
+CatsCo permit service. It does not enable human admission or Cloud execution.
+
+The existing immutable human intent is queue admission. Receipts alone never
+qualify, and the worker never calls plan, records intent or issues a permit.
+Existing confirmed intents become eligible only when this switch is explicitly
+enabled; the migration itself backfills neither intents nor delivery records.
+Each worker iteration claims one due intent, then waits five seconds. Database
+leases last 90 seconds; transport operations have a 60-second budget with at most
+four concurrent calls, and finish bookkeeping has an independent five-second
+budget after request cancellation. Multiple instances share fenced SQL leases.
+
+The worker reads Cloud first, compares the exact frozen target, and authorizes
+only the same held target. A committed observation or acknowledgement is retained
+as `accepted` only with a matching local permit. This means delivery accepted,
+**not published**; the existing human status route verifies final execution.
+Historical permit recovery does not require a live Bot/current Owner, but first
+permit issuance still rechecks authority and serializes against cancellation.
+
+Transient failures retry with durable backoff, at most eight transport attempts
+(distinct from three Cloud publishing attempts and three semantic repair rounds).
+Cancellation, denied authority, target conflict and missing task stop in
+`needs_attention`; budget depletion is `exhausted`. These states mean automatic
+delivery stopped, not proof that an uncertain remote commit rolled back. Terminal
+evidence cannot be reset/deleted. The original active human can read the private
+store projection; this PR adds no UI/status endpoint for delivery bookkeeping.
+
+An empty down migration is idempotent and atomic; populated rollback refuses.
+Tests cover lease races, expiry, lost replies, reopen, write rollback, bounded
+attempts, privacy and terminal retention. The required PostgreSQL/TLS peer test
+uses real human admission and permit requests with an explicitly synthetic Cloud
+observation adapter. It verifies dispatcher recovery after a lost permit reply,
+unchanged permit identity and cancellation-first refusal, not live Runtime upload.
+Production switches remain off pending isolated end-to-end acceptance.
+
 Pure store tests cover bounded inputs, policies and immutable identity fields.
 HTTP tests use real signed JWTs and adapter doubles to cover active-human-only
 access, repeat account checks, privacy/projection, strict routes and transports,
