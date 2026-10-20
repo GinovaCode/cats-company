@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS skillhub_publication_captures (
     candidate_revision INTEGER NOT NULL CHECK (candidate_revision=1),
     request_hash VARCHAR(64) NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
     source_snapshot_hash VARCHAR(64) NOT NULL CHECK (source_snapshot_hash ~ '^[a-f0-9]{64}$'),
-    request_bytes BIGINT NOT NULL CHECK (request_bytes BETWEEN 1 AND 33554432),
+    request_bytes BIGINT NOT NULL CHECK (request_bytes BETWEEN 1 AND 78643200),
     route_generation BIGINT NOT NULL CHECK (route_generation>0),
     node_id VARCHAR(128) NOT NULL CHECK (node_id ~ '^[A-Za-z0-9._:-]{1,128}$'),
     connection_id VARCHAR(128) NOT NULL CHECK (connection_id ~ '^[A-Za-z0-9._:-]{1,128}$'),

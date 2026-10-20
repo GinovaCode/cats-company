@@ -133,6 +133,57 @@ func TestPostgresSkillHubPublicationCaptureReconnect(t *testing.T) {
 	}
 }
 
+func TestPostgresSkillHubPublicationCaptureGrantSizeBoundary(t *testing.T) {
+	for _, mode := range []string{"startup", "migration"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, size := range []int64{32*1024*1024 + 1, 75 * 1024 * 1024, 75*1024*1024 + 1} {
+				db, _, in, _ := captureFixture(t)
+				ctx := context.Background()
+				if mode == "migration" {
+					deliveryExec(t, db, captureMigration(t, "down"))
+					deliveryExec(t, db, captureMigration(t, "up"))
+				}
+				// Metadata-only authority contract: no large byte buffers are
+				// fabricated and this is not a live runtime upload capability test.
+				in.RequestBytes = size
+				u := uploadForCapture(in)
+				if size > 75*1024*1024 {
+					if _, err := db.RecordSkillHubPublicationCapture(ctx, in); !errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+						t.Fatal("oversize capture not rejected as invalid", err)
+					}
+					if _, _, err := db.IssueSkillHubPublicationUploadGrant(ctx, u); !errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+						t.Fatal("oversize grant fell through to missing-evidence denial", err)
+					}
+					_, err := db.db.Exec(`INSERT INTO skillhub_publication_captures
+						(entry_id,candidate_revision,request_hash,source_snapshot_hash,request_bytes,route_generation,node_id,connection_id)
+						VALUES ($1,1,$2,$3,$4,$5,$6,$7)`, in.EntryID, in.RequestHash, in.SourceSnapshotHash, size,
+						in.Binding.Source.RouteGeneration, in.Binding.NodeID, in.Binding.ConnectionID)
+					if err == nil || !strings.Contains(err.Error(), "skillhub_publication_captures_request_bytes_check") {
+						t.Fatal("DB size constraint missing", err)
+					}
+					continue
+				}
+				first := recordCaptureForTest(t, db, in)
+				g, token := issueUpload(t, db, u)
+				if _, err := db.CheckSkillHubPublicationUploadGrant(ctx, token, u, g.Epoch); err != nil {
+					t.Fatal("valid-sized receipt stranded before check", size, err)
+				}
+				if _, err := db.IntrospectSkillHubPublicationUploadGrant(ctx, token, u.Query(g.Epoch)); err != nil {
+					t.Fatal("valid-sized grant not introspectable", size, err)
+				}
+				ageUpload(t, db, in.EntryID, "6 seconds")
+				renewed, _ := issueUpload(t, db, u)
+				if renewed.IdempotencyKey != g.IdempotencyKey || renewed.Epoch != 2 {
+					t.Fatal("size boundary broke renewal")
+				}
+				if replay := recordCaptureForTest(t, db, in); *replay != *first {
+					t.Fatal("size boundary changed receipt")
+				}
+			}
+		})
+	}
+}
+
 func TestPostgresSkillHubPublicationCaptureAuthority(t *testing.T) {
 	for _, mode := range []string{"unverified", "owner", "human_disabled", "bot_disabled", "body", "cancel", "source", "device", "install", "context"} {
 		t.Run(mode, func(t *testing.T) {

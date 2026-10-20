@@ -34,3 +34,19 @@ func TestSkillHubPublicationCaptureInput(t *testing.T) {
 		t.Fatal("boundary rejected")
 	}
 }
+
+func TestSkillHubPublicationCaptureAndGrantSizeContract(t *testing.T) {
+	if SkillHubPublicationCaptureMaxBytes != SkillHubPublicationUploadMaxBytes {
+		t.Fatal("capture and upload authority limits diverged")
+	}
+	for _, size := range []int64{1, 32 * 1024 * 1024, 32*1024*1024 + 1, 75 * 1024 * 1024, 75*1024*1024 + 1} {
+		u := uploadTestInput()
+		u.RequestBytes = size
+		c := SkillHubPublicationCaptureInput{EntryID: u.EntryID, Binding: u.Binding, Revision: u.Revision,
+			RequestHash: u.RequestHash, SourceSnapshotHash: u.SourceSnapshotHash, RequestBytes: size}
+		want := size <= 75*1024*1024
+		if (c.Validate() == nil) != want || (u.Validate() == nil) != want || (u.Query(1).Validate() == nil) != want {
+			t.Fatalf("capture/grant/introspection disagree at %d bytes", size)
+		}
+	}
+}

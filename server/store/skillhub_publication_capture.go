@@ -5,8 +5,10 @@ import (
 	"time"
 )
 
-// Matches the immutable runtime envelope limit, not the larger legacy upload limit.
-const SkillHubPublicationCaptureMaxBytes int64 = 32 * 1024 * 1024
+// Metadata authority ceiling, shared with grants so no valid upload size is
+// stranded between receipt validation and issuance. A runtime/Cloud transport
+// may impose a smaller implementation limit; this does not raise that limit.
+const SkillHubPublicationCaptureMaxBytes int64 = SkillHubPublicationUploadMaxBytes
 
 // Internal observation only. An adapter MUST correlate a capture reply with its
 // outstanding request and recheck the authenticated socket/body lease before
