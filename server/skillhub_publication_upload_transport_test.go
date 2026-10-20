@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,11 +15,14 @@ import (
 
 type publicationUploadTestStore struct {
 	*publicationCaptureTestStore
-	record  *store.SkillHubPublicationCaptureRecord
-	readErr error
-	issues  int
-	issued  store.SkillHubPublicationUploadInput
-	onIssue func()
+	record          *store.SkillHubPublicationCaptureRecord
+	readErr         error
+	issues          int
+	issued          store.SkillHubPublicationUploadInput
+	onIssue         func()
+	deliveryMu      sync.Mutex
+	deliveryLease   *store.SkillHubPublicationUploadLease
+	deliveryOutcome string
 }
 
 func (s *publicationUploadTestStore) ReadSkillHubPublicationCapture(context.Context, string, store.SkillHubPublicationDeliveryBinding) (*store.SkillHubPublicationCaptureRecord, error) {
@@ -35,6 +39,35 @@ func (s *publicationUploadTestStore) IssueSkillHubPublicationUploadGrant(_ conte
 }
 func (*publicationUploadTestStore) CheckSkillHubPublicationUploadGrant(context.Context, store.SkillHubPublicationUploadToken, store.SkillHubPublicationUploadInput, int) (*store.SkillHubPublicationUploadGrant, error) {
 	panic("runtime ACK must not introspect or accept Cloud receipt")
+}
+
+func (s *publicationUploadTestStore) ListSkillHubPublicationUploadDeliveries(context.Context, store.SkillHubPublicationRuntimeSelector, int) ([]string, error) {
+	s.deliveryMu.Lock()
+	defer s.deliveryMu.Unlock()
+	if s.deliveryLease != nil || s.deliveryOutcome != "" {
+		return nil, nil
+	}
+	return []string{publicationReadTestID}, nil
+}
+
+func (s *publicationUploadTestStore) ClaimSkillHubPublicationUploadDelivery(_ context.Context, id string, b store.SkillHubPublicationDeliveryBinding) (*store.SkillHubPublicationUploadLease, error) {
+	s.deliveryMu.Lock()
+	defer s.deliveryMu.Unlock()
+	if s.deliveryLease != nil {
+		return nil, store.ErrSkillHubPublicationBusy
+	}
+	s.deliveryLease = &store.SkillHubPublicationUploadLease{
+		EntryID: id, Binding: b, Token: strings.Repeat("a", 32), Attempt: 1, ExpiresAt: time.Now().Add(30 * time.Second),
+	}
+	l := *s.deliveryLease
+	return &l, nil
+}
+
+func (s *publicationUploadTestStore) FinishSkillHubPublicationUploadDelivery(_ context.Context, _ store.SkillHubPublicationUploadLease, outcome string) error {
+	s.deliveryMu.Lock()
+	defer s.deliveryMu.Unlock()
+	s.deliveryOutcome = outcome
+	return nil
 }
 
 func newUploadTransportFixture(t *testing.T) (*publicationWorkspaceFixture, *publicationUploadTestStore) {

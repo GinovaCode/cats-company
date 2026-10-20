@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS skillhub_publication_upload_deliveries;

@@ -177,5 +177,13 @@ func (a *Adapter) FinishSkillHubPublicationCaptureDelivery(ctx context.Context, 
 	if n != 1 {
 		return store.ErrSkillHubPublicationStale
 	}
+	if state == "captured" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO skillhub_publication_upload_deliveries
+			(entry_id,state,attempts,lease_token,lease_node,lease_connection,lease_generation,lease_until,next_attempt_at,last_code)
+			VALUES($1,'pending',0,repeat('0',32),'pending','pending',1,clock_timestamp(),clock_timestamp(),'')
+			ON CONFLICT (entry_id) DO NOTHING`, l.EntryID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
