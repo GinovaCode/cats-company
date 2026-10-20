@@ -84,7 +84,7 @@ func TestPostgresSkillHubPublicationUploadDeliveryRequiresCapture(t *testing.T) 
 
 func uploadDeliveryMigration(t *testing.T, direction string) string {
 	t.Helper()
-	b, err := os.ReadFile("../migrations/postgres/000046_skillhub_publication_upload_deliveries." + direction + ".sql")
+	b, err := os.ReadFile("../migrations/postgres/000048_skillhub_publication_upload_deliveries." + direction + ".sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +93,6 @@ func uploadDeliveryMigration(t *testing.T, direction string) string {
 
 func TestSkillHubPublicationUploadDeliveryMigrationMatchesStartup(t *testing.T) {
 	if strings.Join(strings.Fields(uploadDeliveryMigration(t, "up")), " ") != strings.Join(strings.Fields(createSkillHubPublicationUploadDeliveriesTable), " ") {
-		t.Fatal("000046 differs from startup")
+		t.Fatal("000048 differs from startup")
 	}
 }
