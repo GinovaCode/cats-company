@@ -59,8 +59,15 @@ type forkCreationTestStore struct {
 	store.ConversationTaskStatusStore
 	status  string
 	owner   int64
+	friend  bool
+	group   *types.Group
+	member  bool
 	created []types.SessionForkRequest
 }
+
+func (s *forkCreationTestStore) AreFriends(int64, int64) (bool, error)    { return s.friend, nil }
+func (s *forkCreationTestStore) GetGroup(int64) (*types.Group, error)     { return s.group, nil }
+func (s *forkCreationTestStore) IsGroupMember(int64, int64) (bool, error) { return s.member, nil }
 
 func (s *forkCreationTestStore) GetBotOwner(int64) (int64, error) {
 	return s.owner, nil
@@ -93,7 +100,7 @@ func TestSessionForkCloudStatusGate(t *testing.T) {
 		{"running stays busy", "running", "session_fork_source_busy", 7, 7, false, 409},
 		{"waiting stays busy", "waiting", "session_fork_source_busy", 7, 7, false, 409},
 		{"stale requires online body", "stale", "session_fork_agent_offline", 7, 7, true, 409},
-		{"stale requires ownership", "stale", "session_fork_forbidden", 7, 8, false, 403},
+		{"unshared agent rejected", "stale", "session_fork_forbidden", 7, 8, false, 403},
 		{"stale requires human", "stale", "session_fork_requires_human", 9, 7, false, 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,6 +148,37 @@ func TestSessionForkCloudStatusGate(t *testing.T) {
 				}
 			default:
 				t.Fatal("missing runtime dispatch for local idle/interruption checks")
+			}
+		})
+	}
+}
+
+func TestSessionForkSharedAgentAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name, topic    string
+		friend, member bool
+		group          *types.Group
+		allowed        bool
+	}{
+		{"friend direct", "p2p_7_9", true, false, nil, true},
+		{"revoked friend", "p2p_7_9", false, false, nil, false},
+		{"another user direct", "p2p_8_9", true, false, nil, false},
+		{"human direct", "p2p_7_8", true, false, nil, false},
+		{"friend task", "grp_20", true, true, &types.Group{ID: 20, OwnerID: 7, Kind: types.GroupKindAgentTask, MemberCount: 2, AgentIDs: []int64{9}}, true},
+		{"ordinary two participant group", "grp_20", true, true, &types.Group{ID: 20, OwnerID: 9, MemberCount: 2, AgentIDs: []int64{9}}, true},
+		{"not a member", "grp_20", true, false, &types.Group{ID: 20, MemberCount: 2, AgentIDs: []int64{9}}, false},
+		{"multiple humans", "grp_20", true, true, &types.Group{ID: 20, MemberCount: 3, AgentIDs: []int64{9}}, false},
+		{"multiple bots", "grp_20", true, true, &types.Group{ID: 20, MemberCount: 3, AgentIDs: []int64{8, 9}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &forkCreationTestStore{forkTestStore: &forkTestStore{}, owner: 8, friend: tc.friend, group: tc.group, member: tc.member}
+			agent, err := NewConversationHandler(db, nil).forkSourceAgent(7, tc.topic)
+			if tc.allowed {
+				if err != nil || agent != 9 {
+					t.Fatalf("agent=%d error=%v", agent, err)
+				}
+			} else if !errors.Is(err, store.ErrSessionForkForbidden) {
+				t.Fatalf("unexpected permission: %d %v", agent, err)
 			}
 		})
 	}

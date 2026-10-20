@@ -30,6 +30,7 @@
 .cc-fork-notice svg { flex-shrink: 0; }
 .cc-fork-notice[role="alert"] { color: var(--cc-danger-text, #b42318); }
 .cc-fork-provenance { padding-block: 5px; font-size: 12px; }
+.cc-fork-sidebar-status .cc-fork-notice { padding: 8px; max-width: 248px; }
 @media (max-width: 600px) {
   .cc-fork-notice { padding-inline: 12px; }
   .v3-local-assistant-bar:has(.cc-fork-menu) > :is(.v3-shell-title, .v3-shell-title-input) { max-width: calc(100% - 180px); }

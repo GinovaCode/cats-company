@@ -208,8 +208,20 @@ func (s SQLStore) validateSource(ctx context.Context, tx *sql.Tx, actor, agent i
 	if err != nil {
 		return err
 	}
-	if !owner.Valid || owner.Int64 != actor || account != "bot" || userState != 0 || bound.String != body {
+	if account != "bot" || userState != 0 || bound.String != body {
 		return store.ErrSessionForkForbidden
+	}
+	if !owner.Valid || owner.Int64 != actor {
+		// Recheck the existing friendship inside both creation and completion
+		// transactions. No new sharing grant is introduced by copying a session.
+		var friends int
+		err = tx.QueryRowContext(ctx, s.query("SELECT COUNT(*) FROM friends WHERE from_user_id = ? AND to_user_id = ? AND status = 'accepted'"), actor, agent).Scan(&friends)
+		if err != nil {
+			return err
+		}
+		if friends == 0 {
+			return store.ErrSessionForkForbidden
+		}
 	}
 	if strings.HasPrefix(topic, "p2p_") {
 		lo, hi := actor, agent
@@ -223,14 +235,6 @@ func (s SQLStore) validateSource(ctx context.Context, tx *sql.Tx, actor, agent i
 	}
 	gid, err := strconv.ParseInt(strings.TrimPrefix(topic, "grp_"), 10, 64)
 	if err != nil || topic != fmt.Sprintf("grp_%d", gid) {
-		return store.ErrSessionForkForbidden
-	}
-	var kind string
-	err = tx.QueryRowContext(ctx, s.query(`SELECT owner_id,group_kind FROM "groups" WHERE id = ?`), gid).Scan(&owner, &kind)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if errors.Is(err, sql.ErrNoRows) || !owner.Valid || owner.Int64 != actor || kind != "agent_task" {
 		return store.ErrSessionForkForbidden
 	}
 	rows, err := tx.QueryContext(ctx, s.query("SELECT user_id FROM group_members WHERE group_id = ? ORDER BY user_id"), gid)

@@ -5,17 +5,20 @@ import { readStorageValue, writeStorageValue } from './storage-access';
 
 const requestOptions = { timeoutMs: 15000 };
 const refreshConversations = () => window.dispatchEvent(new Event('cc:data-changed'));
+const forkChangedEvent = 'cc:conversation-fork-changed';
+
+function storedPayload(key, topic) {
+  try {
+    const saved = JSON.parse(readStorageValue(key));
+    return saved?.source_topic_id === topic && typeof saved?.request_id === 'string' && saved.request_id ? saved : null;
+  } catch { return null; }
+}
 
 export function useConversationFork({ topic, userId, onActivateTopic }) {
   const scope = `${userId}:${topic}`;
   const owner = useMemo(() => {
     const key = `cc:conversation-fork:${scope}`;
-    let payload = null;
-    try {
-      const saved = JSON.parse(readStorageValue(key));
-      if (saved?.source_topic_id === topic && typeof saved?.request_id === 'string' && saved.request_id) payload = saved;
-    } catch { /* A damaged local draft is not a server fork record. */ }
-    return { key, payload, active: true, busy: false, targetRevision: 0 };
+    return { key, payload: storedPayload(key, topic), active: true, busy: false, refreshRequested: false, targetRevision: 0 };
   }, [scope, topic]);
   const current = useRef(owner);
   current.current = owner;
@@ -36,14 +39,23 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   }, [isCurrent, owner]);
 
   const checkSource = useCallback(async () => {
-    if (!owner.payload || owner.busy) return;
+    if (owner.busy) { owner.refreshRequested = true; return; }
+    owner.payload = storedPayload(owner.key, topic) || owner.payload;
+    if (!owner.payload) return;
     owner.busy = true;
+    setSource(state => ({ owner, record: state?.owner === owner && state.record?.request_id === owner.payload.request_id ? state.record : null, busy: true, error: '' }));
     try {
       const result = await api.getConversationFork({ requestId: owner.payload.request_id }, requestOptions);
       acceptSource(normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic }));
     } catch (error) {
       if (isCurrent()) setSource(state => ({ ...(state?.owner === owner ? state : {}), owner, error: error.message || '无法确认复制结果，请重试。', busy: false }));
-    } finally { owner.busy = false; }
+    } finally {
+      owner.busy = false;
+      if (owner.refreshRequested && isCurrent()) {
+        owner.refreshRequested = false;
+        void checkSource();
+      }
+    }
   }, [acceptSource, isCurrent, owner, topic]);
 
   const checkTarget = useCallback(async () => {
@@ -64,9 +76,16 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
 
   useEffect(() => {
     owner.active = true;
+    const changed = event => {
+      if (event.detail?.key === owner.key && event.detail?.owner !== owner) void checkSource();
+    };
+    window.addEventListener(forkChangedEvent, changed);
     void checkTarget();
     void checkSource();
-    return () => { owner.active = false; };
+    return () => {
+      owner.active = false;
+      window.removeEventListener(forkChangedEvent, changed);
+    };
   }, [checkSource, checkTarget, owner]);
 
   useEffect(() => {
@@ -83,21 +102,32 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
 
   const create = useCallback(async ({ newRequest = false } = {}) => {
     if (owner.busy || !isCurrent()) return;
+    // The header and sidebar are two controls for the same operation. Reuse
+    // an unseen request instead of allocating a competing copy from stale UI.
+    owner.payload = storedPayload(owner.key, topic) || owner.payload;
     if (!newRequest && ['ready', 'failed'].includes(operation?.state)) return;
     if (newRequest && operation && !['ready', 'failed'].includes(operation.state)) return;
-    if (!owner.payload || (newRequest && ['ready', 'failed'].includes(operation?.state))) {
+    if (!owner.payload || (newRequest && operation?.request_id === owner.payload.request_id && ['ready', 'failed'].includes(operation?.state))) {
       owner.payload = { source_topic_id: topic, request_id: crypto.randomUUID() };
       writeStorageValue(owner.key, JSON.stringify(owner.payload));
     }
     owner.busy = true;
+    window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
     setSource({ owner, record: newRequest ? null : operation, busy: true, error: '' });
     try {
       const result = await api.forkConversation(owner.payload, requestOptions);
       acceptSource(normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic }));
     } catch (error) {
       if (isCurrent()) setSource(state => ({ ...state, owner, busy: false, error: error.message || '复制请求未确认，请重试。' }));
-    } finally { owner.busy = false; }
-  }, [acceptSource, isCurrent, operation, owner, topic]);
+    } finally {
+      owner.busy = false;
+      window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
+      if (owner.refreshRequested && isCurrent()) {
+        owner.refreshRequested = false;
+        void checkSource();
+      }
+    }
+  }, [acceptSource, checkSource, isCurrent, operation, owner, topic]);
 
   const open = useCallback(async () => {
     if (operation?.state !== 'ready' || owner.busy) return;
