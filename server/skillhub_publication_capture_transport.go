@@ -22,7 +22,6 @@ const publicationCaptureRequestPrefix = "pubcapture_"
 const publicationCaptureTimeout = 25 * time.Second
 const publicationCaptureRuntimeMaxBytes = 32 * 1024 * 1024
 
-var publicationCaptureSourceID = regexp.MustCompile(`^pubsrc-[a-f0-9]{48}$`)
 var publicationCaptureHash = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type publicationCaptureReply struct {
@@ -125,10 +124,9 @@ func (w *publicationCaptureTransport) capture(parent context.Context, actor int6
 		return nil, store.ErrSkillHubPublicationDenied
 	}
 	// Copy before any waits; never retain a mutable store observation.
+	// Source selectors are opaque admission references, not capture digests.
+	// Validate above enforces their shared store/schema contract.
 	in := entry.Input
-	if !publicationCaptureSourceID.MatchString(in.Source.LocalSkillID) || !publicationCaptureHash.MatchString(in.Source.WorkspaceGeneration) {
-		return nil, store.ErrSkillHubPublicationInvalid
-	}
 	status, err := w.statuses.GetSkillHubPublicationSourceStatus(ctx, actor, entryID)
 	if err != nil {
 		return nil, err
@@ -244,9 +242,9 @@ func (w *publicationCaptureTransport) recheck(p *publicationCapturePending) (*Cl
 // Only bounded scalar facts are queued, never raw Runtime JSON or file contents.
 func (w *publicationCaptureTransport) acceptResult(client *Client, msg *MsgThinToolRPC) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	p := w.pending[msg.RequestID]
 	if p == nil || !time.Now().Before(p.deadline) {
+		w.mu.Unlock()
 		publicationDeliveryAck(client, msg.ID, http.StatusNotFound)
 		return
 	}
@@ -257,10 +255,12 @@ func (w *publicationCaptureTransport) acceptResult(client *Client, msg *MsgThinT
 		client.deviceOwnerUID == b.ActorUID && client.deviceID == b.Source.DeviceID && client.bodyID == b.Source.BodyID && client.installationID == b.Source.InstallationID
 	w.h.mu.RUnlock()
 	if !matched {
+		w.mu.Unlock()
 		publicationDeliveryAck(client, msg.ID, http.StatusForbidden)
 		return
 	}
 	if p.queued {
+		w.mu.Unlock()
 		publicationDeliveryAck(client, msg.ID, http.StatusConflict)
 		return
 	}
@@ -279,4 +279,5 @@ func (w *publicationCaptureTransport) acceptResult(client *Client, msg *MsgThinT
 	}
 	p.queued = true
 	p.replies <- r
+	w.mu.Unlock()
 }

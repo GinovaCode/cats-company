@@ -106,7 +106,7 @@ func TestSkillHubPublicationCaptureTransportPostgres(t *testing.T) {
 		}
 		h.bindDeviceClient(actor, d, c)
 		h.publicationCapture = newPublicationCaptureTransport(h)
-		return h, c, store.SkillHubPublicationDeliveryBinding{ActorUID: actor, BotUID: bot, NodeID: h.nodeID, ConnectionID: c.connectionID, Source: store.SkillHubPublicationSource{DeviceID: d.DeviceID, BodyID: d.BodyID, InstallationID: d.InstallationID, RouteGeneration: int64(generation), LocalSkillID: "pubsrc-" + strings.Repeat("a", 48), WorkspaceGeneration: strings.Repeat("b", 64)}}
+		return h, c, store.SkillHubPublicationDeliveryBinding{ActorUID: actor, BotUID: bot, NodeID: h.nodeID, ConnectionID: c.connectionID, Source: store.SkillHubPublicationSource{DeviceID: d.DeviceID, BodyID: d.BodyID, InstallationID: d.InstallationID, RouteGeneration: int64(generation), LocalSkillID: "local-skill-1", WorkspaceGeneration: "workspace-v1"}}
 	}
 	h, c, b := attach(a)
 	entry, _, err := a.CreateSkillHubPublicationEntry(context.Background(), store.SkillHubPublicationEntryInput{ActorUID: actor, BotUID: bot, Entrypoint: "workspace", RequestID: "capture-transport", Source: b.Source}, store.DefaultSkillHubPublicationEntryPolicy())
@@ -139,6 +139,9 @@ func TestSkillHubPublicationCaptureTransportPostgres(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("missing request")
 		}
+		if msg.ThinToolRPC == nil || msg.ThinToolRPC.Payload["local_skill_id"] != b.Source.LocalSkillID || msg.ThinToolRPC.Payload["workspace_generation"] != b.Source.WorkspaceGeneration {
+			t.Fatal("admitted opaque selectors changed in transit")
+		}
 		reply := captureReply(msg.ThinToolRPC)
 		result := reply.Result.(map[string]interface{})
 		result["entryId"] = entry.ID
@@ -158,7 +161,7 @@ func TestSkillHubPublicationCaptureTransportPostgres(t *testing.T) {
 		return r
 	}
 	first := call(h, c, false, nil)
-	if first.err != nil || first.record == nil {
+	if first.err != nil || first.record == nil || first.record.Input.Binding.Source != b.Source {
 		t.Fatal(first.err)
 	}
 	// A new adapter and authenticated connection replay the same durable capture.

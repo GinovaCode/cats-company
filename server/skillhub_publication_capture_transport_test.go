@@ -134,8 +134,64 @@ func TestSkillHubPublicationCaptureTransportAuthenticatedOwnerOffline(t *testing
 	}
 }
 
+func TestSkillHubPublicationCaptureTransportOpaqueSelectors(t *testing.T) {
+	for _, selectors := range [][2]string{
+		{"local-skill-1", "workspace-v1"},
+		{"123e4567-e89b-12d3-a456-426614174000", "workspace:v1.2_3"},
+		{strings.Repeat("a", 128), strings.Repeat("b", 128)},
+	} {
+		t.Run(selectors[0], func(t *testing.T) {
+			f, s := newCaptureTransportFixture(t)
+			in := &s.entries["capture-click"].Input
+			in.Source.LocalSkillID, in.Source.WorkspaceGeneration = selectors[0], selectors[1]
+			if err := in.Validate(); err != nil {
+				t.Fatal("selectors must satisfy admission", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			req, done := startCaptureCall(t, f, ctx)
+			if req.Payload["local_skill_id"] != selectors[0] || req.Payload["workspace_generation"] != selectors[1] {
+				t.Fatal("admitted selectors changed in transit", req.Payload)
+			}
+			f.h.handleThinToolRPCResult(f.runtime, captureReply(req))
+			r := captureWait(t, done)
+			if r.err != nil || r.record == nil || s.calls != 1 || s.input.Binding.Source != in.Source || r.record.Input != s.input {
+				t.Fatalf("opaque selectors did not retain capture evidence: %#v", r)
+			}
+			deliveryAckStatus(t, f.runtime, http.StatusOK)
+		})
+	}
+}
+
+func TestSkillHubPublicationCaptureTransportRejectsInvalidSelectors(t *testing.T) {
+	for _, field := range []string{"local_skill_id", "workspace_generation"} {
+		for _, value := range []string{"", "../skill", "with space", strings.Repeat("a", 129)} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				f, s := newCaptureTransportFixture(t)
+				in := &s.entries["capture-click"].Input
+				if field == "local_skill_id" {
+					in.Source.LocalSkillID = value
+				} else {
+					in.Source.WorkspaceGeneration = value
+				}
+				if in.Validate() == nil {
+					t.Fatal("fixture must violate admission")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if _, err := f.h.CaptureSkillHubPublication(ctx, 7, publicationReadTestID); !errors.Is(err, store.ErrSkillHubPublicationDenied) {
+					t.Fatal("invalid stored entry was not denied", err)
+				}
+				if s.calls != 0 || len(f.runtime.send) != 0 {
+					t.Fatal("invalid selector reached runtime or capture store")
+				}
+			})
+		}
+	}
+}
+
 func TestSkillHubPublicationCaptureTransportRejectsSpoofAndMalformed(t *testing.T) {
-	for _, name := range []string{"human", "unknown", "entry", "extra", "hash", "fraction", "oversize", "revision", "tool", "owner", "device", "payload", "error", "type"} {
+	for _, name := range []string{"human", "unknown", "entry", "extra", "hash", "source-hash", "uppercase-hash", "zero", "fraction", "oversize", "revision", "tool", "owner", "device", "payload", "error", "type"} {
 		t.Run(name, func(t *testing.T) {
 			f, s := newCaptureTransportFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -167,6 +223,12 @@ func TestSkillHubPublicationCaptureTransportRejectsSpoofAndMalformed(t *testing.
 				result["files"] = "must never queue raw source"
 			case "hash":
 				result["requestHash"] = "bad"
+			case "source-hash":
+				result["sourceSnapshotHash"] = "workspace-v1"
+			case "uppercase-hash":
+				result["requestHash"] = strings.Repeat("C", 64)
+			case "zero":
+				result["requestBytes"] = float64(0)
 			case "fraction":
 				result["requestBytes"] = 1.5
 			case "oversize":

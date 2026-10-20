@@ -1176,6 +1176,11 @@ are `entry_id`, `bot_uid`, `local_skill_id` and `workspace_generation`; the owne
 and device envelope is derived from the authenticated route. It never carries
 paths, file contents, upload tokens or a publication confirmation. The reserved
 `skillhub.publication.*` namespace remains rejected for generic client requests.
+Both source selectors are opaque references under the admission/store/schema
+contract (`^[A-Za-z0-9._:-]{1,128}$`) and are forwarded unchanged. For example,
+`local-skill-1` / `workspace-v1` remains valid here; this transport does not require
+a `pubsrc-` prefix or interpret a workspace generation as a digest. The runtime
+must still verify that these selectors identify its admitted source.
 The expected result has exactly six fields matching XiaoBa's retained receipt:
 `schemaVersion:1`, `entryId`, `candidateRevision:1`, `requestHash`,
 `sourceSnapshotHash`, `requestBytes`. Digests must be lowercase SHA256 and bytes
@@ -1202,7 +1207,8 @@ receipt; a new authenticated request must return the same retained candidate.
 Cancellation can race with local capture, but store checks reject its late receipt
 and this operation never grants upload authority.
 
-Tests cover bounded dispatch, spoof/malformed/duplicate/late replies, owner and
+Tests cover opaque selector pass-through, invalid admission references, strict
+receipt digests/byte bounds, bounded dispatch, spoof/malformed/duplicate/late replies, owner and
 generation changes, cancellation, disabled/legacy runtimes and a blocked database
 without blocking the socket read loop. The mandatory PostgreSQL contract uses
 real Hub routing and storage across adapter/reconnect reconstruction, candidate
