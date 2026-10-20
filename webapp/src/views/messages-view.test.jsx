@@ -2190,6 +2190,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.querySelector('[aria-label="预览图片：cat.png"]')).not.toBeNull();
     expect(container.textContent).toContain('原文字和 1 个附件');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('修改后可重新发送');
   });
 
   it('restores attachments from serialized content blocks', async () => {
@@ -2312,6 +2313,9 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.querySelector('[aria-label="预览图片：cat.png"]')).not.toBeNull();
     expect(container.textContent).toContain('已添加图片：cat.png');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('已添加图片：cat.png');
 
     writeChatAttachmentDrag(dataTransfer, { type: attachment.type, payload: attachment.content.payload });
     await act(async () => {
@@ -2321,6 +2325,7 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.textContent).toContain('cat.png 已在待发送附件中');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('cat.png 已在待发送附件中');
   });
 
   it('accepts a chat file drag without uploading the file again', async () => {
@@ -7019,6 +7024,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-composer-attachment-chip.is-file')?.textContent)
       .toContain(uploadedFile.name);
     expect(container.textContent).toContain('长文本已整理为文档');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('长文本已整理为文档');
 
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="发送"]'));
@@ -7101,14 +7107,16 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.textContent).toContain('当前仅支持 JPG、PNG、GIF、WebP 图片。');
   });
 
-  it('shows upload success inline after adding an image attachment', async () => {
-    api.uploadFile.mockResolvedValueOnce({
+  it('shows upload progress then uses the attachment preview with an accessible success announcement', async () => {
+    let finishUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise(resolve => { finishUpload = resolve; }));
+    const uploadedImage = {
       file_key: '20260610_abc.jpg',
       url: '/uploads/images/20260610_abc.jpg',
       name: 'cat.jpg',
       size: 12,
       mime_type: 'image/jpeg',
-    });
+    };
 
     await mountTopic(root, 'p2p_1_2');
 
@@ -7127,8 +7135,16 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.uploadFile).toHaveBeenCalledTimes(1);
     expect(api.uploadFile).toHaveBeenCalledWith(image, 'image');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('正在上传 cat.jpg');
+    await act(async () => {
+      finishUpload(uploadedImage);
+      await flushPromises();
+    });
     expect(container.textContent).toContain('已添加图片：cat.jpg');
-    expect(container.textContent).toContain('cat.jpg');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('已添加图片：cat.jpg');
+    expect(container.querySelector('[aria-label="预览图片：cat.jpg"]')).not.toBeNull();
     expect(container.querySelectorAll('.v3-composer-box .v3-composer-attachment-chip')).toHaveLength(1);
   });
 
@@ -7161,6 +7177,8 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.uploadFile).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('已添加 1 个附件，另有 1 个上传失败');
+    expect(container.querySelector('.v3-attachment-notice.v3-live-input-status-error').textContent)
+      .toContain('已添加 1 个附件，另有 1 个上传失败');
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.querySelector('.v3-composer-attachment-chip img')?.getAttribute('src'))
       .toBe('/uploads/images/20260610_dog.jpg');
@@ -7257,7 +7275,9 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.textContent).toContain('手机已上传 8 个附件');
-    expect(container.querySelectorAll('.v3-attachment-notice')).toHaveLength(1);
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('手机已上传 8 个附件');
     expect(container.querySelector('.v3-composer-attachments')).toBeNull();
 
     await act(async () => {

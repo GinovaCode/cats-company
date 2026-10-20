@@ -483,7 +483,7 @@ describe('EmptyTaskComposer', () => {
     expect(container.querySelector('[aria-label="移除附件：phone-brief.pdf"]')).toBeNull();
   });
 
-  it('distinguishes the latest upload batch from attachments already in the draft', async () => {
+  it('announces each upload batch without adding a duplicate banner above the attachment previews', async () => {
     api.uploadFile.mockImplementation(async (file) => ({
       file_key: file.name, url: `/uploads/files/${file.name}`,
       name: file.name, size: file.size, mime_type: file.type,
@@ -501,15 +501,21 @@ describe('EmptyTaskComposer', () => {
       });
     };
     await upload(['first.pdf', 'second.pdf']);
-    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('本次已添加 2 个附件');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('本次已添加 2 个附件');
     await upload(['third.pdf']);
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(3);
-    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('本次已添加 1 个附件');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('本次已添加 1 个附件');
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="移除附件：third.pdf"]'));
     });
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(2);
-    expect(container.querySelector('.v3-attachment-notice').textContent).not.toContain('本次已添加');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('2 个附件待发送');
   });
 
   it('removes a just-uploaded attachment when X is clicked', async () => {
@@ -639,6 +645,7 @@ describe('EmptyTaskComposer', () => {
     });
     // The batch upload is still in flight; the already-uploaded attachment
     // must stay removable.
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('正在上传');
     expect(container.querySelector('[aria-label="移除附件：kept.pdf"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="移除附件：kept.pdf"]').disabled).toBe(false);
 

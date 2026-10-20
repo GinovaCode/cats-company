@@ -12117,15 +12117,8 @@ html[data-theme="liquid"] .cc-agent-hosting > label.active {
 }
 
 html[data-theme="liquid"] .v3-composer.is-drag-active .v3-composer-box {
-  border-color: rgba(86, 98, 217, 0.72);
-  box-shadow:
-    0 0 0 1px rgba(86, 98, 217, 0.36),
-    0 16px 40px rgba(79, 91, 148, 0.16);
-}
-
-html[data-theme="liquid"] .v3-drop-overlay {
-  color: #25304a;
-  background: linear-gradient(135deg, rgba(233, 237, 255, 0.94), rgba(240, 233, 255, 0.94));
+  border-color: color-mix(in srgb, var(--cc-accent) 56%, var(--cc-border-strong));
+  box-shadow: 0 16px 40px rgb(0 0 0 / 12%);
 }
 
 html[data-theme="liquid"] :is(
