@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { api, resolveMediaURL, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
@@ -378,6 +378,9 @@ function TinodeWebApp({ location }) {
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
+  // Keep browse-only state while switching tools, without sharing it between accounts.
+  const appsViewStateRef = useMemo(() => ({ current: null }), [user?.uid]);
+  const skillHubViewStateRef = useMemo(() => ({ current: null }), [user?.uid]);
   const [skillHubUpdateSummary, setSkillHubUpdateSummary] = useState(() => createEmptySkillHubUpdateSummary());
   const skillHubUpdateRequestRef = useRef(0);
   const skillHubCatalogueByIDRef = useRef(new Map());
@@ -636,6 +639,7 @@ function TinodeWebApp({ location }) {
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
+  const visibleTopicId = activeView === 'chats' && !showOnboardingPreview ? activeTopicId : '';
   const draftAgent = taskDraft?.agent || emptyTaskSelectedAgent || persistedTaskContext?.agent;
   const draftAgentUID = Number(draftAgent?.uid || draftAgent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
@@ -1148,8 +1152,8 @@ function TinodeWebApp({ location }) {
   }, [user?.uid, handleWSMessage]);
 
   useEffect(() => {
-    sendWSActiveTopic(user?.uid ? activeTopicId : '');
-  }, [activeTopicId, user?.uid]);
+    sendWSActiveTopic(user?.uid ? visibleTopicId : '');
+  }, [visibleTopicId, user?.uid]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
@@ -1740,7 +1744,7 @@ function TinodeWebApp({ location }) {
         
         <div className="cc-sidebar-content-shell">
           <SidebarContent
-            activeTopic={activeTopic ? activeTopic.topicId : null}
+            activeTopic={visibleTopicId || null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
               setEmptyTaskSelectedAgent(null);
@@ -1862,12 +1866,14 @@ function TinodeWebApp({ location }) {
           <div className="v3-main-content">
             {activeView === 'apps' ? (
               <Suspense fallback={<SecondaryViewLoading label=" 应用" />}>
-                <AppsView user={user} topicId={activeTopic?.topicId || ''} />
+                <AppsView key={user?.uid} user={user} topicId={activeTopic?.topicId || ''} viewStateRef={appsViewStateRef} />
               </Suspense>
             ) : activeView === 'skillhub' ? (
               <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
                 <SkillHubView
+                  key={user?.uid}
                   user={user}
+                  viewStateRef={skillHubViewStateRef}
                   initialAgent={skillHubInitialAgent}
                   skillHubUpdateSummary={skillHubUpdateSummary}
                   onRegisterSkillHubCatalogue={registerSkillHubCatalogue}

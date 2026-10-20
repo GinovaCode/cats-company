@@ -267,7 +267,7 @@ describe('ChatMessage rich file rendering', () => {
     const preview = panel.querySelector('.v3-file-preview-image img');
     expect(preview?.getAttribute('src')).toBe('/uploads/images/classroom.jpg');
     expect(preview?.getAttribute('alt')).toBe('课堂照片.jpg');
-    expect(panel.querySelector('a[download]')?.getAttribute('href')).toBe('/uploads/images/classroom.jpg?download=1');
+    expect(panel.querySelector('a[download]')?.getAttribute('href')).toBe('/uploads/images/classroom.jpg?' + new URLSearchParams({ download: '1', name: '课堂照片.jpg' }));
 
     await act(async () => {
       Simulate.error(preview);
@@ -1291,7 +1291,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(previewImage?.getAttribute('alt')).toBe('poster.png preview');
     expect(closeButton?.getAttribute('aria-label')).toBe('关闭图片预览');
     expect(download?.getAttribute('aria-label')).toBe('下载图片 poster.png');
-    expect(download?.getAttribute('href')).toBe('/uploads/images/poster.png?download=1');
+    expect(download?.getAttribute('href')).toBe('/uploads/images/poster.png?download=1&name=poster.png');
     expect(download?.getAttribute('download')).toBe('poster.png');
     expect(document.activeElement).toBe(closeButton);
 
@@ -2855,7 +2855,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel).not.toBeNull();
     expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/report.pdf');
     const downloadLink = panel.querySelector('.v3-file-preview-actions a');
-    expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
+    expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1&name=report.pdf');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
     expect(downloadLink.getAttribute('target')).toBe('_blank');
   });
@@ -2971,7 +2971,7 @@ describe('ChatMessage rich file rendering', () => {
       expect(shareButton).not.toBeNull();
       expect(container.querySelector('.v3-artifact-actions button[aria-label="分享 PDF"]')).toBeNull();
       expect(panel.querySelector('a[download]').getAttribute('href'))
-        .toBe('/uploads/files/report.pdf?download=1');
+        .toBe('/uploads/files/report.pdf?download=1&name=report.pdf');
 
       await act(async () => {
         Simulate.click(shareButton);
@@ -3030,7 +3030,7 @@ describe('ChatMessage rich file rendering', () => {
       expect(shareButton).not.toBeNull();
       expect(container.querySelector('.v3-artifact-actions button[aria-label^="分享"]')).toBeNull();
       expect(panel.querySelector('a[download]').getAttribute('href'))
-        .toBe('/uploads/files/report.html?download=1');
+        .toBe('/uploads/files/report.html?download=1&name=report.html');
 
       await act(async () => {
         Simulate.click(shareButton);
@@ -3457,7 +3457,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions).toHaveLength(2);
     expect(actions[0].textContent).toContain('预览');
     expect(actions[1].textContent).toContain('下载');
-    expect(actions[1].getAttribute('href')).toBe('/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf?download=1');
+    expect(actions[1].getAttribute('href')).toBe('/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf?' + new URLSearchParams({ download: '1', name: '【电商带货主播_广州 4-6K】何荧 25年应届生.pdf' }));
     expect(actions[1].hasAttribute('download')).toBe(true);
     expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
     expect(actions[1].getAttribute('target')).toBe('_blank');
@@ -3559,7 +3559,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(preview.autoplay).toBe(true);
     expect(preview.getAttribute('aria-label')).toBe('product-demo.mp4');
     expect(download.getAttribute('aria-label')).toBe('下载视频 product-demo.mp4');
-    expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1');
+    expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1&name=product-demo.mp4');
     expect(download.getAttribute('download')).toBe('product-demo.mp4');
     expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
     expect(document.activeElement).toBe(closeButton);
@@ -3641,7 +3641,7 @@ describe('ChatMessage rich file rendering', () => {
       const shareButton = preview.querySelector('button[aria-label="分享视频"]');
       const download = preview.querySelector('a.oc-rich-media-preview-download');
       expect(shareButton).not.toBeNull();
-      expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1');
+      expect(download.getAttribute('href')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4?download=1&name=product-demo.mp4');
 
       await act(async () => {
         Simulate.click(shareButton);
@@ -4124,7 +4124,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-attachment-size').textContent).toContain('Word');
     const previewButton = container.querySelector('button.v3-artifact-action');
     expect(previewButton.disabled).toBe(true);
-    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1&name=handout.docx');
   });
 
   describe('gateway application cards, end to end', () => {

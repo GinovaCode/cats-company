@@ -697,7 +697,7 @@ describe('ImageGalleryPreview', () => {
     expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
     const download = document.querySelector('a.oc-rich-media-preview-download');
     expect(download?.getAttribute('aria-label')).toBe('下载图片 one.png');
-    expect(download?.getAttribute('href')).toBe('/uploads/images/one.png?download=1');
+    expect(download?.getAttribute('href')).toBe('/uploads/images/one.png?download=1&name=one.png');
     expect(download?.getAttribute('download')).toBe('one.png');
 
     await act(async () => {
@@ -705,7 +705,7 @@ describe('ImageGalleryPreview', () => {
     });
     expect(document.querySelector('.oc-rich-image-preview-media')?.getAttribute('src')).toBe('/uploads/images/two.png');
     expect(document.querySelector('a.oc-rich-media-preview-download')?.getAttribute('href'))
-      .toBe('/uploads/images/two.png?download=1');
+      .toBe('/uploads/images/two.png?download=1&name=two.png');
     expect(document.querySelector('[aria-label="上一张图片"]')).not.toBeNull();
     expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(false);
     expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
