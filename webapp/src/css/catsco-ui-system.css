@@ -4479,14 +4479,14 @@ html[data-theme="liquid"] .catsco-brand-mark {
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--cc-border-strong) 72%, transparent);
   border-radius: 50%;
-  background: color-mix(in srgb, var(--cc-panel) 92%, transparent);
+  background: var(--cc-bg);
   color: var(--cc-text);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   cursor: pointer;
 }
 
 .v3-composer-attachment-remove:hover:not(:disabled) {
-  background: var(--cc-hover);
+  background: color-mix(in srgb, var(--cc-text) 8%, var(--cc-bg));
 }
 
 .v3-composer-image-preview-backdrop {
