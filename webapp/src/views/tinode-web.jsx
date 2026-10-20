@@ -2056,7 +2056,7 @@ function TinodeWebApp({ location }) {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, onOpenServiceAgents, mobileModelInfo = null, onNewTask }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, topicId = '', title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin, onOpenServiceAgents, mobileModelInfo = null, onNewTask, conversationActions = null }) {
   const barRef = useRef(null);
   const mobileActionsRef = useRef(null);
   const mobileActionsTriggerRef = useRef(null);
@@ -2159,6 +2159,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         </div>
       )}
       <div className="v3-shell-actions">
+        {conversationActions}
         {onOpenServiceAgents && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="Agent 工具" title="Agent 工具（定制 Agent 工具集）">
             <Package size={17} />

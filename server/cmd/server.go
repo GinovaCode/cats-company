@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -69,6 +70,10 @@ func isProductionEnv() bool {
 		}
 	}
 	return false
+}
+
+func schemaInitializationFatal(err error) bool {
+	return err != nil && (isProductionEnv() || errors.Is(err, mysql.ErrSessionForkSchema))
 }
 
 func configureJWTSecret() error {
@@ -278,7 +283,7 @@ func main() {
 	defer db.Close()
 
 	if err := db.CreateSchema(); err != nil {
-		if isProductionEnv() {
+		if schemaInitializationFatal(err) {
 			log.Fatalf("schema initialization failed: %v", err)
 		}
 		log.Printf("schema creation (may already exist): %v", err)
@@ -897,6 +902,9 @@ func main() {
 		pushTestUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
+	mux.HandleFunc("/api/conversations/fork", server.JWTAuthMiddlewareWithDB(db)(conversationHandler.HandleFork))
+	mux.HandleFunc("/api/bot/session-forks", server.BotAPIKeyMiddlewareWithDB(db)(conversationHandler.HandleBotFork))
+	mux.HandleFunc("/api/bot/session-forks/complete", server.BotAPIKeyMiddlewareWithDB(db)(conversationHandler.HandleForkComplete))
 	mux.HandleFunc("/api/conversations/notification-preferences", authWithDB(conversationHandler.HandleNotificationPreference))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))

@@ -483,6 +483,7 @@ type Topic struct {
 // Message represents a chat message.
 type Message struct {
 	ID            int64                  `json:"id"`
+	ReplyTo       int64                  `json:"reply_to,omitempty"`
 	TopicID       string                 `json:"topic_id"`
 	FromUID       int64                  `json:"from_uid"`
 	Content       string                 `json:"content,omitempty"`

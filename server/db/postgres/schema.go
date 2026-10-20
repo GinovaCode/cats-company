@@ -179,6 +179,9 @@ func (a *Adapter) CreateSchema() error {
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
 	}
+	if _, err := a.db.Exec(migrateSessionForks); err != nil {
+		return fmt.Errorf("session fork schema: %w", err)
+	}
 	return nil
 }
 

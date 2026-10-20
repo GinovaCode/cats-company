@@ -72,6 +72,7 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 		{"messages", []driver.Value{"topic", 10, 2}, func(a *Adapter) ([]*types.Message, error) { return a.GetMessages("topic", 10, 2) }},
 		{"latest", []driver.Value{"topic", 10, 2}, func(a *Adapter) ([]*types.Message, error) { return a.GetLatestMessages("topic", 10, 2) }},
 		{"before", []driver.Value{"topic", int64(20), 10}, func(a *Adapter) ([]*types.Message, error) { return a.GetLatestMessagesBefore("topic", 20, 10) }},
+		{"around", []driver.Value{"topic", int64(20), 5, "topic", int64(20), 5}, func(a *Adapter) ([]*types.Message, error) { return a.GetMessagesAround("topic", 20, 10) }},
 		{"agent files", []driver.Value{int64(7), "topic", int64(14), 10}, func(a *Adapter) ([]*types.Message, error) {
 			return a.ListAgentFileMessages(7, "topic", 14, 10)
 		}},
@@ -84,9 +85,9 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 			}
 			defer db.Close()
 			createdAt := time.Date(2026, time.August, 7, 0, 0, 0, 0, time.UTC)
-			rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "metadata"}).
-				AddRow(int64(1), "topic", int64(7), "hello", "text", createdAt, nil, "normal", "user", []byte(`{"source_channel":"feishu"}`)).
-				AddRow(int64(2), "topic", int64(7), "legacy", "text", createdAt, nil, nil, nil, nil)
+			rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "metadata", "reply_to"}).
+				AddRow(int64(1), "topic", int64(7), "hello", "text", createdAt, nil, "normal", "user", []byte(`{"source_channel":"feishu"}`), int64(42)).
+				AddRow(int64(2), "topic", int64(7), "legacy", "text", createdAt, nil, nil, nil, nil, int64(0))
 			mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM`).WithArgs(test.args...).WillReturnRows(rows)
 			adapter := &Adapter{db: db}
 			messages, err := test.call(adapter)
@@ -95,6 +96,9 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 			}
 			if len(messages) != 2 || messages[0].Metadata["source_channel"] != "feishu" || messages[1].Metadata != nil {
 				t.Fatalf("history metadata = %#v", messages)
+			}
+			if messages[0].ReplyTo != 42 || messages[1].ReplyTo != 0 {
+				t.Fatalf("history replies = %#v", messages)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatalf("sql expectations: %v", err)
@@ -112,10 +116,10 @@ func TestListTopicFileMessagesUsesCompositeCursor(t *testing.T) {
 
 	createdAt := time.Date(2026, time.August, 15, 0, 0, 0, 0, time.UTC)
 	beforeCreatedAt := createdAt.Add(time.Hour)
-	rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role"}).
+	rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "reply_to"}).
 		AddRow(
 			int64(14), "grp_1686", int64(7), "", "file", createdAt,
-			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user",
+			[]byte(`[{"type":"file","payload":{"name":"example.pdf"}}]`), "code", "user", int64(0),
 		)
 	mock.ExpectQuery(`(?s)SELECT .*FROM messages.*WHERE topic_id =.*\(created_at, id\) < \(\?, \?\)`).
 		WithArgs("grp_1686", beforeCreatedAt, int64(14), 41).

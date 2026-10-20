@@ -1460,6 +1460,9 @@ func (h *Hub) validateMessagePublish(uid int64, accountType types.AccountType, t
 	if h == nil {
 		return 0, ""
 	}
+	if code, text := sessionForkPublishError(h.db, topic); code != 0 {
+		return code, text
+	}
 	if applyRateLimit && h.rateLimiter != nil {
 		if !h.rateLimiter.Allow(uid, accountType) {
 			return http.StatusTooManyRequests, "rate limit exceeded"
@@ -1724,6 +1727,10 @@ func isStreamPub(msg *MsgClientPub) bool {
 }
 
 func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
+	if code, text := sessionForkPublishError(h.db, topic); code != 0 {
+		h.SendToClient(client, &ServerMessage{Ctrl: &MsgServerCtrl{ID: msg.ID, Code: code, Text: text}})
+		return
+	}
 	uid := client.uid
 	streamID := firstMetadataString(msg.Metadata, "stream_id")
 	streamType := strings.TrimSpace(firstNonEmpty(msg.Type, msg.MsgType))

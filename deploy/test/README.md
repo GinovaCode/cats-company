@@ -49,6 +49,11 @@ It does not touch production directories.
 
 ## PostgreSQL test
 
+The dedicated MySQL profile persists the session-fork trigger prerequisite in
+its server command. It does not grant the application global administrator rights.
+Read [MySQL fork deployment requirements](../mysql-session-fork.md) before using
+an external/shared MySQL instance or upgrading an existing test stack.
+
 To run the test stack against PostgreSQL, copy
 `deploy/test/env.test.postgres.example` to `<test-stack-root>/env/test.env` and
 fill real secrets.
