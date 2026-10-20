@@ -77,6 +77,49 @@ func forkComplete(t *testing.T, db *Adapter, f *types.SessionFork, state string)
 	return got
 }
 
+func TestSessionForkPostgresFriendAndRevocation(t *testing.T) {
+	db, req := newSessionForkPostgres(t)
+	ctx := context.Background()
+	if _, err := db.db.Exec("UPDATE bot_config SET owner_id=NULL WHERE user_id=$1", req.AgentUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateFriendRequest(req.ActorUserID, req.AgentUID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateSessionFork(ctx, req); !errors.Is(err, store.ErrSessionForkForbidden) {
+		t.Fatalf("pending friendship: %v", err)
+	}
+	if err := db.AcceptFriendRequest(req.ActorUserID, req.AgentUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SaveMessage(req.SourceTopicID, req.ActorUserID, "shared agent history", "text"); err != nil {
+		t.Fatal(err)
+	}
+	f := forkCreate(t, db, req)
+	if got := forkComplete(t, db, f, "ready"); got.State != "ready" {
+		t.Fatalf("friend copy: %+v", got)
+	}
+	// A normal two-participant group is also a valid source, not just agent_task.
+	if _, err := db.db.Exec("UPDATE groups SET group_kind='group' WHERE id=$1", strings.TrimPrefix(f.TargetTopicID, "grp_")); err != nil {
+		t.Fatal(err)
+	}
+	req.RequestID, req.SourceTopicID = "friend-group", f.TargetTopicID
+	second := forkCreate(t, db, req)
+	if err := db.RemoveFriend(req.ActorUserID, req.AgentUID); err != nil {
+		t.Fatal(err)
+	}
+	if got := forkComplete(t, db, second, "ready"); got.State != "failed" {
+		t.Fatalf("revocation bypassed: %+v", got)
+	}
+	req.RequestID = "revoked"
+	if _, err := db.CreateSessionFork(ctx, req); !errors.Is(err, store.ErrSessionForkForbidden) {
+		t.Fatalf("revoked creation: %v", err)
+	}
+	if writable, err := db.SessionForkWritable(ctx, second.TargetTopicID); err != nil || writable {
+		t.Fatalf("failed fork writable=%v err=%v", writable, err)
+	}
+}
+
 func TestSessionForkPostgresCloneAndTerminalRetry(t *testing.T) {
 	db, req := newSessionForkPostgres(t)
 	blocks := []types.ContentBlock{{Type: "file", Payload: map[string]interface{}{"url": "/uploads/files/retained.pdf", "name": "report.pdf", "size": float64(12)}}}

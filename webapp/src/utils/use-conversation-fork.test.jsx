@@ -40,6 +40,62 @@ it('retains one request ID after uncertain failure, retry and remount', async ()
   expect(value.operation.state).toBe('pending');
 });
 
+it('shares a pending request between header and sidebar instead of allocating a second copy', async () => {
+  const handles = {};
+  let complete;
+  api.forkConversation.mockImplementation(payload => new Promise(resolve => {
+    complete = () => resolve({ ...record, request_id: payload.request_id });
+  }));
+  api.getConversationFork.mockImplementation(async ({ requestId }) => ({ ...record, request_id: requestId }));
+  function Control({ id }) {
+    handles[id] = useConversationFork({ topic: 'p2p_1_2', userId: 1 });
+    return null;
+  }
+  await act(async () => root.render(<><Control id="header" /><Control id="sidebar" /></>));
+  let pending;
+  await act(async () => { pending = handles.sidebar.create({ newRequest: true }); });
+  expect(handles.header.operation.state).toBe('pending');
+  await act(async () => handles.header.create({ newRequest: true }));
+  expect(api.forkConversation).toHaveBeenCalledTimes(1);
+  await act(async () => { complete(); await pending; });
+  expect(handles.header.operation.request_id).toBe(handles.sidebar.operation.request_id);
+});
+
+it('rechecks after a delayed pre-creation 404 instead of losing a successful sidebar notification', async () => {
+  const handles = {};
+  let rejectLookup;
+  let ready;
+  api.getConversationFork.mockImplementationOnce(() => new Promise((_, reject) => { rejectLookup = reject; }))
+    .mockImplementation(async () => ready);
+  api.forkConversation.mockImplementation(async payload => {
+    ready = { ...record, request_id: payload.request_id, state: 'ready' };
+    return ready;
+  });
+  function Control({ id }) {
+    handles[id] = useConversationFork({ topic: 'p2p_1_2', userId: 1 });
+    return null;
+  }
+  await act(async () => root.render(<><Control id="header" /><Control id="sidebar" /></>));
+  await act(async () => handles.sidebar.create({ newRequest: true }));
+  expect(handles.header.busy).toBe(true);
+  await act(async () => rejectLookup(Object.assign(new Error('session_fork_not_found'), { status: 404 })));
+  expect(api.getConversationFork).toHaveBeenCalledTimes(2);
+  expect(handles.header.error).toBe('');
+  expect(handles.header.busy).toBe(false);
+  expect(handles.header.operation.state).toBe('ready');
+});
+
+it('exposes source recovery as busy while reopening a saved request', async () => {
+  localStorage.setItem('cc:conversation-fork:1:p2p_1_2', JSON.stringify({source_topic_id:'p2p_1_2',request_id:'r1'}));
+  let resolveLookup;
+  api.getConversationFork.mockImplementationOnce(() => new Promise(resolve => { resolveLookup=resolve; }));
+  await mount();
+  expect(value.busy).toBe(true);
+  await act(async () => resolveLookup(record));
+  expect(value.busy).toBe(false);
+  expect(value.operation.state).toBe('pending');
+});
+
 it('blocks pending and failed destination composition, and unlocks only after authoritative ready', async () => {
   vi.useFakeTimers();
   api.getConversationFork.mockResolvedValueOnce(record)

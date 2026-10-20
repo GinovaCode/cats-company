@@ -95,6 +95,8 @@ vi.mock('../widgets/mobile-channel-bind-modal', () => ({
 vi.mock('../api', () => ({
   api: {
     getConversations: vi.fn(),
+    forkConversation: vi.fn(),
+    getConversationFork: vi.fn(),
     getFriends: vi.fn(),
     getGroups: vi.fn(),
     getPendingRequests: vi.fn(),
@@ -143,6 +145,7 @@ describe('ChatListView sidebar sections', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
     api.getConversations.mockResolvedValue({ conversations: [] });
+    api.getConversationFork.mockRejectedValue(Object.assign(new Error('session_fork_not_found'), { status: 404 }));
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getGroups.mockResolvedValue({ groups: [] });
     api.getPendingRequests.mockResolvedValue({ requests: [] });
@@ -1164,6 +1167,35 @@ describe('ChatListView sidebar sections', () => {
       await Promise.resolve();
     });
     expect(api.disbandGroup).toHaveBeenCalledWith(88);
+  });
+
+  it('copies a friend Agent task from the sidebar and opens its independent history', async () => {
+    api.getConversations.mockResolvedValue({ conversations: [{
+      id: 'grp_88', group_id: 88, name: 'Shared Cloud Task', is_group: true,
+      is_agent_task: true, has_bot: true, member_count: 2, agent_ids: [42],
+    }] });
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 42, relation: 'friend', is_online: true }] });
+    api.forkConversation.mockImplementation(async payload => ({ ...payload, target_topic_id: 'grp_99', state: 'ready' }));
+    await mount();
+    await act(async () => Simulate.click(document.querySelector('[aria-label="Shared Cloud Task 更多操作"]')));
+    const action = document.querySelector('[aria-label="复制为新会话 Shared Cloud Task"]');
+    expect(action).toBeTruthy();
+    expect(action.disabled).toBe(false);
+    await act(async () => Simulate.click(action));
+    expect(api.forkConversation).toHaveBeenCalledWith(expect.objectContaining({ source_topic_id: 'grp_88' }), expect.anything());
+    expect(api.createGroup).not.toHaveBeenCalled();
+    await act(async () => Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('打开新会话')).click());
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'grp_99', isAgentTask: true }));
+  });
+
+  it('does not offer sidebar copying for a multi-participant task', async () => {
+    api.getConversations.mockResolvedValue({ conversations: [{
+      id: 'grp_88', group_id: 88, name: 'Team Task', is_group: true,
+      is_agent_task: true, has_bot: true, member_count: 3, agent_ids: [42],
+    }] });
+    await mount();
+    await act(async () => Simulate.click(document.querySelector('[aria-label="Team Task 更多操作"]')));
+    expect(document.querySelector('[aria-label="复制为新会话 Team Task"]')).toBeNull();
   });
 
   it('keeps history tasks compact and exposes pin beside the three-dot menu', async () => {
@@ -2472,7 +2504,7 @@ describe('ChatListView sidebar sections', () => {
     expect(document.querySelector('.cc-chat-action-menu')).toBeFalsy();
   });
 
-  it.each([620, 480])('keeps all seven project task actions reachable in a %ipx-high viewport', async (height) => {
+  it.each([620, 480])('keeps all eight project task actions reachable in a %ipx-high viewport', async (height) => {
     const viewportHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
     api.getConversations.mockResolvedValue({ conversations: [{
@@ -2483,7 +2515,7 @@ describe('ChatListView sidebar sections', () => {
     const originalRect = HTMLElement.prototype.getBoundingClientRect;
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function rect() {
       if (this.classList.contains('cc-chat-action-menu')) {
-        return { top: 0, bottom: 296, height: 296, left: 0, right: 184, width: 184 };
+        return { top: 0, bottom: 332, height: 332, left: 0, right: 184, width: 184 };
       }
       return originalRect.call(this);
     });
@@ -2495,18 +2527,18 @@ describe('ChatListView sidebar sections', () => {
       await act(async () => Simulate.click(trigger));
       const menu = document.querySelector('.cc-sidebar-floating-menu');
       const items = menu.querySelectorAll('[role="menuitem"]');
-      expect(items).toHaveLength(7);
+      expect(items).toHaveLength(8);
       expect(menu.parentElement).toBe(document.body);
       expect(container.querySelector('.cc-chat-action-menu')).toBeNull();
       expect(menu.style.position).toBe('fixed');
       expect(menu.style.overflowY).toBe('auto');
       expect(menu.dataset.placement).toBe(height === 620 ? 'bottom' : 'top');
-      const renderedHeight = Math.min(296, parseFloat(menu.style.maxHeight));
+      const renderedHeight = Math.min(332, parseFloat(menu.style.maxHeight));
       expect(parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
       expect(parseFloat(menu.style.top) + renderedHeight).toBeLessThanOrEqual(height - 8);
       await act(async () => Simulate.keyDown(items[0], { key: 'End' }));
-      expect(document.activeElement).toBe(items[6]);
-      await act(async () => Simulate.keyDown(items[6], { key: 'Escape' }));
+      expect(document.activeElement).toBe(items[7]);
+      await act(async () => Simulate.keyDown(items[7], { key: 'Escape' }));
       expect(document.querySelector('.cc-sidebar-floating-menu')).toBeNull();
       expect(document.activeElement).toBe(trigger);
     } finally {

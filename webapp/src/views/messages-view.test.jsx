@@ -979,9 +979,9 @@ describe('MessagesView composer draft isolation', () => {
     }
   });
 
-  it('copies an owned agent conversation and opens the normal target without sending a message', async () => {
+  it.each(['owner', 'friend'])('copies a %s agent conversation and opens the normal target without sending a message', async (relation) => {
     const onActivateTopic = vi.fn();
-    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, topic_id: 'p2p_1_2', is_owner: true, display_name: 'Agent' }] });
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, topic_id: 'p2p_1_2', relation, display_name: 'Agent' }] });
     api.forkConversation.mockImplementation(async payload => ({
       ...payload, target_topic_id: 'grp_99', state: 'ready',
     }));

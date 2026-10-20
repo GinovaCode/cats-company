@@ -7,6 +7,7 @@ import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
+import { ConversationForkMenuItem } from '../widgets/conversation-fork';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
@@ -2478,6 +2479,20 @@ export default function ChatListView({
     );
   };
 
+  const renderConversationForkMenuItem = (chat) => {
+    // Sidebar summaries determine discoverability; the server verifies exact
+    // membership and existing Agent access again inside the copy transaction.
+    const candidate = chat.isGroup
+      ? chat.memberCount === 2 && (chat.hasBot || chat.isAgentTask)
+      : chat.isBot;
+    if (!candidate) return null;
+    return <ConversationForkMenuItem key={`${user.uid}:${chat.id}`} topic={chat.id}
+      userId={user.uid} name={chat.name} onActivateTopic={value => {
+        setOpenChatMenuKey('');
+        onSelectTopic(value);
+      }} />;
+  };
+
   const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (
@@ -2652,6 +2667,7 @@ export default function ChatListView({
               <TextCursorInput size={14} aria-hidden="true" />
               <span>修改任务名称</span>
             </button>
+            {renderConversationForkMenuItem(chat)}
             <button
               type="button"
               role="menuitem"
@@ -2804,6 +2820,7 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
               </button>
+              {renderConversationForkMenuItem(chat)}
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
@@ -2966,6 +2983,7 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群组' : '置顶群组'}</span>
               </button>
+              {renderConversationForkMenuItem(chat)}
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />

@@ -106,7 +106,7 @@ func (h *ConversationHandler) forkSourceAgent(uid int64, topic string) (int64, e
 		}
 	} else if isGroupTopic(topic) {
 		group, err := h.db.GetGroup(extractGroupID(topic))
-		if err != nil || group == nil || topic != "grp_"+formatInt64(group.ID) || group.OwnerID != uid || group.Kind != types.GroupKindAgentTask || group.MemberCount != 2 || len(group.AgentIDs) != 1 {
+		if err != nil || group == nil || topic != "grp_"+formatInt64(group.ID) || group.MemberCount != 2 || len(group.AgentIDs) != 1 {
 			return 0, store.ErrSessionForkForbidden
 		}
 		member, err := h.db.IsGroupMember(group.ID, uid)
@@ -117,8 +117,8 @@ func (h *ConversationHandler) forkSourceAgent(uid int64, topic string) (int64, e
 	} else {
 		return 0, store.ErrSessionForkForbidden
 	}
-	owner, err := h.db.GetBotOwner(agent)
-	if err != nil || owner != uid {
+	// Fork uses the same owner-or-friend access as ordinary Agent conversations.
+	if _, _, _, err := accessibleAgentUser(h.db, uid, agent); err != nil {
 		return 0, store.ErrSessionForkForbidden
 	}
 	return agent, nil

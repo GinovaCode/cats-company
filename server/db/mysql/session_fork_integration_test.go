@@ -247,6 +247,48 @@ func mysqlForkRevision(t *testing.T, db *Adapter, topic string) int64 {
 	return revision
 }
 
+func TestSessionForkMySQLFriendAndRevocation(t *testing.T) {
+	db, req := newSessionForkMySQL(t)
+	ctx := context.Background()
+	if _, err := db.db.Exec("UPDATE bot_config SET owner_id=NULL WHERE user_id=?", req.AgentUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateFriendRequest(req.ActorUserID, req.AgentUID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateSessionFork(ctx, req); !errors.Is(err, store.ErrSessionForkForbidden) {
+		t.Fatalf("pending friendship: %v", err)
+	}
+	if err := db.AcceptFriendRequest(req.ActorUserID, req.AgentUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SaveMessage(req.SourceTopicID, req.ActorUserID, "shared agent history", "text"); err != nil {
+		t.Fatal(err)
+	}
+	f := mysqlForkCreate(t, db, req)
+	if got := mysqlForkComplete(t, db, f, "ready"); got.State != "ready" {
+		t.Fatalf("friend copy: %+v", got)
+	}
+	if _, err := db.db.Exec("UPDATE `groups` SET group_kind='group' WHERE id=?", strings.TrimPrefix(f.TargetTopicID, "grp_")); err != nil {
+		t.Fatal(err)
+	}
+	req.RequestID, req.SourceTopicID = "friend-group", f.TargetTopicID
+	second := mysqlForkCreate(t, db, req)
+	if err := db.RemoveFriend(req.ActorUserID, req.AgentUID); err != nil {
+		t.Fatal(err)
+	}
+	if got := mysqlForkComplete(t, db, second, "ready"); got.State != "failed" {
+		t.Fatalf("revocation bypassed: %+v", got)
+	}
+	req.RequestID = "revoked"
+	if _, err := db.CreateSessionFork(ctx, req); !errors.Is(err, store.ErrSessionForkForbidden) {
+		t.Fatalf("revoked creation: %v", err)
+	}
+	if writable, err := db.SessionForkWritable(ctx, second.TargetTopicID); err != nil || writable {
+		t.Fatalf("failed fork writable=%v err=%v", writable, err)
+	}
+}
+
 func TestSessionForkMySQLCloneAndTerminalRetry(t *testing.T) {
 	db, req := newSessionForkMySQL(t)
 	blocks := []types.ContentBlock{{Type: "file", Payload: map[string]interface{}{"url": "/uploads/files/retained.pdf", "name": "report.pdf", "size": float64(12)}}}

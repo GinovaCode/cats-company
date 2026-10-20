@@ -3,24 +3,29 @@ import { canForkConversation, forkTargetTopic, normalizeForkRecord } from './con
 const agent = { uid: 2, is_owner: true };
 
 describe('conversation fork eligibility', () => {
-  it('allows only the current user and an owned agent in p2p', () => {
+  it('allows the current user and an owned or friend agent in p2p', () => {
     expect(canForkConversation({ topic: 'p2p_1_2', userId: 'usr1', agents: [agent] })).toBe(true);
     expect(canForkConversation({ topic: 'p2p_3_2', userId: 1, agents: [agent] })).toBe(false);
     expect(canForkConversation({ topic: 'p2p_1_2', userId: 1, agents: [{ uid: 2 }] })).toBe(false);
     expect(canForkConversation({ topic: 'p2p_1_2', userId: 1, agents: [] })).toBe(false);
+    expect(canForkConversation({ topic: 'p2p_1_2', userId: 1, agents: [{ uid: 2, relation: 'friend' }] })).toBe(true);
+    expect(canForkConversation({ topic: 'p2p_1_2', userId: 1, agents: [{ uid: 2, relation: 'friend', deployment_status: 'running', visibility: 'cloud' }] })).toBe(true);
   });
 
-  it('requires an owned agent_task with exactly the user and one agent', () => {
+  it('requires exactly the current user and one accessible agent, regardless of group kind or ownership', () => {
     const source = {
       topic: 'grp_8', userId: 1, agents: [agent],
       group: { kind: 'agent_task' },
       members: [{ user_id: 'usr1', role: 'owner' }, { user_id: 2, is_bot: true }],
     };
     expect(canForkConversation(source)).toBe(true);
-    expect(canForkConversation({ ...source, group: { kind: 'group' } })).toBe(false);
+    expect(canForkConversation({ ...source, group: { kind: 'group' } })).toBe(true);
     expect(canForkConversation({ ...source, members: [...source.members, { user_id: 3 }] })).toBe(false);
     expect(canForkConversation({ ...source, members: [source.members[0]] })).toBe(false);
-    expect(canForkConversation({ ...source, members: [{ user_id: 1, role: 'member' }, source.members[1]] })).toBe(false);
+    expect(canForkConversation({ ...source, members: [{ user_id: 1, role: 'member' }, source.members[1]] })).toBe(true);
+    expect(canForkConversation({ ...source, agents: [{ uid: 2, relation: 'friend' }] })).toBe(true);
+    expect(canForkConversation({ ...source, members: [{ user_id: 3 }, source.members[1]] })).toBe(false);
+    expect(canForkConversation({ ...source, agents: [{ uid: 2, relation: 'friend' }, { uid: 3, relation: 'friend' }], members: [{ user_id: 2 }, { user_id: 3 }] })).toBe(false);
   });
 });
 
