@@ -1155,6 +1155,67 @@ Production switches remain off pending isolated end-to-end acceptance.
 
 ## Immutable runtime capture evidence
 
+### Internal authenticated capture transport
+
+`Hub.CaptureSkillHubPublication(ctx, actorUID, entryID)` is an internal Go service
+operation. It does not register an HTTP/browser/model endpoint or scheduler.
+It is disabled unless both the existing workspace-entry gate and
+`CATSCO_SKILLHUB_PUBLICATION_CAPTURE_ENABLED=true` are set at Hub construction.
+No production enablement is part of this change. A future lifecycle-bound
+dispatcher must call it explicitly with an already accepted entry.
+
+The transport reads the original actor, Bot and source from admission, requires
+a persisted successful source probe, and resolves the current authenticated
+node-local Bot socket, device, body lease, installation and durable connection
+generation. Reconnect may advance the generation but cannot move the source.
+The runtime must advertise `skillhub.publication.capture.v1` in addition to the
+probe capability. Old runtimes and remote-node routes fail closed.
+
+Each request has a server-generated `pubcapture_` ID. Its only payload fields
+are `entry_id`, `bot_uid`, `local_skill_id` and `workspace_generation`; the owner
+and device envelope is derived from the authenticated route. It never carries
+paths, file contents, upload tokens or a publication confirmation. The reserved
+`skillhub.publication.*` namespace remains rejected for generic client requests.
+Both source selectors are opaque references under the admission/store/schema
+contract (`^[A-Za-z0-9._:-]{1,128}$`) and are forwarded unchanged. For example,
+`local-skill-1` / `workspace-v1` remains valid here; this transport does not require
+a `pubsrc-` prefix or interpret a workspace generation as a digest. The runtime
+must still verify that these selectors identify its admitted source.
+The expected result has exactly six fields matching XiaoBa's retained receipt:
+`schemaVersion:1`, `entryId`, `candidateRevision:1`, `requestHash`,
+`sourceSnapshotHash`, `requestBytes`. Digests must be lowercase SHA256 and bytes
+must be an integer from 1 to 32 MiB, the current runtime transport ceiling.
+This does not lower the store's independent 75 MiB authority ceiling below.
+
+Only the exact authenticated runtime can claim the pending response. Owner
+sessions, other sockets, late/unknown IDs, mixed errors/results, extra fields
+and mismatched owner/device/tool/entry facts cannot supply capture evidence.
+The read loop queues only validated scalar facts and performs no DB work;
+the calling goroutine rechecks live authority before recording. Duplicate replies
+cannot replace a queued/in-flight write. Reserved late replies never fall through
+to generic routing/logging. The ack is 200 only after the store succeeds; it is
+not an upload or publication receipt. A returned record may describe the original
+connection after a legitimate reconnect; it is historical evidence, never current
+upload authority by itself.
+
+There are eight operation slots per Hub, one operation per entry and a maximum
+25-second deadline bounded by the caller's context. Sending is nonblocking and
+never disconnects a Bot for backpressure. There is no automatic retry or new
+durable attempt budget: future orchestration must provide bounded scheduling and
+recovery. A process loss can leave a private runtime capture, but no inferred DB
+receipt; a new authenticated request must return the same retained candidate.
+Cancellation can race with local capture, but store checks reject its late receipt
+and this operation never grants upload authority.
+
+Tests cover opaque selector pass-through, invalid admission references, strict
+receipt digests/byte bounds, bounded dispatch, spoof/malformed/duplicate/late replies, owner and
+generation changes, cancellation, disabled/legacy runtimes and a blocked database
+without blocking the socket read loop. The mandatory PostgreSQL contract uses
+real Hub routing and storage across adapter/reconnect reconstruction, candidate
+substitution and cancellation. Its runtime peer is synthetic; the XiaoBa RPC
+consumer, durable capture scheduler and upload-grant delivery remain to be wired
+before live three-repository acceptance or production enablement.
+
 Migration 000043 adds a retained capture receipt per entry, distinct from the
 read-only `source_verified` probe. It stores candidate revision 1, request SHA256,
 Cloud candidate SHA256, exact request byte count (at most 75 MiB, matching grants), and the
@@ -1189,9 +1250,9 @@ CatsCo protocol constants. This PR does not increase them or Cloud's configured
 HTTP body limit, and does not claim end-to-end support for 75 MiB. A future
 dispatcher must respect the effective runtime/Cloud limits before issuing work.
 
-`RecordSkillHubPublicationCapture` is an **internal store API**, not a new
-HTTP/RPC endpoint. A future trusted dispatcher must correlate a capture response
-with its own outstanding request and recheck the exact live Bot socket, device,
+`RecordSkillHubPublicationCapture` is an **internal store API**, not a public
+HTTP/RPC endpoint. The internal Hub capture transport correlates a response
+with its own outstanding request and rechecks the exact live Bot socket, device,
 body lease and installation before calling it. The database independently checks
 the original active human, Bot ownership/enabled state, immutable source selector
 and durable connection generation, under the same entry lock used by cancellation
