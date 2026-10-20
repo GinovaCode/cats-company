@@ -154,6 +154,10 @@ func TestSkillHubPublicationCancellationCloudContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	grantInput := store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: binding, Issuer: peer.Issuer, Audience: peer.Audience, Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: peer.RequestHash, SourceSnapshotHash: peer.SourceHash, RequestBytes: peer.RequestBytes}
+	// Explicit trusted-runtime test adapter, not a live capture dispatch.
+	if _, err := a.RecordSkillHubPublicationCapture(ctx, store.SkillHubPublicationCaptureInput{EntryID: entry.ID, Binding: binding, Revision: 1, RequestHash: peer.RequestHash, SourceSnapshotHash: peer.SourceHash, RequestBytes: peer.RequestBytes}); err != nil {
+		t.Fatal(err)
+	}
 	grant, _, err := a.IssueSkillHubPublicationUploadGrant(ctx, grantInput)
 	if err != nil {
 		t.Fatal(err)

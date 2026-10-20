@@ -256,6 +256,10 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 			t.Fatal(err)
 		}
 		in := store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: binding, Issuer: issuer, Audience: audience, Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: strings.Repeat("a", 64), SourceSnapshotHash: strings.Repeat("b", 64), RequestBytes: 123}
+		// Explicit trusted-runtime test adapter, not a live capture dispatch.
+		if _, err := a.RecordSkillHubPublicationCapture(ctx, store.SkillHubPublicationCaptureInput{EntryID: in.EntryID, Binding: binding, Revision: 1, RequestHash: in.RequestHash, SourceSnapshotHash: in.SourceSnapshotHash, RequestBytes: in.RequestBytes}); err != nil {
+			t.Fatal(err)
+		}
 		g, _, err := a.IssueSkillHubPublicationUploadGrant(ctx, in)
 		if err != nil {
 			t.Fatal(err)

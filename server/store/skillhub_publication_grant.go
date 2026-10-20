@@ -44,7 +44,8 @@ func ValidSkillHubPublicationOrigin(origin string) bool {
 
 // Internal-only input. The future runtime adapter must derive Binding from the
 // authenticated socket/body lease and obtain digests from a private immutable
-// capture. A prior source probe alone is NOT proof of that capture. Never decode
+// capture. The issuer now requires the matching persisted capture receipt;
+// a prior source probe alone is NOT proof of that capture. Never decode
 // a browser/model payload directly into this input.
 type SkillHubPublicationUploadInput struct {
 	EntryID            string

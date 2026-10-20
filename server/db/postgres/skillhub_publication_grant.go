@@ -78,14 +78,18 @@ func (a *Adapter) IssueSkillHubPublicationUploadGrant(ctx context.Context, in st
 	if err := lockPublicationDeliveryAuthority(ctx, tx, in.EntryID, in.Binding); err != nil {
 		return nil, empty, err
 	}
-	var verified bool
-	err = tx.QueryRowContext(ctx, `SELECT delivery_state='source_verified' AND source_verified_at IS NOT NULL
-		FROM skillhub_publication_outbox WHERE entry_id=$1 AND kind='capture_candidate' FOR SHARE`, in.EntryID).Scan(&verified)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !verified) {
-		return nil, empty, store.ErrSkillHubPublicationDenied
+	if err := lockPublicationVerifiedSource(ctx, tx, in.EntryID); err != nil {
+		return nil, empty, err
 	}
+	capture, err := readPublicationCapture(ctx, tx, in.EntryID)
 	if err != nil {
 		return nil, empty, err
+	}
+	if capture == nil {
+		return nil, empty, store.ErrSkillHubPublicationDenied
+	}
+	if !samePublicationCapture(capture.Input, captureForUpload(in)) {
+		return nil, empty, store.ErrSkillHubPublicationConflict
 	}
 	old, _, err := readUploadGrant(ctx, tx, in.EntryID)
 	if err != nil {

@@ -543,8 +543,9 @@ Cloud must independently recompute hashes and enforce its effective limits.
 These store inputs are trusted internal facts, not a browser/model request DTO.
 
 Issuance requires current active human/active enabled Bot ownership and body,
-current durable connection generation, an uncancelled entry and a successful
-source-probe receipt. **A probe is not capture proof.** The future adapter must
+current durable connection generation, an uncancelled entry, a successful
+source-probe receipt and a matching retained capture receipt (see below).
+**A probe is not capture proof.** The future adapter must
 also check the live socket/body lease, capture capability, current workspace,
 safe private-copy provenance and actual exact bytes before calling this store.
 In particular, the store must not become a shortcut for arbitrary runtime files.
@@ -1151,6 +1152,62 @@ uses real human admission and permit requests with an explicitly synthetic Cloud
 observation adapter. It verifies dispatcher recovery after a lost permit reply,
 unchanged permit identity and cancellation-first refusal, not live Runtime upload.
 Production switches remain off pending isolated end-to-end acceptance.
+
+## Immutable runtime capture evidence
+
+Migration 000042 adds a retained capture receipt per entry, distinct from the
+read-only `source_verified` probe. It stores candidate revision 1, request SHA256,
+Cloud candidate SHA256, exact request byte count (at most 75 MiB, matching grants), and the
+observed route generation/node/socket with a database timestamp. It stores no
+files, local paths, upload secrets or model content. UPDATE, DELETE and populated
+down migrations are rejected; startup/up never infer evidence from old probes
+or grants.
+
+This is the CatsCo metadata/authority contract, not a promise that every runtime
+or transport can upload 75 MiB. Capture validation aliases
+`SkillHubPublicationUploadMaxBytes`; migration 000042 and startup DDL use the same
+78,643,200-byte ceiling. No candidate in the previously valid (32 MiB, 75 MiB]
+range is silently stranded between recording its receipt and issuing its grant.
+
+The separate XiaoBa implementation currently has a smaller limit. In merged
+[XiaoBa PR541](https://github.com/buildsense-ai/XiaoBa-CLI/pull/541),
+[`publication-upload.ts`](https://github.com/buildsense-ai/XiaoBa-CLI/blob/d7b3cbdea91bc300a0a5b3008cee51b83c0fc760/src/skillhub/publication-upload.ts#L46)
+rejects a grant request body larger than 32 MiB;
+[`publication-capture.ts`](https://github.com/buildsense-ai/XiaoBa-CLI/blob/d7b3cbdea91bc300a0a5b3008cee51b83c0fc760/src/skillhub/publication-capture.ts#L24)
+limits the serialized private envelope to 32 MiB (including envelope overhead,
+not just the HTTP request body). Those are runtime implementation limits, not
+CatsCo protocol constants. This PR does not increase them or Cloud's configured
+HTTP body limit, and does not claim end-to-end support for 75 MiB. A future
+dispatcher must respect the effective runtime/Cloud limits before issuing work.
+
+`RecordSkillHubPublicationCapture` is an **internal store API**, not a new
+HTTP/RPC endpoint. A future trusted dispatcher must correlate a capture response
+with its own outstanding request and recheck the exact live Bot socket, device,
+body lease and installation before calling it. The database independently checks
+the original active human, Bot ownership/enabled state, immutable source selector
+and durable connection generation, under the same entry lock used by cancellation
+and grant issuance. A probe alone does not prove that an immutable envelope exists.
+
+First capture freezes the candidate. Exact replay, including an authenticated
+reconnect of the same source, returns the original evidence and time. New bytes,
+digests, device/body/installation, generation rollback or same-generation socket
+substitution cannot replace it. Replays still check current authority and reject
+cancelled entries. Source files are not copied, modified, executed or deleted by
+CatsCo.
+
+New upload grants and renewals now require that stored receipt and matching
+digests/size/revision/binding. Pre-042 grants are not retroactively converted into
+evidence: an unexpired grant remains introspectable until its original expiry,
+subject to the existing authority checks; renewal requires an actual matching
+capture receipt. A late receipt cannot contradict a candidate already frozen in
+a legacy grant. No new grants are backfilled or automatically issued.
+
+Tests explicitly seed trusted-runtime receipts where an upload is required;
+source-probe dispatch tests are **not** live capture tests. The Cloud commit-peer
+contract fixture must likewise record its actual captured digests when its CatsCo
+pin advances past this change. Live capture dispatch, authenticated runtime RPC,
+grant delivery and complete isolated publishing acceptance remain separate work.
+No production flag, capability, UI or background worker is enabled here.
 
 Pure store tests cover bounded inputs, policies and immutable identity fields.
 HTTP tests use real signed JWTs and adapter doubles to cover active-human-only
