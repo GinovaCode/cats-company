@@ -52,6 +52,20 @@ func isJudgeableActivationMessage(msg *ServerMessage) bool {
 	return !isInternalAgentWorkingMessage(displayType, msg.Data.Content, msg.Data.ContentBlocks)
 }
 
+// isInternalAgentWorkingMessage reports whether a message is agent runtime traffic
+// rather than something a member could read and reply to.
+//
+// The predicate is wider than "internal blocks with no readable block". It is:
+// the display type is a working kind, OR (the message has an internal block AND
+// no readable block). The first clause returns immediately and never inspects
+// the blocks, so a message typed as a working kind counts as traffic even when
+// it also carries readable text.
+//
+// Six call sites share this predicate — isJudgeableActivationMessage,
+// channel_outbound.go, push_notification_turns.go, wshandler.go, and two in
+// messages.go (the durable-transcript check and the peer-copy reason split).
+// Narrowing it to the block-based reading would change what the activation judge
+// can see, so that is a separate change rather than a local tweak.
 func isInternalAgentWorkingMessage(displayType string, content interface{}, blocks []types.ContentBlock) bool {
 	switch strings.ToLower(strings.TrimSpace(displayType)) {
 	case "runtime_plan", "thinking", "tool_use", "tool_result", "debug",
