@@ -1,6 +1,6 @@
 package postgres
 
-// Mirror migration 000042. No evidence is inferred from old probes or grants.
+// Mirror migration 000043. No evidence is inferred from old probes or grants.
 const createSkillHubPublicationCapturesTable = `
 CREATE TABLE IF NOT EXISTS skillhub_publication_captures (
     entry_id VARCHAR(41) PRIMARY KEY REFERENCES skillhub_publication_entries(entry_id) ON DELETE RESTRICT,

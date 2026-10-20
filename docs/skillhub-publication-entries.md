@@ -1155,7 +1155,7 @@ Production switches remain off pending isolated end-to-end acceptance.
 
 ## Immutable runtime capture evidence
 
-Migration 000042 adds a retained capture receipt per entry, distinct from the
+Migration 000043 adds a retained capture receipt per entry, distinct from the
 read-only `source_verified` probe. It stores candidate revision 1, request SHA256,
 Cloud candidate SHA256, exact request byte count (at most 75 MiB, matching grants), and the
 observed route generation/node/socket with a database timestamp. It stores no
@@ -1163,9 +1163,18 @@ files, local paths, upload secrets or model content. UPDATE, DELETE and populate
 down migrations are rejected; startup/up never infer evidence from old probes
 or grants.
 
+The capture migration was renumbered from 000042 to 000043 after PR674 merged:
+the independently merged session-fork migration already owns 000042. The capture
+up/down SQL is unchanged. Applying 000043 to a table already created by startup
+DDL preserves retained receipts and grants, and populated rollback remains
+forbidden. No migration ledger is reset or forced. SQL-only installations that
+manually recorded the old capture-only 000042 must check that the session-fork
+schema is also present; a version number alone cannot identify which colliding
+file was applied. Normal startup initializes both schemas idempotently.
+
 This is the CatsCo metadata/authority contract, not a promise that every runtime
 or transport can upload 75 MiB. Capture validation aliases
-`SkillHubPublicationUploadMaxBytes`; migration 000042 and startup DDL use the same
+`SkillHubPublicationUploadMaxBytes`; migration 000043 and startup DDL use the same
 78,643,200-byte ceiling. No candidate in the previously valid (32 MiB, 75 MiB]
 range is silently stranded between recording its receipt and issuing its grant.
 

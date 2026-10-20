@@ -36,7 +36,7 @@ func uploadForCapture(in store.SkillHubPublicationCaptureInput) store.SkillHubPu
 
 func captureMigration(t *testing.T, direction string) string {
 	t.Helper()
-	b, e := os.ReadFile("../migrations/postgres/000042_skillhub_publication_captures." + direction + ".sql")
+	b, e := os.ReadFile("../migrations/postgres/000043_skillhub_publication_captures." + direction + ".sql")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -45,7 +45,38 @@ func captureMigration(t *testing.T, direction string) string {
 
 func TestSkillHubPublicationCaptureMigrationMatchesStartup(t *testing.T) {
 	if strings.Join(strings.Fields(captureMigration(t, "up")), " ") != strings.Join(strings.Fields(createSkillHubPublicationCapturesTable), " ") {
-		t.Fatal("042 differs from startup")
+		t.Fatal("043 differs from startup")
+	}
+}
+
+func TestPostgresSkillHubPublicationCaptureRenumberedMigrationPreservesEvidence(t *testing.T) {
+	db, _, in, _ := captureFixture(t)
+	first := recordCaptureForTest(t, db, in)
+	u := uploadForCapture(in)
+	g, token := issueUpload(t, db, u)
+	// Startup DDL (including the already-deployed PR674 initializer) can have
+	// created and populated this table before numbered migration 043 runs.
+	// Reapplying the unchanged SQL must not rewrite receipts or upload grants.
+	for attempt := 0; attempt < 2; attempt++ {
+		deliveryExec(t, db, captureMigration(t, "up"))
+		if got := recordCaptureForTest(t, db, in); *got != *first {
+			t.Fatal("renumbered migration changed retained evidence")
+		}
+		if _, err := db.CheckSkillHubPublicationUploadGrant(context.Background(), token, u, g.Epoch); err != nil {
+			t.Fatalf("renumbered migration invalidated upload grant: %v", err)
+		}
+	}
+	for _, statement := range []string{
+		`UPDATE skillhub_publication_captures SET request_bytes=request_bytes+1`,
+		`DELETE FROM skillhub_publication_captures`,
+		captureMigration(t, "down"),
+	} {
+		if _, err := db.db.Exec(statement); err == nil {
+			t.Fatal("renumbered migration lost retained-evidence protection")
+		}
+	}
+	if got := recordCaptureForTest(t, db, in); *got != *first {
+		t.Fatal("failed rollback changed retained evidence")
 	}
 }
 
