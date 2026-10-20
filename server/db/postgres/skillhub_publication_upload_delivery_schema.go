@@ -1,6 +1,6 @@
 package postgres
 
-// Mirror migration 000045. Upload attempts are retained separately from
+// Mirror migration 000048. Upload attempts are retained separately from
 // capture leases so a runtime ACK cannot be mistaken for Cloud acceptance.
 const createSkillHubPublicationUploadDeliveriesTable = `
 CREATE TABLE IF NOT EXISTS skillhub_publication_upload_deliveries (
