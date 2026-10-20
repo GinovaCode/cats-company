@@ -256,24 +256,26 @@ func TestPostgresSkillHubPublicationCaptureDeliveryReconnect(t *testing.T) {
 	}
 }
 
+func captureDeliveryMigration(t *testing.T, direction string) string {
+	t.Helper()
+	b, err := os.ReadFile("../migrations/postgres/000044_skillhub_publication_capture_deliveries." + direction + ".sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func TestPostgresSkillHubPublicationCaptureDeliveryMigration(t *testing.T) {
-	up, err := os.ReadFile("../migrations/postgres/000044_skillhub_publication_capture_deliveries.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	down, err := os.ReadFile("../migrations/postgres/000044_skillhub_publication_capture_deliveries.down.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(strings.Fields(string(up)), " ") != strings.Join(strings.Fields(createSkillHubPublicationCaptureDeliveriesTable), " ") {
+	up, down := captureDeliveryMigration(t, "up"), captureDeliveryMigration(t, "down")
+	if strings.Join(strings.Fields(up), " ") != strings.Join(strings.Fields(createSkillHubPublicationCaptureDeliveriesTable), " ") {
 		t.Fatal("migration/startup mismatch")
 	}
 	db, _, in, _ := captureFixture(t)
-	deliveryExec(t, db, string(down))
-	deliveryExec(t, db, string(up))
+	deliveryExec(t, db, down)
+	deliveryExec(t, db, up)
 	l := captureDeliveryClaim(t, db, in)
-	deliveryExec(t, db, string(up))
-	if _, err := db.db.Exec(string(down)); err == nil {
+	deliveryExec(t, db, up)
+	if _, err := db.db.Exec(down); err == nil {
 		t.Fatal("rollback erased retry budget")
 	}
 	if err := db.FinishSkillHubPublicationCaptureDelivery(context.Background(), *l, "rejected"); err != nil {
