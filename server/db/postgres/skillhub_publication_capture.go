@@ -10,6 +10,72 @@ import (
 )
 
 var _ store.SkillHubPublicationCaptureStore = (*Adapter)(nil)
+var _ store.SkillHubPublicationCaptureReader = (*Adapter)(nil)
+var _ store.SkillHubPublicationCaptureStatusReader = (*Adapter)(nil)
+
+func (a *Adapter) ReadSkillHubPublicationCapture(ctx context.Context, id string, b store.SkillHubPublicationDeliveryBinding) (*store.SkillHubPublicationCaptureRecord, error) {
+	if !store.ValidSkillHubPublicationDeliveryEntryID(id) || b.Validate() != nil {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	tx, err := beginPublicationDelivery(ctx, a.db)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err = lockPublicationDeliveryAuthority(ctx, tx, id, b); err != nil {
+		return nil, err
+	}
+	if err = lockPublicationVerifiedSource(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	r, err := readPublicationCapture(ctx, tx, id)
+	if err != nil || r == nil {
+		return nil, err
+	}
+	next := r.Input
+	next.Binding = b
+	if !samePublicationCapture(r.Input, next) {
+		return nil, store.ErrSkillHubPublicationConflict
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (a *Adapter) GetSkillHubPublicationCaptureStatus(ctx context.Context, actor int64, id string) (*store.SkillHubPublicationCaptureStatus, error) {
+	if actor <= 0 || !store.ValidSkillHubPublicationDeliveryEntryID(id) {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	s := &store.SkillHubPublicationCaptureStatus{}
+	// A consistent snapshot of evidence and scheduling. History remains readable
+	// by the original active human even after Bot transfer, never by its new owner.
+	err := a.db.QueryRowContext(ctx, `SELECT e.entry_id,e.actor_uid,
+		CASE WHEN e.state='cancelled' THEN 'cancelled'
+			WHEN c.entry_id IS NOT NULL THEN 'captured'
+			WHEN d.entry_id IS NOT NULL THEN d.state
+			WHEN o.delivery_state='source_verified' THEN 'waiting_runtime'
+			ELSE 'waiting_source' END,
+		COALESCE(d.attempts,0),COALESCE(d.last_code,''),d.next_attempt_at,d.lease_until,c.captured_at,clock_timestamp()
+		FROM skillhub_publication_entries e
+		JOIN users u ON u.id=e.actor_uid AND u.account_type='human' AND u.state=0
+		JOIN skillhub_publication_outbox o ON o.entry_id=e.entry_id AND o.kind='capture_candidate'
+		LEFT JOIN skillhub_publication_captures c ON c.entry_id=e.entry_id
+		LEFT JOIN skillhub_publication_capture_deliveries d ON d.entry_id=e.entry_id
+		WHERE e.actor_uid=$1 AND e.entry_id=$2`, actor, id).Scan(&s.EntryID, &s.ActorUID, &s.State, &s.Attempts,
+		&s.LastCode, &s.NextAttemptAt, &s.LeaseUntil, &s.CapturedAt, &s.ObservedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
 
 func readPublicationCapture(ctx context.Context, tx *sql.Tx, id string) (*store.SkillHubPublicationCaptureRecord, error) {
 	r := &store.SkillHubPublicationCaptureRecord{}

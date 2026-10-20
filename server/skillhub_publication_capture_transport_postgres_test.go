@@ -25,6 +25,8 @@ type captureTransportPostgresStore struct {
 	store.SkillHubPublicationSourceStatusReader
 	store.SkillHubPublicationCaptureStore
 	store.SkillHubPublicationCaptureDeliveryStore
+	store.SkillHubPublicationCaptureReader
+	store.SkillHubPublicationUploadGrantStore
 	store.ConversationTaskGenerationStore
 }
 
@@ -100,7 +102,7 @@ func testPublicationCapturePostgres(t *testing.T, scheduled bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := NewHub(&captureTransportPostgresStore{db, db, db, db, db, db}, nil)
+		h := NewHub(&captureTransportPostgresStore{db, db, db, db, db, db, db, db}, nil)
 		c := &Client{uid: bot, accountType: types.AccountBot, bodyID: "capture-body", installationID: "capture-install", send: make(chan []byte, 16)}
 		h.addClient(c)
 		if _, err := h.bodyLeases.acquire(bot, c.bodyID, c.connectionID); err != nil {
@@ -109,7 +111,7 @@ func testPublicationCapturePostgres(t *testing.T, scheduled bool) {
 		h.mu.Lock()
 		h.botConnectionEpochs[bot] = generation
 		h.mu.Unlock()
-		d, err := h.userDevices.register(actor, RegisterUserDeviceRequest{BotUID: bot, DeviceID: "capture-install", BodyID: c.bodyID, InstallationID: c.installationID, RuntimeRole: "server", Status: "online", Capabilities: []string{string(DeviceCapabilitySkillHubPublicationProbe), string(DeviceCapabilitySkillHubPublicationCapture)}})
+		d, err := h.userDevices.register(actor, RegisterUserDeviceRequest{BotUID: bot, DeviceID: "capture-install", BodyID: c.bodyID, InstallationID: c.installationID, RuntimeRole: "server", Status: "online", Capabilities: []string{string(DeviceCapabilitySkillHubPublicationProbe), string(DeviceCapabilitySkillHubPublicationCapture), string(DeviceCapabilitySkillHubPublicationUpload)}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,6 +249,56 @@ func testPublicationCapturePostgres(t *testing.T, scheduled bool) {
 	if !errors.Is(changed.err, store.ErrSkillHubPublicationConflict) {
 		t.Fatal("candidate substitution accepted", changed.err)
 	}
+	// Use the real DB grant issuer after reconnect. The untrusted runtime ACK
+	// does not record a Cloud association or advance the publication entry.
+	h2.publicationUpload = newPublicationUploadTransport(h2, "https://cats.example", "https://hub.example")
+	ctx, cancelUpload := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelUpload()
+	uploadDone := make(chan error, 1)
+	go func() { uploadDone <- h2.UploadSkillHubPublication(ctx, actor, entry.ID) }()
+	var outbound ServerMessage
+	select {
+	case raw := <-c2.send:
+		if err := json.Unmarshal(raw, &outbound); err != nil || outbound.ThinToolRPC == nil {
+			t.Fatal("upload envelope", err)
+		}
+	case err := <-uploadDone:
+		t.Fatal("upload ended early", err)
+	case <-ctx.Done():
+		t.Fatal("upload dispatch timed out")
+	}
+	req := outbound.ThinToolRPC
+	grant := req.Payload["grant"].(map[string]interface{})
+	token, err := store.ParseSkillHubPublicationUploadToken(grant["token"].(string))
+	if err != nil {
+		t.Fatal("invalid opaque token")
+	}
+	liveSource, liveRoute, _, code := h2.publicationRuntimeBinding(actor, bot, b.Source.DeviceID)
+	if code != "" {
+		t.Fatal(code)
+	}
+	liveSource.LocalSkillID, liveSource.WorkspaceGeneration = b.Source.LocalSkillID, b.Source.WorkspaceGeneration
+	captured := first.record.Input
+	uploadInput := store.SkillHubPublicationUploadInput{EntryID: entry.ID, Binding: store.SkillHubPublicationDeliveryBinding{
+		ActorUID: actor, BotUID: bot, Source: liveSource, NodeID: liveRoute.NodeID, ConnectionID: liveRoute.ConnectionID,
+	}, Issuer: "https://cats.example", Audience: "https://hub.example", Action: store.SkillHubPublicationUploadAction,
+		Revision: captured.Revision, RequestHash: captured.RequestHash, SourceSnapshotHash: captured.SourceSnapshotHash, RequestBytes: captured.RequestBytes}
+	epoch := int(grant["authorityEpoch"].(float64))
+	if _, err := a2.CheckSkillHubPublicationUploadGrant(ctx, token, uploadInput, epoch); err != nil {
+		t.Fatal("grant does not match retained capture", err)
+	}
+	reply := uploadReply(req)
+	reply.Result.(map[string]interface{})["entryId"] = entry.ID
+	reply.Result.(map[string]interface{})["authorityEpoch"] = float64(epoch)
+	h2.handleThinToolRPCResult(c2, reply)
+	if err := uploadWait(t, uploadDone); err != nil {
+		t.Fatal(err)
+	}
+	deliveryAckStatus(t, c2, 200)
+	current, err := a2.GetSkillHubPublicationEntry(ctx, actor, entry.ID)
+	if err != nil || current == nil || current.State != "waiting_runtime" {
+		t.Fatal("runtime ACK advanced publication", err)
+	}
 	denied := call(h2, c2, false, func() {
 		_, err := a2.RequestSkillHubPublicationCancellation(context.Background(), actor, entry.ID)
 		if err != nil {
@@ -255,6 +307,9 @@ func testPublicationCapturePostgres(t *testing.T, scheduled bool) {
 	})
 	if denied.err == nil {
 		t.Fatal("cancelled entry accepted late receipt")
+	}
+	if _, err := a2.CheckSkillHubPublicationUploadGrant(context.Background(), token, uploadInput, epoch); err == nil {
+		t.Fatal("cancelled grant remained usable")
 	}
 	var count int
 	if err := scoped.QueryRow(`SELECT count(*) FROM skillhub_publication_captures WHERE entry_id=$1`, entry.ID).Scan(&count); err != nil || count != 1 {

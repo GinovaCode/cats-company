@@ -96,6 +96,7 @@ type Hub struct {
 	publicationAdmissions       chan struct{}
 	publicationDelivery         *publicationDeliveryWorker
 	publicationCapture          *publicationCaptureTransport
+	publicationUpload           *publicationUploadTransport
 }
 
 // SetGroupActivationResolver installs the group activation judge used by the
@@ -200,6 +201,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	hub.publicationAdmissions = make(chan struct{}, 16)
 	hub.publicationDelivery = newPublicationDeliveryWorkerFromEnv(hub)
 	hub.publicationCapture = newPublicationCaptureTransportFromEnv(hub)
+	hub.publicationUpload = newPublicationUploadTransportFromEnv(hub)
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
 	}

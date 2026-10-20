@@ -1316,9 +1316,47 @@ Internal diagnostics use `skillhub_publication_capture_deliveries` for attempts
 and fixed codes and `skillhub_publication_captures` for authoritative evidence.
 If evidence exists, a stale `leased` diagnostic row only means the finishing ACK
 was lost. These internal states are not a published Skill, Cloud task, upload
-authorization or user-facing completion. Capture status projection and upload
-grant delivery are subsequent integration work; do not enable this worker as a
+authorization or user-facing completion. Do not enable this worker as a
 standalone user release.
+
+### Capture status and dedicated upload delivery
+
+`GET /api/skillhub/publications/entries/{id}/capture-status` shares the existing
+private human read gate and per-entry polling budget. The capabilities response
+adds `captureStatusReadsEnabled`. Only the original active human reads history,
+including after Bot transfer; the new Owner cannot inherit it. Projection is
+strictly limited to stage, bounded attempts, fixed code and relevant timestamps.
+Cancellation wins, then actual immutable capture evidence, then scheduler state:
+`waiting_source`, `waiting_runtime`, `capturing`, `recovery_wait`, `retry_wait`,
+`needs_user_action`, `captured`, `cancelled`. A lost scheduler settlement cannot
+hide an already persisted capture. `captured` never means uploaded or published.
+
+Internal `Hub.UploadSkillHubPublication` requires
+`CATSCO_SKILLHUB_PUBLICATION_UPLOAD_ENABLED=1` (default off), the capture/probe
+transport, a runtime advertising `skillhub.publication.upload.v1`, and distinct
+canonical HTTPS `CATSCO_SKILLHUB_PUBLICATION_ISSUER` /
+`CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE`. All identities/selectors are read
+from the admitted entry and current same-node authenticated runtime. Capture
+evidence is read under live DB authority; grant issuance independently checks
+it again, with the existing 120-second TTL, eight epochs and renewal cooldown.
+
+The reserved `pubuploadrpc_` request carries exactly `entry_id`, `bot_uid`,
+`local_skill_id`, `workspace_generation` and an upload-only `grant`. The latter
+binds issuer/audience/action, entry/revision/epoch, Bot/Owner/body/install,
+request hash/candidate hash/bytes, stable idempotency key, token and expiration.
+The bearer goes only to that socket, not to model tools, browser, generic
+forwarding, pending metadata, Redis or logs. Four operation slots, one operation
+per entry and a 55-second total deadline bound delivery. Reconnect may use the
+same frozen source, but same-generation socket substitution is rejected.
+
+Runtime result is exactly `{schemaVersion:1,entryId,authorityEpoch,accepted:true}`.
+Spoofed, late, extra-field and mismatched replies cannot succeed. Temporary
+busy/timeout/unavailable/inactive and `BOT_NOT_ACTIVE`/`REQUEST_EXPIRED` remain
+retryable for a future bounded coordinator; other failures are rejected. There
+is no upload scheduler or browser entry point in this slice. Runtime ACK is
+untrusted: it never writes Cloud acceptance, changes entry state or publishes.
+The independently authenticated Cloud receipt remains authoritative. Uncertain
+delivery must later reconcile the same entry/key, never silently recapture.
 
 Tests include real PostgreSQL restart/lease/exhaustion/migration checks and a
 real Hub plus PostgreSQL scheduler round trip with a **simulated runtime reply**.
