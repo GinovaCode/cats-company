@@ -47,9 +47,11 @@ func (s *captureDispatchTestStore) FinishSkillHubPublicationCaptureDelivery(_ co
 
 func newCaptureDispatcherFixture(t *testing.T) (*publicationWorkspaceFixture, *captureDispatchTestStore, *publicationCaptureDispatcher) {
 	t.Helper()
-	f, capture := newCaptureTransportFixture(t)
-	s := &captureDispatchTestStore{publicationCaptureTestStore: capture}
-	f.h.db = s
+	var s *captureDispatchTestStore
+	f, _ := newCaptureTransportFixtureWithStore(t, func(capture *publicationCaptureTestStore) store.Store {
+		s = &captureDispatchTestStore{publicationCaptureTestStore: capture}
+		return s
+	})
 	w := &publicationCaptureDispatcher{h: f.h, ledger: s, entries: s}
 	return f, s, w
 }
