@@ -186,6 +186,119 @@ it('ignores old catalogue responses after filter change', async () => {
   expect(container.querySelector('pre').textContent).toContain('fresh'); expect(container.querySelector('pre').textContent).not.toContain('stale');
 });
 
+it('restores cached catalogue pages immediately and preserves them through a failed background refresh', async () => {
+  vi.useFakeTimers();
+  const browseStateRef = { current: {} };
+  marketplaceApi.catalogue
+    .mockResolvedValueOnce({ skills: [{ skillId: 'one' }], total: 2, nextCursor: 'next' })
+    .mockResolvedValueOnce({ skills: [{ skillId: 'two' }], total: 2 })
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ skills: [{ skillId: 'fresh-one' }], total: 2, nextCursor: 'fresh-next' })
+    .mockResolvedValueOnce({ skills: [{ skillId: 'fresh-two' }], total: 2 });
+  const view = <MarketplaceProvider browseStateRef={browseStateRef}><CatalogueHarness query='read' /></MarketplaceProvider>;
+  await render(view);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  await click('more');
+  expect(browseStateRef.current.marketplace.data.pageCount).toBe(2);
+  await render(null);
+  const capabilities = deferred();
+  marketplaceApi.capabilities.mockReturnValueOnce(capabilities.promise);
+  await render(view);
+  expect(container.querySelector('pre').textContent).toContain('one');
+  expect(container.querySelector('pre').textContent).toContain('two');
+  expect(marketplaceApi.catalogue).toHaveBeenCalledTimes(2);
+  await act(async () => capabilities.resolve({ schemaVersion: 1, enabled: true }));
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.textContent).toContain('已保留上次加载的能力');
+  expect(container.querySelector('pre').textContent).toContain('two');
+  await click('重试分类');
+  // Explicit retry also keeps the visible list during its debounce window.
+  expect(container.querySelector('pre').textContent).toContain('two');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.querySelector('pre').textContent).toContain('fresh-one');
+  expect(container.querySelector('pre').textContent).toContain('fresh-two');
+  expect(marketplaceApi.catalogue.mock.calls[4][0].cursor).toBe('fresh-next');
+  expect(container.textContent).not.toContain('刷新暂不可用');
+});
+
+it('does not restore a catalogue from another authenticated session', async () => {
+  vi.useFakeTimers();
+  const browseStateRef = { current: {} };
+  marketplaceApi.catalogue.mockResolvedValueOnce({ skills: [{ skillId: 'private-old' }], total: 1 });
+  const view = <MarketplaceProvider browseStateRef={browseStateRef}><CatalogueHarness /></MarketplaceProvider>;
+  await render(view);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  await render(null);
+  setToken('another-user');
+  const pending = deferred();
+  marketplaceApi.catalogue.mockReturnValueOnce(pending.promise);
+  await render(view);
+  expect(container.textContent).not.toContain('private-old');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  await act(async () => pending.resolve({ skills: [{ skillId: 'new-session' }], total: 1 }));
+  expect(container.querySelector('pre').textContent).toContain('new-session');
+  expect(browseStateRef.current.marketplace.authRevision).toBe(getAuthRevision());
+});
+
+it('does not persist a late catalogue result after leaving the page', async () => {
+  vi.useFakeTimers();
+  const pending = deferred();
+  const browseStateRef = { current: {} };
+  marketplaceApi.catalogue.mockReturnValueOnce(pending.promise);
+  await render(<MarketplaceProvider browseStateRef={browseStateRef}><CatalogueHarness /></MarketplaceProvider>);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  await render(null);
+  await act(async () => pending.resolve({ skills: [{ skillId: 'late' }], total: 1 }));
+  expect(browseStateRef.current.marketplace).toBeUndefined();
+});
+
+const cachedCatalogue = () => ({ current: { marketplace: {
+  authRevision: getAuthRevision(), filterKey: JSON.stringify(['', '']), category: '',
+  data: { skills: [{ skillId: 'cached' }], total: 1, cursor: '', counts: {}, pageCount: 1 },
+} } });
+
+it('keeps catalogue display but no write capability when capability discovery temporarily fails', async () => {
+  vi.useFakeTimers();
+  const browseStateRef = cachedCatalogue();
+  function AccessHarness() {
+    const permissions = useMarketplace();
+    const market = useMarketplaceCatalogue('');
+    return <><pre>{JSON.stringify(market.state?.skills)}</pre><p>{market.state?.error}</p>
+      <button disabled={!permissions.writesEnabled}>write</button><button onClick={market.refresh}>retry</button></>;
+  }
+  marketplaceApi.capabilities.mockRejectedValueOnce(new Error('offline'));
+  await render(<MarketplaceProvider browseStateRef={browseStateRef}><AccessHarness /></MarketplaceProvider>);
+  expect(container.querySelector('pre').textContent).toContain('cached');
+  expect(container.textContent).toContain('暂时无法确认能力库服务状态');
+  expect(button('write').disabled).toBe(true);
+  expect(marketplaceApi.catalogue).not.toHaveBeenCalled();
+  marketplaceApi.catalogue.mockResolvedValue({ skills: [{ skillId: 'fresh' }], total: 1 });
+  await click('retry');
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(marketplaceApi.capabilities).toHaveBeenCalledTimes(2);
+  expect(container.querySelector('pre').textContent).toContain('fresh');
+});
+
+it.each([401, 403])('clears a cached catalogue after a %s permission rejection', async status => {
+  vi.useFakeTimers();
+  const browseStateRef = cachedCatalogue();
+  marketplaceApi.catalogue.mockRejectedValueOnce({ status });
+  await render(<MarketplaceProvider browseStateRef={browseStateRef}><CatalogueHarness /></MarketplaceProvider>);
+  await act(async () => vi.advanceTimersByTimeAsync(50));
+  expect(container.querySelector('pre').textContent).not.toContain('cached');
+  expect(container.textContent).toContain('当前能力库不可访问');
+  expect(browseStateRef.current.marketplace).toBeUndefined();
+});
+
+it.each([401, 403, 'disabled'])('does not retain the optional catalogue when capability access is %s', async status => {
+  const browseStateRef = cachedCatalogue();
+  if (status === 'disabled') marketplaceApi.capabilities.mockResolvedValueOnce({ schemaVersion: 1, enabled: false });
+  else marketplaceApi.capabilities.mockRejectedValueOnce({ status });
+  await render(<MarketplaceProvider browseStateRef={browseStateRef}><CatalogueHarness /></MarketplaceProvider>);
+  expect(container.querySelector('pre').textContent).not.toContain('cached');
+  expect(browseStateRef.current.marketplace).toBeUndefined();
+});
+
 it('preserves local priority and independent same-name publishers in the full catalogue', () => {
   const local = { skillId: 'local:shimo', cloudSkillId: target.skillId, latestVersion: '1.0.5', isLocalSkill: true, canBind: true };
   const cloud = { skillId: target.skillId, latestVersion: '1.0.6' };

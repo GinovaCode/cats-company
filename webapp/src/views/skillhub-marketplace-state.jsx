@@ -23,9 +23,13 @@ export function mergeMarketplaceLibrary(legacySkills, cloudSkills, category) {
   return [...local, ...cloudSkills.filter((s) => !localIDs.has(s.skillId))];
 }
 
-export function MarketplaceProvider({ children }) {
+export function MarketplaceProvider({ children, browseStateRef }) {
   const [revision, setRevision] = useState(getAuthRevision);
   const [capabilities, setCapabilities] = useState(disabled);
+  const [checkingCapabilities, setCheckingCapabilities] = useState(() => Boolean(getToken()));
+  const [capabilitiesUnavailable, setCapabilitiesUnavailable] = useState(false);
+  const [capabilityAttempt, setCapabilityAttempt] = useState(0);
+  const refreshCapabilities = useCallback(() => setCapabilityAttempt(value => value + 1), []);
   const leaveGuard = useRef(null);
   const registerLeaveGuard = useCallback((guard) => {
     leaveGuard.current = guard;
@@ -36,71 +40,129 @@ export function MarketplaceProvider({ children }) {
     const guard = leaveGuard.current;
     Promise.resolve(guard()).then((allowed) => { if (allowed && leaveGuard.current === guard) action(); });
   }, []);
-  const value = useMemo(() => ({ ...capabilities, registerLeaveGuard, navigate }), [capabilities, registerLeaveGuard, navigate]);
+  const value = useMemo(() => ({ ...capabilities, checkingCapabilities, capabilitiesUnavailable, refreshCapabilities, browseStateRef, registerLeaveGuard, navigate }), [capabilities, checkingCapabilities, capabilitiesUnavailable, refreshCapabilities, browseStateRef, registerLeaveGuard, navigate]);
   useEffect(() => {
-    const change = () => { setCapabilities(disabled); setRevision(getAuthRevision()); };
+    const change = () => {
+      if (browseStateRef?.current) delete browseStateRef.current.marketplace;
+      setCapabilities(disabled);
+      setCheckingCapabilities(Boolean(getToken()));
+      setCapabilitiesUnavailable(false);
+      setRevision(getAuthRevision());
+    };
     window.addEventListener('cc:auth-changed', change);
     return () => window.removeEventListener('cc:auth-changed', change);
-  }, []);
+  }, [browseStateRef]);
   useEffect(() => {
     const controller = new AbortController();
+    setCheckingCapabilities(Boolean(getToken()));
     if (getToken()) marketplaceApi.capabilities(controller.signal).then((value) => {
-      if (!controller.signal.aborted) setCapabilities(value?.schemaVersion === 1 ? {
+      if (controller.signal.aborted) return;
+      setCapabilitiesUnavailable(false);
+      if ((value?.schemaVersion !== 1 || value.enabled !== true) && browseStateRef?.current) delete browseStateRef.current.marketplace;
+      setCapabilities(value?.schemaVersion === 1 ? {
         enabled: value.enabled === true,
         writesEnabled: value.enabled === true && value.writesEnabled === true,
         visibilityEnabled: value.visibilityEnabled === true,
         visibilityWritesEnabled: value.visibilityEnabled === true && value.visibilityWritesEnabled === true,
       } : disabled);
-    }).catch(() => {}); // Old server / feature off: original UI remains usable.
+    }).catch(error => {
+      if (controller.signal.aborted) return;
+      setCapabilities(disabled);
+      const inaccessible = [401, 403, 404].includes(error?.status);
+      if (inaccessible && browseStateRef?.current) delete browseStateRef.current.marketplace;
+      setCapabilitiesUnavailable(!inaccessible);
+    }).finally(() => {
+      if (!controller.signal.aborted) setCheckingCapabilities(false);
+    }); // Old server / feature off: original UI remains usable.
     return () => controller.abort();
-  }, [revision]);
+  }, [revision, capabilityAttempt, browseStateRef]);
   return <Context.Provider value={value}><React.Fragment key={revision}>{children}</React.Fragment></Context.Provider>;
 }
 
 // The new filtered catalogue is display-only. It does not replace the legacy
 // metadata map used by Agent status, update detection, or installation rules.
 export function useMarketplaceCatalogue(query) {
-  const { enabled } = useMarketplace();
-  const [category, setCategory] = useState('');
-  const [state, setState] = useState(null);
+  const { enabled, checkingCapabilities, capabilitiesUnavailable, refreshCapabilities, browseStateRef } = useMarketplace();
+  const allowCachedCatalogue = checkingCapabilities || capabilitiesUnavailable;
+  const saved = browseStateRef?.current?.marketplace;
+  const savedCurrent = saved?.authRevision === getAuthRevision() ? saved : null;
+  const [category, setCategory] = useState(savedCurrent?.category || '');
   const [reload, setReload] = useState(0);
   const pending = useRef(null);
   const key = JSON.stringify([query, category, reload]);
+  const filterKey = JSON.stringify([query, category]);
+  const [state, setState] = useState(() => savedCurrent?.filterKey === filterKey
+    ? { ...savedCurrent.data, key, loading: false, error: '' }
+    : null);
   const keyRef = useRef(key);
   keyRef.current = key;
-  const load = async (cursor = '', previous = null) => {
+  const load = async (cursor = '', previous = null, retained = null) => {
     pending.current?.abort();
     const controller = new AbortController();
     pending.current = controller;
-    setState({ key, ...(previous || {}), loading: true, error: '' });
+    setState({ ...(previous || retained || {}), key, loading: true, error: '' });
     try {
-      const result = await marketplaceApi.catalogue({ q: query, category, search_mode: 'name', limit: '30', ...(cursor ? { cursor } : {}) }, controller.signal);
-      if (controller.signal.aborted || keyRef.current !== key) return;
-      if (!Array.isArray(result?.skills) || !Number.isSafeInteger(result.total) || result.total < 0
-        || (result.nextCursor != null && typeof result.nextCursor !== 'string')) throw new Error('能力库数据格式暂不支持');
-      const entries = normalizeSkillHubSkills(result);
-      setState({ key, loading: false, skills: [...new Map([...(previous?.skills || []), ...entries].map((s) => [s.skillId, s])).values()],
+      let result;
+      let entries = previous?.skills || [];
+      let pageCursor = cursor;
+      let pageCount = previous?.pageCount || 0;
+      const seenCursors = new Set();
+      do {
+        result = await marketplaceApi.catalogue({ q: query, category, search_mode: 'name', limit: '30', ...(pageCursor ? { cursor: pageCursor } : {}) }, controller.signal);
+        if (controller.signal.aborted || keyRef.current !== key) return;
+        if (!Array.isArray(result?.skills) || !Number.isSafeInteger(result.total) || result.total < 0
+          || (result.nextCursor != null && typeof result.nextCursor !== 'string')) throw new Error('能力库数据格式暂不支持');
+        entries = [...new Map([...entries, ...normalizeSkillHubSkills(result)].map((s) => [s.skillId, s])).values()];
+        pageCount += 1;
+        pageCursor = result.nextCursor || '';
+        if (pageCursor && seenCursors.has(pageCursor)) throw new Error('能力库分页暂不可用');
+        if (pageCursor) seenCursors.add(pageCursor);
+        // Revalidate the already visible pages together so returning to a
+        // scrolled list does not shrink it to page one underneath the user.
+      } while (!cursor && pageCursor && pageCount < (retained?.pageCount || 1));
+      const data = { skills: entries, pageCount,
         total: result.total, cursor: result.nextCursor || '', counts: Object.fromEntries((Array.isArray(result.categoryCounts) ? result.categoryCounts : [])
           .filter((c) => typeof c?.category === 'string' && Number.isSafeInteger(c.count) && c.count >= 0)
-          .map((c) => [c.category, c.count])) });
+          .map((c) => [c.category, c.count])) };
+      if (browseStateRef?.current) browseStateRef.current.marketplace = {
+        authRevision: getAuthRevision(), filterKey, category, data,
+      };
+      setState({ ...data, key, loading: false });
     } catch (error) {
       if (controller.signal.aborted || keyRef.current !== key) return;
-      if (cursor && error.status === 409) {
+      if ([401, 403].includes(error?.status)) {
+        if (browseStateRef?.current) delete browseStateRef.current.marketplace;
+        setState({ key, loading: false, error: '当前能力库不可访问，请重新登录或检查权限。' });
+      } else if (cursor && error.status === 409) {
         setState(null);
         setReload((value) => value + 1); // Restart page one, never retry a mutation.
-      } else setState({ key, ...(previous || {}), loading: false, error: previous ? '后续页面暂不可用，已保留当前结果。' : '新版分类暂不可用，以下显示原有能力库（未按分类筛选）。' });
+      } else setState({ ...(previous || retained || {}), key, loading: false,
+        error: previous ? '后续页面暂不可用，已保留当前结果。' : retained ? '刷新暂不可用，已保留上次加载的能力。请稍后重试。' : '新版分类暂不可用，以下显示原有能力库（未按分类筛选）。' });
     }
   };
   useEffect(() => {
-    if (!enabled) { setState(null); return undefined; }
-    const timer = window.setTimeout(() => load(), 40);
+    if (!enabled) {
+      if (!allowCachedCatalogue) setState(null);
+      return undefined;
+    }
+    const cached = browseStateRef?.current?.marketplace;
+    const retained = cached?.authRevision === getAuthRevision() && cached.filterKey === filterKey ? cached.data : null;
+    const timer = window.setTimeout(() => load('', null, retained), 40);
     return () => { window.clearTimeout(timer); pending.current?.abort(); };
   // key encodes every filter and the explicit refresh generation.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, key]);
-  return { enabled, category, setCategory, state: state?.key === key ? state : null,
-    more: () => { if (state?.cursor && !state.loading) load(state.cursor, state); },
-    refresh: () => setReload((value) => value + 1) };
+  }, [enabled, allowCachedCatalogue, key]);
+  let visibleState = !enabled && !allowCachedCatalogue ? null : state?.key === key ? state : savedCurrent?.filterKey === filterKey
+    ? { ...savedCurrent.data, key, loading: true }
+    : null;
+  if (!enabled && capabilitiesUnavailable && visibleState?.skills) visibleState = { ...visibleState, loading: false,
+    error: '暂时无法确认能力库服务状态，已保留上次加载的能力。请稍后重试。' };
+  return { enabled, cached: allowCachedCatalogue && Boolean(visibleState?.skills), category, setCategory, state: visibleState,
+    more: () => { if (enabled && visibleState?.cursor && !visibleState.loading) load(visibleState.cursor, visibleState); },
+    refresh: () => {
+      if (!enabled) refreshCapabilities?.();
+      setReload((value) => value + 1);
+    } };
 }
 
 export function MarketplaceFilters({ market }) {
