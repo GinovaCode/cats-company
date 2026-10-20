@@ -598,7 +598,7 @@ describe('LocalAssistantBar model selector', () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
-    expect(status?.textContent).toContain('minimax-m3');
+    expect(status?.textContent).toContain('MiniMax M3');
     expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('剩余 75%');
     expect(status?.title).toContain('上下文 1M');
@@ -622,12 +622,12 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toContain('private-model');
-    expect(status?.textContent).toContain('high');
-    expect(status?.textContent).not.toContain('强度 high');
+    expect(status?.querySelector('.v3-model-reasoning-strength').textContent).toBe('高');
+    expect(status?.textContent).not.toContain('high');
     expect(status?.textContent).not.toContain('上下文');
     expect(status?.textContent).toContain('自备模型');
     expect(status?.title).toContain('上下文 128K');
-    expect(status?.getAttribute('aria-label')).toContain('推理强度 high');
+    expect(status?.getAttribute('aria-label')).toContain('推理强度 高');
   });
 
   it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
@@ -650,11 +650,11 @@ describe('LocalAssistantBar model selector', () => {
     });
 
     const status = container.querySelector('.v3-local-assistant-status');
-    expect(status?.textContent).toContain('gpt-5.6-sol');
-    expect(status?.textContent).toContain('high');
-    expect(status?.textContent).not.toContain('强度 high');
+    expect(status?.textContent).toContain('GPT-5.6 Sol');
+    expect(status?.querySelector('.v3-model-reasoning-strength').textContent).toBe('高');
+    expect(status?.textContent).not.toContain('high');
     expect(status?.textContent).not.toContain('gpt-5.6-terra');
-    expect(status?.getAttribute('aria-label')).toContain('推理强度 high');
+    expect(status?.getAttribute('aria-label')).toContain('推理强度 高');
   });
 
   it('does not expose a switcher for friend bots or group conversations', async () => {
@@ -667,6 +667,19 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('.v3-local-assistant-status')).toBeNull();
   });
 
+  it('keeps the applied model name after a failed switch instead of labelling the requested model as active', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      status: 'failed',
+      desired: { kind: 'catalog', model_id: 'minimax-m3', revision: 3 },
+      applied: { kind: 'catalog', model_id: 'deepseek-flash', reasoning_effort: 'high', revision: 2 },
+      last_error: 'network timeout',
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    expect(container.querySelector('.v3-current-model-name').textContent).toBe('DeepSeek Flash');
+    expect(container.querySelector('.v3-model-status-button').getAttribute('aria-label')).toContain('切换失败');
+  });
+
   it('keeps the switcher hidden when the owner is outside the rollout', async () => {
     const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
       ...baseConfig,
@@ -675,7 +688,7 @@ describe('LocalAssistantBar model selector', () => {
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
     expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: false });
     expect(container.querySelector('.v3-model-status-button')).toBeNull();
-    expect(container.querySelector('.v3-local-assistant-status')?.textContent).toContain('minimax-m3');
+    expect(container.querySelector('.v3-local-assistant-status')?.textContent).toContain('MiniMax M3');
   });
 
   it('shows a clear unavailable state for an old CatsCo runtime', async () => {
@@ -712,14 +725,16 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('DeepSeek Flash'));
     const terra = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('GPT-5.6 Terra'));
-    expect(m27?.textContent).toContain('标准额度，适合日常任务');
-    expect(m3?.textContent).toContain('支持多模态与长上下文');
-    expect(deepseek?.textContent).toContain('原生多模态，支持图片、工具调用与推理强度');
-    expect(terra?.textContent).toContain('OpenAI Responses，支持精细推理强度');
-    expect(m27?.textContent).toContain('上下文 204.8K');
-    expect(m3?.textContent).toContain('上下文 1M');
-    expect(deepseek?.textContent).toContain('上下文 1M');
-    expect(terra?.textContent).toContain('上下文 256K');
+    for (const item of [m27, m3, deepseek, terra]) {
+      expect(item).toBeTruthy();
+      expect(item.textContent).not.toContain('上下文');
+      expect(item.querySelectorAll('small')).toHaveLength(1);
+      expect(item.querySelector('small').classList.contains('v3-model-menu-quota')).toBe(true);
+    }
+    expect(m27?.textContent).not.toContain('标准额度，适合日常任务');
+    expect(m3?.textContent).not.toContain('支持多模态与长上下文');
+    expect(deepseek?.textContent).not.toContain('原生多模态，支持图片、工具调用与推理强度');
+    expect(terra?.textContent).not.toContain('OpenAI Responses，支持精细推理强度');
     expect(m3?.textContent).toContain('剩余 75%');
     expect(deepseek?.textContent).toContain('剩余 10%');
     expect(container.textContent).not.toContain('¥');
@@ -772,7 +787,7 @@ describe('LocalAssistantBar model selector', () => {
       await Promise.resolve();
     });
     const xhigh = [...container.querySelectorAll('.v3-model-reasoning-item')]
-      .find((item) => item.textContent.includes('xhigh'));
+      .find((item) => item.textContent.includes('极高'));
     await act(async () => {
       xhigh.click();
       await Promise.resolve();
@@ -857,6 +872,10 @@ describe('LocalAssistantBar model selector', () => {
     await act(async () => container.querySelector('.v3-model-status-button').click());
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('DeepSeek Flash'));
+    expect(container.querySelector('.v3-current-model-name').textContent)
+      .toBe(deepseek.querySelector('strong').textContent);
+    expect(container.querySelector('.v3-model-status-button').getAttribute('aria-label'))
+      .toContain('DeepSeek Flash');
     await act(async () => deepseek.click());
     expect(container.textContent).toContain('推理强度');
     expect(container.textContent).toContain('视觉');
