@@ -96,3 +96,13 @@ func TestSkillHubPublicationUploadDeliveryMigrationMatchesStartup(t *testing.T) 
 		t.Fatal("000048 differs from startup")
 	}
 }
+
+func TestPostgresSkillHubPublicationUploadDeliveryMigrationRetainsAttempts(t *testing.T) {
+	db, in := uploadDeliveryFixture(t)
+	if _, err := db.db.Exec(uploadDeliveryMigration(t, "down")); err == nil {
+		t.Fatal("populated upload delivery rollback erased retained attempts")
+	}
+	if len(uploadDeliveryIDs(t, db, in)) != 1 {
+		t.Fatal("rollback failure did not preserve the upload attempt")
+	}
+}
