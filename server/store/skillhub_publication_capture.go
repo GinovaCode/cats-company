@@ -45,3 +45,25 @@ type SkillHubPublicationCaptureRecord struct {
 type SkillHubPublicationCaptureStore interface {
 	RecordSkillHubPublicationCapture(context.Context, SkillHubPublicationCaptureInput) (*SkillHubPublicationCaptureRecord, error)
 }
+
+// Internal live-authority read for upload delivery, not publisher history.
+// Binding must come from the current authenticated runtime, never an HTTP body.
+type SkillHubPublicationCaptureReader interface {
+	ReadSkillHubPublicationCapture(context.Context, string, SkillHubPublicationDeliveryBinding) (*SkillHubPublicationCaptureRecord, error)
+}
+
+// Safe historical status only; never serialize capture records, digests or
+// lease credentials to the browser. Cancellation wins over retained evidence.
+type SkillHubPublicationCaptureStatus struct {
+	EntryID, State, LastCode string
+	ActorUID                 int64
+	Attempts                 int
+	NextAttemptAt            *time.Time
+	LeaseUntil               *time.Time
+	CapturedAt               *time.Time
+	ObservedAt               time.Time
+}
+
+type SkillHubPublicationCaptureStatusReader interface {
+	GetSkillHubPublicationCaptureStatus(context.Context, int64, string) (*SkillHubPublicationCaptureStatus, error)
+}
