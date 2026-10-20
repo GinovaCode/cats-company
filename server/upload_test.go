@@ -824,6 +824,48 @@ func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileDownloadUsesMessageFilename(t *testing.T) {
+	dir := t.TempDir()
+	storedName := "20261019_53e19c75a1ab6e11905e9f3ec9a8457d.html"
+	if err := os.MkdirAll(filepath.Join(dir, "files"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "<!doctype html><h1>Report</h1>"
+	if err := os.WriteFile(filepath.Join(dir, "files", storedName), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewUploadHandler(dir, "/uploads")
+	for _, tc := range []struct{ name, want string }{
+		{"下载文件名问题-报障说明.html", "下载文件名问题-报障说明.html"},
+		{"report & notes.html", "report & notes.html"},
+		{"../../资料.html", "资料.html"},
+		{`C:\files\资料.html`, "资料.html"},
+		{"report.exe", "report.exe.html"},
+		{"report", "report.html"},
+		{"report\r\nInjected: value.html", "reportInjected: value.html"},
+		{"..", storedName},
+		{"", storedName},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				rec := httptest.NewRecorder()
+				query := url.Values{"download": {"1"}, "name": {tc.name}}.Encode()
+				handler.HandleServeFile(rec, httptest.NewRequest(method, "/uploads/files/"+storedName+"?"+query, nil))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d", rec.Code)
+				}
+				disposition, params, err := mime.ParseMediaType(rec.Header().Get("Content-Disposition"))
+				if err != nil || disposition != "attachment" || params["filename"] != tc.want {
+					t.Fatalf("download header = %q, want filename %q (err=%v)", rec.Header().Get("Content-Disposition"), tc.want, err)
+				}
+				if method == http.MethodGet && rec.Body.String() != content {
+					t.Fatal("download name changed the stored resource")
+				}
+			}
+		})
+	}
+}
+
 func TestHandleServeFileForcesDownloadWithoutFilenameInURL(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260715_f547bf132d510e621877d89214098db5.pdf"

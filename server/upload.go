@@ -595,7 +595,12 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Cache-Control", "no-store")
 	if forceDownload {
-		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, true))
+		downloadName := uploadDownloadName(r.URL.Query().Get("name"), fileName)
+		disposition := contentDispositionForUploadFile(fileName, ext, true)
+		if downloadName != fileName {
+			disposition = mime.FormatMediaType("attachment", map[string]string{"filename": downloadName})
+		}
+		w.Header().Set("Content-Disposition", disposition)
 	}
 	if subDir == "files" {
 		if !forceDownload {
@@ -663,7 +668,7 @@ func serveUploadPreviewPage(w http.ResponseWriter, r *http.Request, fullPath, fi
 	}
 
 	resourceURL := r.URL.Path
-	downloadURL := resourceURL + "?download=1"
+	downloadURL := resourceURL + "?" + url.Values{"download": {"1"}, "name": {name}}.Encode()
 	pageURL := r.URL.RequestURI()
 	ogImageURL := publicOrigin + "/pwa-512x512.png"
 	ogVideoURL := publicOrigin + resourceURL
@@ -1064,6 +1069,21 @@ func staticUploadTextMimeType(ext string) (string, bool) {
 		return "text/markdown; charset=utf-8", true
 	}
 	return "", false
+}
+
+// The display name comes from message metadata, while the storage key remains
+// the only path used to read the file. Keep its real extension in the download.
+func uploadDownloadName(name, storedName string) string {
+	name = sanitizeUploadPreviewName(name)
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" || name == "." || name == ".." {
+		return storedName
+	}
+	ext := filepath.Ext(storedName)
+	if !strings.EqualFold(filepath.Ext(name), ext) {
+		name += ext
+	}
+	return name
 }
 
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {

@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeft, Bot, Check, Clipboard, FolderOpen, Globe, Info, Plus, Trash2,
@@ -44,7 +44,25 @@ function formatUnavailableSkillHint(skillIds = []) {
 export default function SkillHubContent(props) {
   const { navigate } = useMarketplace();
   const categoryOwner = props.categoryOwnerUID || 'guest';
-  const [category, setCategory] = useState('');
+  const [category, setCategory] = useState(props.browseStateRef?.current?.category || '');
+  const pageRef = useRef(null);
+  const restoreScrollRef = useRef(props.browseStateRef?.current?.scrollTop || 0);
+  useEffect(() => {
+    if (props.browseStateRef?.current) props.browseStateRef.current.category = category;
+  }, [category, props.browseStateRef]);
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    const target = restoreScrollRef.current;
+    if (!page || target == null) return;
+    page.scrollTop = target;
+    if (page.scrollTop >= target || (!props.loadingBots && !props.loadingDefinition
+      && !props.loadingCatalogue && !props.loadingLibraryLocalSkills)) restoreScrollRef.current = null;
+  });
+  const rememberScroll = event => {
+    if (restoreScrollRef.current != null) return;
+    if (props.browseStateRef?.current) props.browseStateRef.current.scrollTop = event.currentTarget.scrollTop;
+  };
+  const cancelScrollRestore = () => { restoreScrollRef.current = null; };
   const [languagePreference, setLanguagePreference] = useState(() => ({ owner: categoryOwner, value: readSkillLanguage(categoryOwner) }));
   const language = languagePreference.owner === categoryOwner ? languagePreference.value : readSkillLanguage(categoryOwner);
   const changeLanguage = value => {
@@ -77,7 +95,8 @@ export default function SkillHubContent(props) {
     ? 'added'
     : activeSection;
   return (
-    <main className='cc-skillhub-page'>
+    <main ref={pageRef} className='cc-skillhub-page' onScroll={rememberScroll}
+      onWheel={cancelScrollRestore} onTouchStart={cancelScrollRestore} onKeyDown={cancelScrollRestore}>
       <div className='cc-skillhub-shell'>
         <header className='cc-skillhub-header'>
           <div className='cc-skillhub-title-block'>
@@ -797,7 +816,7 @@ function Catalogue(props) {
     loadingLibraryLocalSkills,
   } = props;
   const market = useMarketplaceCatalogue(skillSourceQuery(props.query || ''));
-  const hasMarketPage = market.enabled && Boolean(market.state?.skills);
+  const hasMarketPage = (market.enabled || market.cached) && Boolean(market.state?.skills);
   // Render the legacy catalogue immediately while the optional marketplace
   // request is warming up. The cloud response replaces it in place once it
   // arrives, so opening this tab never waits on a secondary capability check.
@@ -813,7 +832,10 @@ function Catalogue(props) {
   return (
     <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
       {market.state?.error && <div className='cc-skillhub-alert error' role='status'>{market.state.error}<button type='button' className='icon-button' disabled={market.state.loading} onClick={market.refresh} aria-label='重新加载能力分类' title='重试'><RefreshCw size={15} /></button></div>}
-      {!hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}</div>}
+      {!hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}
+        {legacySkills.length > 0 && <span> · 已保留上次加载的能力。</span>}
+        <button type='button' className='icon-button' disabled={loadingCatalogue} onClick={() => props.onSearch(props.query)} aria-label='重新加载能力库' title='重试'><RefreshCw size={15} /></button>
+      </div>}
       {libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
       {loading && librarySkills.length === 0 ? (
         <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取能力库' status />
@@ -823,11 +845,11 @@ function Catalogue(props) {
         <>
           {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> 正在更新能力…</div>}
           <div className='cc-skillhub-grid'>
-            {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} />)}
+            {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} definitionReady={props.definitionReady && !market.cached} />)}
           </div>
         </>
       )}
-      {hasMarketPage && market.state.cursor && <button type='button' className='cc-market-more' disabled={market.state.loading} onClick={market.more}>{market.state.loading ? '读取中…' : '加载更多能力'}</button>}
+      {hasMarketPage && market.state.cursor && <button type='button' className='cc-market-more' disabled={!market.enabled || market.state.loading} onClick={market.more}>{market.state.loading ? '读取中…' : '加载更多能力'}</button>}
     </section>
   );
 }

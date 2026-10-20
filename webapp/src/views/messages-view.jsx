@@ -3592,7 +3592,7 @@ export default function MessagesView({
             draftRevision,
           );
           if (updated && activeTopicRef.current === sessionTopic) {
-            setAttachmentStatus({ tone: 'success', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
+            setAttachmentStatus({ tone: 'success', source: 'attachment', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
           }
           if (!updated) return [];
           nextAttachmentKeys.forEach((fileKey) => phoneUploadFileKeysRef.current.add(fileKey));
@@ -4557,7 +4557,7 @@ export default function MessagesView({
       );
       if (!updated) return null;
       if (activeTopicRef.current === uploadTopic) {
-        setAttachmentStatus({ tone: 'success', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
+        setAttachmentStatus({ tone: 'success', source: 'attachment', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return attachment;
@@ -4618,7 +4618,7 @@ export default function MessagesView({
           : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
       });
     } else if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
-      setAttachmentStatus({ tone: 'success', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
+      setAttachmentStatus({ tone: 'success', source: 'attachment', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
     }
   };
 
@@ -4754,7 +4754,7 @@ export default function MessagesView({
         return alreadyAdded ? current : [...current, chatAttachment];
       });
       setAttachmentStatus(added
-        ? { tone: 'success', message: `已添加${chatAttachment.type === 'image' ? '图片' : '文件'}：${chatAttachment.name}` }
+        ? { tone: 'success', source: 'attachment', message: `已添加${chatAttachment.type === 'image' ? '图片' : '文件'}：${chatAttachment.name}` }
         : { tone: 'info', message: `${chatAttachment.name} 已在待发送附件中。` });
       return;
     }
@@ -7220,7 +7220,7 @@ export default function MessagesView({
         boxOverlay={isDragActive && (
           <div className="v3-drop-overlay" aria-hidden="true">
             <div className="v3-drop-title">拖放图片或文件到这里</div>
-            <div className="v3-drop-subtitle">支持聊天中的图片、本地图片、文件和文件夹，附件会先放在这里等待发送。</div>
+            <div className="v3-drop-subtitle">松开后添加到输入栏，确认后再发送。</div>
           </div>
         )}
         notices={(
@@ -7234,7 +7234,10 @@ export default function MessagesView({
             )}
             {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
               <div
-                className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+                className={!isUploadingAttachment && pendingAttachments.length > 0
+                  && (!attachmentStatus?.message || (attachmentStatus.tone === 'success' && attachmentStatus.source === 'attachment'))
+                  ? 'oc-visually-hidden'
+                  : `v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
                 role="status"
               >
                 <span>

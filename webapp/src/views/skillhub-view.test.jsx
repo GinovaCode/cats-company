@@ -3375,6 +3375,162 @@ describe('SkillHubView', () => {
     expect(container.textContent).not.toContain('bot-a/skill');
   });
 
+  it.each(['loading', 'loaded'])('ignores an old device failure while the new Agent is %s', async phase => {
+    const oldDevices = deferred();
+    const currentDevices = deferred();
+    api.getMyBots.mockResolvedValue({ bots: [
+      { uid: 42, display_name: 'Bot A', relation: 'owner' },
+      { uid: 44, display_name: 'Bot B', relation: 'owner' },
+    ] });
+    api.getDevices.mockReturnValueOnce(oldDevices.promise).mockReturnValueOnce(currentDevices.promise);
+    requestSkillHubDeviceTool.mockImplementation(async ({ payload }) => ({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: payload.bot_uid,
+      active_bot_uid: payload.bot_uid,
+      skills: [{ local_skill_id: 'b-skill', name: 'B workspace skill', relative_path: 'b-skill' }],
+    }));
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} />));
+    await act(async () => Simulate.change(container.querySelector('.cc-skillhub-bot-picker select'), { target: { value: '44' } }));
+    await openCustomSkills();
+    const refreshButton = () => [...container.querySelectorAll('.cc-skillhub-local-actions button')].find(button => button.textContent.includes('刷新'));
+    expect(refreshButton().disabled).toBe(true);
+    if (phase === 'loading') {
+      await act(async () => oldDevices.reject(new Error('Old Agent device failure')));
+      expect(refreshButton().disabled).toBe(true);
+      expect(container.textContent).not.toContain('Old Agent device failure');
+    }
+    await act(async () => currentDevices.resolve({ devices: [{
+      deviceId: 'server-b', runtimeRole: 'server', botUid: 44,
+      active: true, routeConnected: true, routable: true,
+      capabilities: ['skillhub.localWorkspace.get', 'skillhub.localWorkspace.pagination.v1', 'skillhub.localSkill.share', 'skillhub.localSkill.finalize'],
+    }] }));
+    if (phase === 'loaded') await act(async () => oldDevices.reject(new Error('Old Agent device failure')));
+    expect(container.textContent).toContain('B workspace skill');
+    expect(container.textContent).not.toContain('Old Agent device failure');
+    expect(refreshButton().disabled).toBe(false);
+  });
+
+  it('does not restore an older route after switching away and back to the same Agent', async () => {
+    const oldDevices = deferred();
+    const server = (botUid, deviceId) => ({
+      deviceId, runtimeRole: 'server', botUid,
+      active: true, routeConnected: true, routable: true,
+      capabilities: ['skillhub.localWorkspace.get', 'skillhub.localWorkspace.pagination.v1', 'skillhub.localSkill.share', 'skillhub.localSkill.finalize'],
+    });
+    api.getMyBots.mockResolvedValue({ bots: [
+      { uid: 42, display_name: 'Bot A', relation: 'owner' },
+      { uid: 44, display_name: 'Bot B', relation: 'owner' },
+    ] });
+    api.getDevices.mockReturnValueOnce(oldDevices.promise)
+      .mockResolvedValueOnce({ devices: [server(44, 'server-b')] })
+      .mockResolvedValueOnce({ devices: [server(42, 'server-a-new')] });
+    requestSkillHubDeviceTool.mockImplementation(async ({ payload }) => ({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: payload.bot_uid, active_bot_uid: payload.bot_uid, skills: [],
+    }));
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} />));
+    await act(async () => Simulate.change(container.querySelector('.cc-skillhub-bot-picker select'), { target: { value: '44' } }));
+    await act(async () => Simulate.change(container.querySelector('.cc-skillhub-bot-picker select'), { target: { value: '42' } }));
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'server-a-new' }));
+    await act(async () => oldDevices.resolve({ devices: [server(42, 'server-a-old')] }));
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'server-a-old' }));
+  });
+
+  it('does not discover a workspace from a device response after leaving SkillHub', async () => {
+    const pending = deferred();
+    api.getDevices.mockReturnValueOnce(pending.promise);
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} />));
+    await act(async () => root.render(null));
+    await act(async () => pending.resolve({ devices: [{
+      deviceId: 'server-old', runtimeRole: 'server', botUid: 42,
+      active: true, routeConnected: true, routable: true,
+      capabilities: ['skillhub.localWorkspace.get', 'skillhub.localWorkspace.pagination.v1', 'skillhub.localSkill.share', 'skillhub.localSkill.finalize'],
+    }] }));
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalled();
+  });
+
+  it('restores browsing context and catalogue while revalidating Agent authority, preserving results on refresh failure', async () => {
+    const viewStateRef = { current: null };
+    api.getMyBots.mockResolvedValue({ bots: [
+      { uid: 42, display_name: 'Bot A', relation: 'owner' },
+      { uid: 44, display_name: 'Bot B', relation: 'owner' },
+    ] });
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [{
+      id: 'tools/code-helper', name: 'Code helper', primaryCategory: 'development', latestVersion: '1.0.0', contentHash: 'b'.repeat(64),
+    }] });
+    const view = <SkillHubView user={{ uid: 7 }} viewStateRef={viewStateRef} />;
+    await act(async () => root.render(view));
+    await act(async () => Simulate.change(container.querySelector('.cc-skillhub-bot-picker select'), { target: { value: '44' } }));
+    await openCatalogue();
+    await act(async () => {
+      Simulate.change(container.querySelector('#cc-skillhub-search-input'), { target: { value: 'Code' } });
+      Simulate.click([...container.querySelectorAll('.cc-skillhub-category-filter button')].find(button => button.textContent === '开发工具'));
+    });
+    const page = container.querySelector('.cc-skillhub-page');
+    page.scrollTop = 240;
+    await act(async () => Simulate.scroll(page));
+    await act(async () => container.querySelector('.cc-skillhub-card-open').click());
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => root.render(null));
+
+    const definition = deferred();
+    const catalogue = deferred();
+    api.getBotDefinitionSkills.mockReturnValue(definition.promise);
+    api.searchSkillHubSkills.mockReturnValue(catalogue.promise);
+    await act(async () => root.render(view));
+    expect(container.querySelector('#skillhub-catalogue-tab').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('.cc-skillhub-bot-picker select').value).toBe('44');
+    expect(container.querySelector('#cc-skillhub-search-input').value).toBe('Code');
+    expect(container.querySelector('.cc-skillhub-category-filter button[aria-pressed="true"]').textContent).toBe('开发工具');
+    expect(container.querySelector('.cc-skillhub-page').scrollTop).toBe(240);
+    expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code helper');
+    expect(addButton(container).disabled).toBe(true);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(api.searchSkillHubSkills).toHaveBeenLastCalledWith('Code', { searchMode: 'name' });
+    expect(viewStateRef.current.definition).toBeUndefined();
+    expect(viewStateRef.current.devices).toBeUndefined();
+
+    await act(async () => {
+      catalogue.reject(new Error('temporarily offline'));
+      definition.resolve({ revision: 9, skills: [] });
+    });
+    expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code helper');
+    expect(container.textContent).toContain('已保留上次加载的能力');
+    expect(addButton(container).disabled).toBe(false);
+    api.searchSkillHubSkills.mockResolvedValue({ skills: [{ id: 'tools/new-code', name: 'Code refreshed', primaryCategory: 'development' }] });
+    await act(async () => Simulate.click(container.querySelector('button[aria-label="重新加载能力库"]')));
+    expect(container.querySelector('.cc-skillhub-card h3').textContent).toBe('Code refreshed');
+    expect(container.textContent).not.toContain('temporarily offline');
+  });
+
+  it('does not reuse another account browsing snapshot or catalogue', async () => {
+    const viewStateRef = { current: {
+      userUID: 'different-user', activeSection: 'catalogue', query: 'private', category: 'development', scrollTop: 240,
+      catalogue: [{ skillId: 'private/cached', displayName: 'Private cached skill' }],
+    } };
+    const pending = deferred();
+    api.searchSkillHubSkills.mockReturnValue(pending.promise);
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} viewStateRef={viewStateRef} />));
+    await openCatalogue();
+    expect(container.querySelector('#cc-skillhub-search-input').value).toBe('');
+    expect(container.textContent).not.toContain('Private cached skill');
+    expect(viewStateRef.current.userUID).toBe('7');
+    await act(async () => root.render(null));
+    await act(async () => pending.resolve({ skills: [{ id: 'late/skill', name: 'Late skill' }] }));
+    expect(viewStateRef.current.catalogue).toEqual([]);
+  });
+
+  it.each([401, 403])('clears the preserved legacy catalogue after a %s response', async status => {
+    const viewStateRef = { current: {
+      userUID: '7', activeSection: 'catalogue', catalogue: [{ skillId: 'private/cached', displayName: 'Private cached skill' }],
+    } };
+    api.searchSkillHubSkills.mockRejectedValueOnce(Object.assign(new Error('Access denied'), { status }));
+    await act(async () => root.render(<SkillHubView user={{ uid: 7 }} viewStateRef={viewStateRef} />));
+    expect(container.textContent).not.toContain('Private cached skill');
+    expect(container.textContent).toContain('Access denied');
+    expect(viewStateRef.current.catalogue).toEqual([]);
+  });
+
   it('restores the remembered Bot without treating page load as a switch request', async () => {
     globalThis.localStorage.setItem('catsco.skillhub.selectedBot.7', '44');
     api.getMyBots.mockResolvedValueOnce({

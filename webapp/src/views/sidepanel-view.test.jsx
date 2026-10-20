@@ -1974,6 +1974,145 @@ describe('ChatListView sidebar sections', () => {
     expect(task.querySelector('.cc-chat-row-time')).toBeTruthy();
   });
 
+  it('keeps a viewed completion read after login and REST/WebSocket metadata changes', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Read completion', is_bot: true,
+      last_time: '2026-07-20T04:00:00Z',
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'read-run', state: 'running', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:01:00.123456Z', summary: 'Done',
+    } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await act(async () => Simulate.click(container.querySelector('.cc-history-item')));
+    task.task_status = { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:01:00.123Z', summary: '任务已完成' };
+    await remount();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    // A genuinely new run must still notify, as must a different Agent's run.
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'next-run', updated_at: '2026-07-20T04:02:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await act(async () => Simulate.click(container.querySelector('.cc-history-item')));
+    await act(async () => wsHandler({ task_status: { ...task.task_status, source_uid: 43, run_id: 'next-run', updated_at: '2026-07-20T04:03:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await remount({ user: { ...user, uid: 8 } });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
+  it('keeps completion unread while another workspace tool is visible', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Background completion', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'background-run', state: 'running', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount({ activeTopic: task.id });
+    // The shell passes no visible topic while the user browses another tool.
+    await mount({ activeTopic: null });
+    await act(async () => wsHandler({ task_status: { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:01:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7') || '{}')[task.id]).toBeUndefined();
+    await mount({ activeTopic: task.id });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7'))[task.id]).toBeTruthy();
+  });
+
+  it.each(['initial', 'realtime'])('does not mark a selected task read in a hidden tab (%s)', async (arrival) => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      const status = { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'hidden-run', state: 'completed', updated_at: '2026-07-20T04:01:00Z' };
+      const task = { id: status.topic_id, friend_id: 42, name: 'Hidden task', is_bot: true, task_status: arrival === 'initial' ? status : null };
+      api.getConversations.mockResolvedValue({ conversations: [task] });
+      await mount({ activeTopic: task.id });
+      if (arrival === 'realtime') await act(async () => wsHandler({ task_status: status }));
+      expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+      expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7') || '{}')[task.id]).toBeUndefined();
+      api.getConversations.mockResolvedValue({ conversations: [{ ...task, task_status: status }] });
+      visibility.mockReturnValue('visible');
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+      expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+      expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7'))[task.id]).toBeTruthy();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it('honours existing read receipts and synchronizes dismissals from another tab', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Legacy read task', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'legacy-run', state: 'completed', updated_at: '2026-07-20T04:01:00Z' },
+    };
+    localStorage.setItem('cc_task_status_dismissed_v1:7', JSON.stringify({
+      p2p_7_42: 'completed|legacy-run|2026-07-20T04:01:00.123456Z|Done|',
+    }));
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'new-run', updated_at: '2026-07-20T04:02:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await act(async () => {
+      localStorage.setItem('cc_task_status_dismissed_v1:7', JSON.stringify({ p2p_7_42: JSON.stringify(['completed', '42', 'new-run']) }));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'cc_task_status_dismissed_v1:7' }));
+    });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+  });
+
+  it.each([false, true])('keeps the spinner through running/waiting transitions (compact=%s)', async (compact) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Waiting Task', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'waiting-run', state: 'running', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount({ compact });
+    if (compact) await act(async () => Simulate.click(container.querySelector('[aria-label="历史任务"]')));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, state: 'waiting', updated_at: '2026-07-20T04:01:00Z' } }));
+    expect(document.querySelector('[aria-label="任务等待中"] svg')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:02:00Z' } }));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBeTruthy();
+  });
+
+  it.each(['completed', null])('does not let an in-flight refresh replace a live spinner with %s', async (state) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Refresh race', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'previous-run', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValueOnce({ conversations: [task] });
+    await mount();
+    let finishRefresh;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'current-run', state: 'running', updated_at: '2026-07-20T04:02:00Z' } }));
+    await act(async () => finishRefresh({ conversations: [{ ...task, task_status: state ? task.task_status : null }] }));
+    expect(container.querySelector('.cc-task-row-status.running svg')).toBeTruthy();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    // A later authoritative terminal result should still replace the spinner.
+    api.getConversations.mockResolvedValueOnce({ conversations: [{ ...task, task_status: {
+      ...task.task_status, run_id: 'current-run', updated_at: '2026-07-20T04:03:00Z',
+    } }] });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    // Replayed active updates for the same finished run must not resurrect it.
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'current-run', state: 'running', updated_at: '2026-07-20T04:04:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+  });
+
+  it('allows a fresh REST completion after rejecting an older realtime event', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Old realtime event', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'ordered-run', state: 'running', updated_at: '2026-07-20T04:02:00Z' },
+    };
+    api.getConversations.mockResolvedValueOnce({ conversations: [task] });
+    await mount();
+    let finishRefresh;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:01:00Z' } }));
+    await act(async () => finishRefresh({ conversations: [{ ...task, task_status: { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:03:00Z' } }] }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
   it('restores time without a completion dot when the completed task is already active', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{

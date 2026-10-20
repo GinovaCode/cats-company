@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AppWindow,
   ArrowLeft,
@@ -212,20 +212,27 @@ function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onShare, shared,
   );
 }
 
-export default function AppsView({ user = null, topicId = '' }) {
-  const [agents, setAgents] = useState([]);
-  const [selectedAgentUID, setSelectedAgentUID] = useState('');
-  const [apps, setApps] = useState([]);
+export default function AppsView(props) {
+  // Account changes also discard pending launches and every transient dialog.
+  return <AppsViewSession key={String(props.user?.uid || '')} {...props} />;
+}
+
+function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
+  const userUID = String(user?.uid || '');
+  const cachedView = useRef(viewStateRef?.current?.uid === userUID ? viewStateRef.current : null).current;
+  const [agents, setAgents] = useState(() => cachedView?.agents || []);
+  const [selectedAgentUID, setSelectedAgentUID] = useState(() => cachedView?.selectedAgentUID || '');
+  const [apps, setApps] = useState(() => cachedView?.apps || []);
   const [loading, setLoading] = useState(true);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(() => Boolean(cachedView?.hasLoaded));
   const [showSkeletons, setShowSkeletons] = useState(false);
   const [failedAgentUIDs, setFailedAgentUIDs] = useState([]);
   const [error, setError] = useState('');
   const [selectedApp, setSelectedApp] = useState(null);
   const [openingID, setOpeningID] = useState('');
-  const [manageableOnly, setManageableOnly] = useState(false);
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [query, setQuery] = useState('');
+  const [manageableOnly, setManageableOnly] = useState(() => Boolean(cachedView?.manageableOnly));
+  const [favoritesOnly, setFavoritesOnly] = useState(() => Boolean(cachedView?.favoritesOnly));
+  const [query, setQuery] = useState(() => cachedView?.query || '');
   const [favoriteState, setFavoriteState] = useState(() => ({ uid: user?.uid, keys: readFavorites(user?.uid) }));
   const favoriteKeys = favoriteState.uid === user?.uid ? favoriteState.keys : readFavorites(user?.uid);
   const toggleFavorite = (app) => {
@@ -237,6 +244,39 @@ export default function AppsView({ user = null, topicId = '' }) {
   const [editingApp, setEditingApp] = useState(null);
   const [sharedAppKey, setSharedAppKey] = useState('');
   const appsRequestRef = useRef(0);
+  const launchRequestRef = useRef(0);
+  const listRef = useRef(null);
+  const listScrollTopRef = useRef(cachedView?.scrollTop || 0);
+
+  // Keep only catalogue data and browsing choices. Viewer URLs carry short-lived
+  // launch credentials and must never be restored when returning to this page.
+  useLayoutEffect(() => {
+    if (!viewStateRef) return;
+    viewStateRef.current = {
+      uid: userUID,
+      agents,
+      apps,
+      hasLoaded,
+      selectedAgentUID,
+      manageableOnly,
+      favoritesOnly,
+      query,
+      scrollTop: listScrollTopRef.current,
+    };
+  }, [viewStateRef, userUID, agents, apps, hasLoaded, selectedAgentUID, manageableOnly, favoritesOnly, query]);
+
+  const rememberListScroll = useCallback(() => {
+    if (!listRef.current) return;
+    listScrollTopRef.current = listRef.current.scrollTop;
+    if (viewStateRef?.current?.uid === userUID) {
+      viewStateRef.current.scrollTop = listScrollTopRef.current;
+    }
+  }, [viewStateRef, userUID]);
+
+  useLayoutEffect(() => {
+    // .cc-apps-page is the scrolling element (height: 100%; overflow: auto).
+    if (!selectedApp && listRef.current) listRef.current.scrollTop = listScrollTopRef.current;
+  }, [selectedApp]);
 
   useEffect(() => {
     if (!sharedAppKey) return undefined;
@@ -291,12 +331,15 @@ export default function AppsView({ user = null, topicId = '' }) {
       if (requestID !== appsRequestRef.current) return;
       const nextApps = [];
       const failed = [];
+      const retainFailed = new Set();
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
           // Agents that only expose the legacy Artifact catalog do not have a
           // new application list. Keep them out of the new page quietly.
           if (isLegacyApplicationCatalogUnavailable(result.reason)) return;
-          failed.push(agentUID(accessible[index]));
+          const uid = agentUID(accessible[index]);
+          failed.push(uid);
+          if (![401, 403].includes(Number(result.reason?.status))) retainFailed.add(uid);
           return;
         }
         const { agent, apps: agentApps } = result.value;
@@ -308,10 +351,21 @@ export default function AppsView({ user = null, topicId = '' }) {
           nextApps.push({ ...app, sourceAgent: agent });
         });
       });
-      setApps(nextApps);
+      // A transient failure must not erase a previously loaded Agent's cards.
+      // Successful empty responses and Agents removed from the roster still
+      // clear their old entries, so this cannot retain revoked catalogues.
+      setApps((previous) => [
+        ...nextApps,
+        ...previous.filter((app) => retainFailed.has(agentUID(app.sourceAgent))),
+      ]);
       setFailedAgentUIDs(failed);
-    } catch {
+    } catch (error) {
       if (requestID !== appsRequestRef.current) return;
+      if ([401, 403].includes(Number(error?.status))) {
+        setAgents([]);
+        setApps([]);
+        setSelectedAgentUID('');
+      }
       setError('Agent 列表暂时无法加载，请稍后重试。');
     } finally {
       if (requestID === appsRequestRef.current) {
@@ -322,18 +376,11 @@ export default function AppsView({ user = null, topicId = '' }) {
   }, [user?.uid]);
 
   useEffect(() => {
-    setSelectedAgentUID('');
-    setSelectedApp(null);
-    setEditingApp(null);
-    setManageableOnly(false);
-    setFavoritesOnly(false);
-    setQuery('');
-    setFavoriteState({ uid: user?.uid, keys: readFavorites(user?.uid) });
-    setApps([]);
-    setHasLoaded(false);
-    setShowSkeletons(false);
     loadApps();
-    return () => { appsRequestRef.current += 1; };
+    return () => {
+      appsRequestRef.current += 1;
+      launchRequestRef.current += 1;
+    };
   }, [loadApps]);
 
   const visibleApps = useMemo(() => apps
@@ -350,11 +397,16 @@ export default function AppsView({ user = null, topicId = '' }) {
   const listError = error || (failedAgentUIDs.includes(selectedAgentUID)
     ? '这个 Agent 的应用暂时无法加载，请重试。'
     : !selectedAgentUID && failedAgentUIDs.length > 0
-      ? (visibleApps.length > 0 ? '部分 Agent 的应用加载失败，已展示其余应用。' : '共享应用暂时无法加载，请重试。')
+      ? (visibleApps.length > 0
+        ? failedAgentUIDs.length === agents.length
+          ? '应用列表暂时无法刷新，已保留上次加载的应用。'
+          : '部分 Agent 的应用加载失败，已保留可用的应用。'
+        : '共享应用暂时无法加载，请重试。')
       : '');
 
   const openApp = useCallback(async (app, target = 'viewer') => {
     if (!app?.id || !app?.url) return;
+    const requestID = ++launchRequestRef.current;
     const id = String(app.id);
     setOpeningID(id);
     let viewerURL = app.url;
@@ -364,13 +416,21 @@ export default function AppsView({ user = null, topicId = '' }) {
     } catch {
       // A public app can still open as a guest when the launch handoff fails.
     }
+    if (requestID !== launchRequestRef.current) return;
     setOpeningID('');
     if (target === 'window') {
       window.open(viewerURL, '_blank', 'noopener,noreferrer');
       return;
     }
+    rememberListScroll();
     setSelectedApp({ ...app, viewerURL });
-  }, [topicId]);
+  }, [topicId, rememberListScroll]);
+
+  const returnToList = () => {
+    launchRequestRef.current += 1;
+    setOpeningID('');
+    setSelectedApp(null);
+  };
 
   const pageTitle = useMemo(() => selectedApp
     ? appTitle(selectedApp)
@@ -380,7 +440,7 @@ export default function AppsView({ user = null, topicId = '' }) {
     return (
       <section className="cc-apps-page cc-apps-viewer-page" aria-label="应用预览">
         <div className="cc-apps-viewer-header">
-          <button type="button" className="cc-apps-back-button" onClick={() => setSelectedApp(null)} aria-label="返回应用列表">
+          <button type="button" className="cc-apps-back-button" onClick={returnToList} aria-label="返回应用列表">
             <ArrowLeft size={17} aria-hidden="true" /><span>返回应用</span>
           </button>
           <div className="cc-apps-viewer-title" title={pageTitle}>{pageTitle}</div>
@@ -394,7 +454,7 @@ export default function AppsView({ user = null, topicId = '' }) {
   }
 
   return (
-    <section className="cc-apps-page" aria-label="共享应用" aria-busy={loading}>
+    <section ref={listRef} className="cc-apps-page" aria-label="共享应用" aria-busy={loading} onScroll={rememberListScroll}>
       <header className="cc-apps-header">
         <div>
           <h1>应用</h1>

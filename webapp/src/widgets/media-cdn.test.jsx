@@ -1,4 +1,7 @@
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { describe, expect, test, vi } from 'vitest';
+import PwaDownloadLink from './pwa-download-link';
 
 // 模拟生产构建下的媒体域解析：/uploads 相对路径 → CDN 域名（i.catsco.cc）。
 // 消费方（预览信任判定 / 下载参数）必须正确识别该 origin。
@@ -42,6 +45,26 @@ describe('media acceleration consumption', () => {
     const foreign = 'https://evil.example/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.pdf';
 
     expect(downloadableMediaURL(foreign)).toBe(foreign);
+    expect(downloadableMediaURL(foreign, 'private name.pdf')).toBe(foreign);
+  });
+
+  test('native CDN downloads carry the card filename even though download attributes are ignored cross-origin', async () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const storedURL = 'https://i.catsco.cc/uploads/files/20260101_abcdefabcdefabcdefabcdefabcdef12.html?download=1';
+    const name = '下载文件名问题-报障说明.html';
+    try {
+      await act(async () => root.render(<PwaDownloadLink href={storedURL} download={name}>下载</PwaDownloadLink>));
+      const url = new URL(host.querySelector('a').href);
+      expect(url.searchParams.get('name')).toBe(name);
+      expect(url.searchParams.getAll('download')).toEqual(['1']);
+      expect(url.pathname).toBe(new URL(storedURL).pathname);
+      expect(host.querySelector('a').download).toBe(name);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
   });
 
   test('download works for feedback uploads too', () => {

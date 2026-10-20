@@ -37,6 +37,8 @@ import {
   requestArtifactPageContext,
 } from '../artifact-context';
 import PwaDownloadLink from './pwa-download-link';
+import { downloadableMediaURL } from '../utils/media-download';
+export { downloadableMediaURL } from '../utils/media-download';
 import { previewPageURL, sharePreviewLink } from './preview-share';
 import { normalizeGatewayAnnotations } from '../gateway-annotations';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
@@ -2304,31 +2306,6 @@ function fetchableMediaURL(url) {
   try {
     const urlObj = new URL(url, window.location.origin);
     return urlObj.pathname + urlObj.search;
-  } catch (e) {
-    return url;
-  }
-}
-
-export function downloadableMediaURL(url) {
-  if (!url) return '';
-  try {
-    const urlObj = new URL(url, window.location.origin);
-    // 媒体域（CDN）与页面 origin 都视为可信；上传资源路径可能带 API 相对前缀
-    // （如 /api/uploads/...），从媒体基址推导根路径。
-    const mediaBase = new URL(resolveMediaURL('/uploads/'), window.location.origin);
-    const uploadRootPath = `${mediaBase.pathname.replace(/\/uploads\/?$/, '')}/uploads/`;
-    const isDownloadableUpload = ['files', 'images', 'feedback'].some(
-      (directory) => urlObj.pathname.startsWith(`${uploadRootPath}${directory}/`),
-    );
-    const trustedOrigin = urlObj.origin === window.location.origin
-      || urlObj.origin === mediaBase.origin;
-    if (!trustedOrigin || !isDownloadableUpload) {
-      return url;
-    }
-    urlObj.searchParams.set('download', '1');
-    return /^https?:\/\//i.test(url)
-      ? urlObj.toString()
-      : `${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
   } catch (e) {
     return url;
   }
