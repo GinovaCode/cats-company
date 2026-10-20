@@ -73,6 +73,7 @@ func TestPostgresSkillHubPublicationMigration(t *testing.T) {
 			exec(publicationCancelIntentMigration(t, "down"))
 			exec(publicationReceiptMigration(t, "down"))
 			exec(publicationUploadMigration(t, "down"))
+			exec(uploadDeliveryMigration(t, "down"))
 			exec(down)
 			var tables int
 			if err := db.db.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema()
