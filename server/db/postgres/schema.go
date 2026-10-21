@@ -17,6 +17,7 @@ func (a *Adapter) CreateSchema() error {
 		createProjectTopicsTable,
 		createConversationTitlesTable,
 		createConversationNotificationMutesTable,
+		createConversationDeviceSelectionsTable,
 		createMessagesTable,
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,

@@ -29,6 +29,7 @@ import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import StandaloneCloudArtifactsPanel from '../widgets/standalone-cloud-artifacts-panel';
 import ArtifactQuickPicker from '../widgets/artifact-quick-picker';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
+import ConversationDevicePicker from '../widgets/conversation-device-picker';
 import IdentityOnboarding from '../components/identity-onboarding';
 import LiquidFlowBackground, {
   shouldMountLiquidFlowBackground,
@@ -2159,6 +2160,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         </div>
       )}
       <div className="v3-shell-actions">
+        <ConversationDevicePicker topicId={topicId} activeAgent={activeAgent} />
         {onOpenServiceAgents && (
           <button type="button" className="v3-action-btn v3-shell-action-desktop" onClick={onOpenServiceAgents} aria-label="Agent 工具" title="Agent 工具（定制 Agent 工具集）">
             <Package size={17} />

@@ -102,6 +102,8 @@ type sharedRuntimeState interface {
 	lookupDeviceGrant(grantID string, now int64) (ScopedDeviceGrant, bool)
 	deviceSelectionPreference(actorUID int64, sessionKey string, now int64) (string, bool)
 	rememberDeviceSelection(actorUID int64, sessionKey string, preference deviceSelectionPreference)
+	deviceSelectionRecord(actorUID int64, sessionKey string) (deviceSelectionPreference, error)
+	compareDeviceSelection(actorUID int64, sessionKey string, expected string, next deviceSelectionPreference) error
 
 	addDeviceRPCPending(pending deviceRPCPendingRecord, now time.Time) (bool, string)
 	getDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool)

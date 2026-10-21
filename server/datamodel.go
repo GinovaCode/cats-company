@@ -221,6 +221,9 @@ type MsgThinToolRPC struct {
 	ID                string                 `json:"id,omitempty"`
 	Type              string                 `json:"type"` // "request" or "result"
 	RequestID         string                 `json:"request_id"`
+	GrantID           string                 `json:"grant_id,omitempty"`
+	SessionKey        string                 `json:"session_key,omitempty"`
+	ActorUserID       string                 `json:"actor_user_id,omitempty"`
 	TargetOwnerUserID string                 `json:"target_owner_user_id,omitempty"`
 	TargetDeviceID    string                 `json:"target_device_id,omitempty"`
 	DeviceID          string                 `json:"device_id,omitempty"`

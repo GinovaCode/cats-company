@@ -163,7 +163,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		nodeID:                  nodeID,
 		sharedRuntime:           shared,
 		bodyLeases:              newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:             newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		userDevices:             newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared).withSelectionStore(db),
 		deviceAudit:             newDeviceAuditLog(),
 		deviceRevokes:           newDeviceConnectorRevocationList(),
 		deviceClients:           make(map[int64]map[string]*Client),
@@ -2572,7 +2572,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				msg.Data.Metadata,
 				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
 			)
-			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic))
+			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata))
 			metadata = withGatewayAnnotationAgentContext(
 				metadata,
 				h.gatewayAnnotationAgentContext(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata),

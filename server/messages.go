@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -556,7 +557,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	publicMetadata := metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata))
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
 	if !nativeChannelGroup {
-		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID))
+		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID, sourceMetadata))
 	}
 	metadata = withArtifactContextDeliveryRef(
 		metadata,
@@ -800,105 +801,46 @@ func withSkillConnectorMetadata(metadata map[string]interface{}, connectors map[
 	return next
 }
 
-func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, topicID string) map[string]interface{} {
-	if h == nil || h.userDevices == nil || recipientUID <= 0 || !h.isBotUser(recipientUID) {
+func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, topicID string, sourceMetadata ...map[string]interface{}) map[string]interface{} {
+	if h == nil || h.db == nil || h.userDevices == nil || actorUID <= 0 || recipientUID <= 0 || !h.isBotUser(recipientUID) {
 		return nil
 	}
-	users := h.xiaobaRuntimeRelevantHumanUsers(actorUID, recipientUID, topicID)
-	if len(users) == 0 {
-		log.Printf("[xiaoba_runtime] no relevant human users: topic=%s actor=%s recipient=%s", topicID, formatUID(actorUID), formatUID(recipientUID))
+	// A directory is not permission to operate another group member's computer.
+	// Use the same canonical owner resolution as scoped device grants.
+	ownerUID, _ := h.deviceAccessOwnerUID(actorUID, recipientUID, sourceMetadata...)
+	if ownerUID <= 0 {
 		return nil
 	}
-	devices := make([]map[string]interface{}, 0, len(users))
-	for _, user := range users {
-		if user == nil || user.AccountType == types.AccountBot || user.AccountType == types.AccountService {
-			continue
+	user, err := h.db.GetUser(ownerUID)
+	if err != nil || user == nil || user.AccountType == types.AccountBot || user.AccountType == types.AccountService {
+		return nil
+	}
+	known, _ := h.classifyUserDevices(ownerUID, humanToolTargetDevices(h.userDevices.list(ownerUID)))
+	// Stable ordering makes heartbeat changes purely availability updates.
+	sort.Slice(known, func(i, j int) bool { return known[i].DeviceID < known[j].DeviceID })
+	devices := make([]map[string]interface{}, 0, len(known))
+	userName := firstNonEmpty(user.DisplayName, user.Username, formatUID(ownerUID))
+	for _, device := range known {
+		status := "unavailable"
+		if device.Routable {
+			status = "ready"
 		}
-		device, ok := h.xiaobaRuntimeReadyDevice(user.ID)
-		if !ok {
-			log.Printf("[xiaoba_runtime] no ready device: topic=%s actor=%s recipient=%s user=%s username=%s display=%s", topicID, formatUID(actorUID), formatUID(recipientUID), formatUID(user.ID), user.Username, user.DisplayName)
-			continue
-		}
-		userName := firstNonEmpty(user.DisplayName, user.Username, formatUID(user.ID))
-		label := firstNonEmpty(device.DisplayName, userName+" 的电脑", formatUID(user.ID)+" 的电脑")
-		log.Printf("[xiaoba_runtime] ready device: topic=%s actor=%s recipient=%s user=%s username=%s label=%q device_id=%s body_id=%s install_id=%s os=%s active=%t route_connected=%t routable=%t", topicID, formatUID(actorUID), formatUID(recipientUID), formatUID(user.ID), userName, label, device.DeviceID, device.BodyID, device.InstallationID, normalizeDeviceOS(device.OS), device.Active, device.RouteConnected, device.Routable)
 		devices = append(devices, map[string]interface{}{
-			"userId":   formatUID(user.ID),
+			"userId":   formatUID(ownerUID),
 			"userName": userName,
 			"deviceId": device.DeviceID,
-			"label":    label,
+			"label":    firstNonEmpty(device.DisplayName, userName+" 的电脑"),
 			"os":       normalizeDeviceOS(device.OS),
+			"status":   status,
 		})
 	}
-	if len(devices) == 0 {
-		log.Printf("[xiaoba_runtime] no devices injected: topic=%s actor=%s recipient=%s relevant_users=%d", topicID, formatUID(actorUID), formatUID(recipientUID), len(users))
-		return nil
-	}
-	log.Printf("[xiaoba_runtime] inject devices: topic=%s actor=%s recipient=%s count=%d devices=%#v", topicID, formatUID(actorUID), formatUID(recipientUID), len(devices), devices)
 	return map[string]interface{}{
-		"schema":  "xiaoba.runtime.v1",
-		"devices": devices,
+		// v1 consumers assume every entry is ready; do not present offline
+		// computers under that schema during coordinated upgrades.
+		"schema":      "xiaoba.runtime.v2",
+		"ownerUserId": formatUID(ownerUID),
+		"devices":     devices,
 	}
-}
-
-func (h *Hub) xiaobaRuntimeRelevantHumanUsers(actorUID int64, recipientUID int64, topicID string) []*types.User {
-	if h == nil || h.db == nil {
-		return nil
-	}
-	seen := make(map[int64]bool)
-	addUser := func(uid int64, out *[]*types.User) {
-		if uid <= 0 || uid == recipientUID || seen[uid] {
-			return
-		}
-		seen[uid] = true
-		user, err := h.db.GetUser(uid)
-		if err != nil || user == nil {
-			return
-		}
-		if user.AccountType == types.AccountBot || user.AccountType == types.AccountService {
-			return
-		}
-		*out = append(*out, user)
-	}
-
-	users := make([]*types.User, 0, 4)
-	if isGroupTopic(topicID) {
-		groupID := extractGroupID(topicID)
-		if groupID > 0 {
-			members, err := h.db.GetGroupMembers(groupID)
-			if err == nil {
-				for _, member := range members {
-					if member == nil || member.UserID <= 0 || member.UserID == recipientUID || seen[member.UserID] || member.IsBot {
-						continue
-					}
-					seen[member.UserID] = true
-					users = append(users, &types.User{
-						ID:          member.UserID,
-						Username:    member.Username,
-						DisplayName: member.DisplayName,
-						AccountType: types.AccountHuman,
-					})
-				}
-			}
-		}
-		return users
-	}
-
-	addUser(actorUID, &users)
-	peerUID := extractPeerUID(topicID, actorUID)
-	addUser(peerUID, &users)
-	return users
-}
-
-func (h *Hub) xiaobaRuntimeReadyDevice(ownerUID int64) (UserDevice, bool) {
-	if h == nil || ownerUID <= 0 {
-		return UserDevice{}, false
-	}
-	routable, _ := h.userDeviceRouteCandidates(ownerUID)
-	if len(routable) == 0 {
-		return UserDevice{}, false
-	}
-	return routable[0], true
 }
 
 func (h *Hub) isBotUser(uid int64) bool {
@@ -1039,8 +981,8 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 				permissions["device_owner_user_id"] = formatUID(deviceOwnerUID)
 				permissions["device_owner_source"] = deviceOwnerSource
 			}
-			routableDevices, unavailableDevices := h.userDeviceRouteCandidates(deviceOwnerUID)
-			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, messageText, routableDevices, unavailableDevices)
+			knownDevices, unavailableDevices := h.classifyUserDevices(deviceOwnerUID, humanToolTargetDevices(h.userDevices.list(deviceOwnerUID)))
+			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, messageText, routableDevices(knownDevices), unavailableDevices)
 			if len(deviceContext.Grants) > 0 {
 				identity["device_grants"] = deviceContext.Grants
 			}
