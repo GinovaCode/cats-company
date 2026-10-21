@@ -23,6 +23,10 @@ type publicationHumanCommitCloud interface {
 	Read(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCommitCloudStatus, error)
 }
 
+type publicationHumanReportCloud interface {
+	Report(context.Context, store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error)
+}
+
 // Human-only explicit confirmation. No registration as a tool/RPC; a model or
 // Bot token can neither plan nor approve. Default off, no Worker/Runtime dispatch.
 type SkillHubPublicationHumanCommitHandler struct {
@@ -91,13 +95,14 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix), "/")
-	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status") {
+	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report") {
 		fail(404, "publication.not_found")
 		return
 	}
 	id, action := parts[1], parts[2]
 	method := http.MethodPost
-	if action == "status" {
+	readOnly := action == "status" || action == "report"
+	if readOnly {
 		method = http.MethodGet
 	}
 	if r.Method != method {
@@ -128,7 +133,7 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 	defer cancel()
 	var confirmVersion bool
 	var confirmationKey string
-	if action == "status" {
+	if readOnly {
 		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 			fail(400, "publication.invalid_request")
 			return
@@ -167,7 +172,7 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 			return
 		}
 	}
-	current := action != "status"
+	current := !readOnly
 	local, err := h.reader.GetSkillHubPublicationCommitContext(ctx, claims.UID, id, current)
 	if err != nil {
 		h.failure(w, err)
@@ -188,6 +193,25 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 	}
 	if current && local.Entry.State != "waiting_runtime" {
 		fail(409, "publication.commit_cancelled")
+		return
+	}
+	if action == "report" {
+		peer, ok := h.cloud.(publicationHumanReportCloud)
+		if !ok {
+			fail(503, "publication.report_unavailable")
+			return
+		}
+		out, err := peer.Report(ctx, receipt)
+		if err != nil || out == nil || out.SchemaVersion != 1 || out.Receipt != publicationControlReceipt(receipt) ||
+			!validPublicationValidationReport(out.Validation, receipt.Query.SourceSnapshotHash) || ctx.Err() != nil {
+			fail(503, "publication.report_unavailable")
+			return
+		}
+		if !h.recheck(ctx, claims.UID, id, false, receipt) {
+			fail(503, "publication.authority_changed")
+			return
+		}
+		writeSkillHubPublicationJSON(w, 200, map[string]any{"schemaVersion": 1, "entryRequestId": id, "validation": out.Validation})
 		return
 	}
 	if action == "plan" {

@@ -112,7 +112,11 @@ func (c *PublicationCommitCloudClient) send(ctx context.Context, r store.SkillHu
 		}
 	}
 	media, params, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
-	if err != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) || res.Header.Get("Content-Encoding") != "" || res.ContentLength > 8192 {
+	limit := int64(8192)
+	if action == "report" {
+		limit = 64 * 1024
+	}
+	if err != nil || media != "application/json" || len(params) > 1 || (len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8")) || res.Header.Get("Content-Encoding") != "" || res.ContentLength > limit {
 		return nil, errPublicationCommitCloud
 	}
 	noStore := false
@@ -124,8 +128,8 @@ func (c *PublicationCommitCloudClient) send(ctx context.Context, r store.SkillHu
 	if !noStore {
 		return nil, errPublicationCommitCloud
 	}
-	data, err = io.ReadAll(io.LimitReader(res.Body, 8193))
-	if err != nil || len(data) == 0 || len(data) > 8192 || !utf8.Valid(data) {
+	data, err = io.ReadAll(io.LimitReader(res.Body, limit+1))
+	if err != nil || len(data) == 0 || int64(len(data)) > limit || !utf8.Valid(data) {
 		return nil, errPublicationCommitCloud
 	}
 	if res.StatusCode == 200 {
