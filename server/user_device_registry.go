@@ -170,8 +170,9 @@ type DeviceSelectionCandidate struct {
 }
 
 type DeviceTurnContext struct {
-	Grants    []ScopedDeviceGrant
-	Selection *DeviceSelection
+	Grants         []ScopedDeviceGrant
+	ExplicitGrants []ScopedDeviceGrant
+	Selection      *DeviceSelection
 }
 
 type deviceSelectionPreference struct {
@@ -500,19 +501,19 @@ func (r *userDeviceRegistry) grantsForTurn(actorUID int64, topicID string, topic
 	return r.grantsForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, operationsByDevice)
 }
 
-func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string) DeviceTurnContext {
+func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string) DeviceTurnContext {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return DeviceTurnContext{}
 	}
 	devices := r.activeDevices(actorUID)
-	return r.turnContextForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, nil)
+	return r.turnContextForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, nil)
 }
 
-func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
-	return r.turnContextForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, unavailableCandidates)
+func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	return r.turnContextForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, devices, unavailableCandidates)
 }
 
-func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return DeviceTurnContext{}
 	}
@@ -521,19 +522,24 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	}
 	devices = devicesForOwner(ownerUID, devices)
 	unavailableCandidates = devicesForOwner(ownerUID, unavailableCandidates)
-	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText, unavailableCandidates)
+	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, unavailableCandidates)
 	if selection != nil {
 		selection.OwnerUserID = formatUID(ownerUID)
 	}
-	var grants []ScopedDeviceGrant
-	if ownerUID == actorUID && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
-		grants = r.grantsForExplicitDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, selection.Revision)
-	} else if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
+	var grants, explicitGrants []ScopedDeviceGrant
+	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
 		grants = r.grantsForOwnerDevices(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected}, selection.Revision)
 	}
+	// The legacy grant list remains selected-only even during a v2 rollout.
+	// Explicit capabilities live in a separate envelope ignored by old Bots,
+	// and cannot execute through either RPC without an exact explicit target.
+	if ownerUID == actorUID && xiaobaRuntimeV2Enabled() && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
+		explicitGrants = r.grantsForExplicitDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, selection.Revision)
+	}
 	return DeviceTurnContext{
-		Grants:    grants,
-		Selection: selection,
+		Grants:         grants,
+		ExplicitGrants: explicitGrants,
+		Selection:      selection,
 	}
 }
 
@@ -691,7 +697,6 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 	topicType string,
 	agentUID int64,
 	devices []UserDevice,
-	messageText string,
 	unavailableSets ...[]UserDevice,
 ) (*DeviceSelection, *UserDevice) {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {

@@ -76,17 +76,29 @@ func TestXiaobaRuntimeMetadataDefaultsToLegacyV1(t *testing.T) {
 }
 
 func TestMultiDeviceExpiredPreferenceMustNotChooseOnlyOnlineDevice(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	r := newUserDeviceRegistry(time.Hour)
 	now := time.Now()
 	r.now = func() time.Time { return now }
-	a := UserDevice{OwnerUID: 7, DeviceID: "audit-a", DisplayName: "Laptop A"}
-	b := UserDevice{OwnerUID: 7, DeviceID: "audit-b", DisplayName: "Laptop B"}
+	a := UserDevice{OwnerUID: 7, DeviceID: "audit-a", DisplayName: "Laptop A", Capabilities: []DeviceGrantOperation{DeviceGrantReadFile, DeviceGrantWriteFile}}
+	b := UserDevice{OwnerUID: 7, DeviceID: "audit-b", DisplayName: "Laptop B", Capabilities: []DeviceGrantOperation{DeviceGrantReadFile, DeviceGrantWriteFile}}
 	session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
 	r.rememberDeviceSelection(7, session, a.DeviceID, "test_fixture")
 	now = now.Add(r.preferenceTTL + time.Second)
-	ctx := r.turnContextForOwnerDevices(7, 7, "p2p_7_42", "p2p", 42, "cloud", "继续读取刚才的文件", []UserDevice{b}, []UserDevice{a})
+	ctx := r.turnContextForOwnerDevices(7, 7, "p2p_7_42", "p2p", 42, "cloud", []UserDevice{b}, []UserDevice{a})
 	if ctx.Selection.Status != DeviceSelectionNeedsSelection || len(ctx.Grants) != 0 {
 		t.Fatalf("expired selection must ask instead of choosing online B: %#v", ctx)
+	}
+	if len(ctx.ExplicitGrants) != 1 || ctx.ExplicitGrants[0].DeviceID != b.DeviceID {
+		t.Fatalf("capable B must have only an independent explicit authorization: %#v", ctx)
+	}
+	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud"}
+	grant := ctx.ExplicitGrants[0]
+	if err := validateDeviceRPCGrant(bot, &MsgDeviceRPC{DeviceID: b.DeviceID}, grant, DeviceGrantWriteFile); err == nil {
+		t.Fatal("unspecified/default request executed B after A expired")
+	}
+	if err := validateDeviceRPCGrant(bot, &MsgDeviceRPC{DeviceID: b.DeviceID, TargetScope: "explicit_device"}, grant, DeviceGrantWriteFile); err != nil {
+		t.Fatalf("exact explicit request for B rejected: %v", err)
 	}
 }
 
@@ -96,7 +108,7 @@ func TestMultiDevicePreferenceIsolationAndHeartbeatOrdering(t *testing.T) {
 	b := UserDevice{OwnerUID: 7, DeviceID: "audit-b", DisplayName: "Laptop B"}
 	session := buildCatsCoSessionKey("grp_1", "group", "usr42", 7)
 	r.rememberDeviceSelection(7, session, a.DeviceID, "test_fixture")
-	_, selected := r.selectDeviceForTurn(7, "grp_1", "group", 42, []UserDevice{b, a}, "继续读取")
+	_, selected := r.selectDeviceForTurn(7, "grp_1", "group", 42, []UserDevice{b, a})
 	if selected == nil || selected.DeviceID != a.DeviceID {
 		t.Fatal("heartbeat ordering changed selected A")
 	}
@@ -104,7 +116,7 @@ func TestMultiDevicePreferenceIsolationAndHeartbeatOrdering(t *testing.T) {
 		actor, bot int64
 		topic      string
 	}{{8, 42, "grp_1"}, {7, 43, "grp_1"}, {7, 42, "grp_2"}} {
-		selection, selected := r.selectDeviceForTurn(tc.actor, tc.topic, "group", tc.bot, []UserDevice{a, b}, "继续读取")
+		selection, selected := r.selectDeviceForTurn(tc.actor, tc.topic, "group", tc.bot, []UserDevice{a, b})
 		if selected != nil || selection.Status != DeviceSelectionNeedsSelection {
 			t.Fatalf("selection leaked across actor/bot/topic: %#v", selection)
 		}
@@ -118,11 +130,11 @@ func TestMultiDeviceRegressionOfflineSelectionMustNotSwitch(t *testing.T) {
 		{OwnerUID: 7, DeviceID: "audit-b", DisplayName: "Audit Laptop B"},
 	}
 	r.rememberDeviceSelection(7, buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7), "audit-a", "confirmed_fixture")
-	_, selected := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, devices, "请在 Audit Laptop A 上读取文件")
+	_, selected := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, devices)
 	if selected == nil || selected.DeviceID != "audit-a" {
 		t.Fatal("fixture did not select A")
 	}
-	selection, target := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, devices[1:], "删掉刚才的测试文件")
+	selection, target := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, devices[1:])
 	if target != nil {
 		t.Fatalf("offline A silently changed to %s; want unavailable/confirmation, selection=%#v", target.DeviceID, selection)
 	}
@@ -135,7 +147,7 @@ func TestMultiDeviceRegressionMentionIsNotSwitchConsent(t *testing.T) {
 		{OwnerUID: 7, DeviceID: "audit-b", DisplayName: "Audit Laptop B"},
 	}
 	r.rememberDeviceSelection(7, buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7), "audit-a", "confirmed_fixture")
-	_, target := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, devices, "为什么上次切到了 Audit Laptop B？不要切换设备。")
+	_, target := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, devices)
 	if target != nil && target.DeviceID != "audit-a" {
 		t.Fatalf("mention without switch consent selected %s", target.DeviceID)
 	}
@@ -146,7 +158,7 @@ func TestMultiDeviceRegressionAmbiguousFirstTurnMustAsk(t *testing.T) {
 	selection, target := r.selectDeviceForTurn(7, "p2p_7_42", "p2p", 42, []UserDevice{
 		{OwnerUID: 7, DeviceID: "audit-a", DisplayName: "Audit Laptop A"},
 		{OwnerUID: 7, DeviceID: "audit-b", DisplayName: "Audit Laptop B"},
-	}, "读取我的桌面")
+	})
 	if target != nil || selection.Status != DeviceSelectionNeedsSelection {
 		t.Fatalf("ambiguous first turn must ask; got %#v", selection)
 	}

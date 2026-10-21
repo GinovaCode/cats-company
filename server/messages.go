@@ -1002,9 +1002,15 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 				permissions["device_owner_source"] = deviceOwnerSource
 			}
 			knownDevices, unavailableDevices := h.classifyUserDevices(deviceOwnerUID, humanToolTargetDevices(h.userDevices.list(deviceOwnerUID)))
-			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, messageText, routableDevices(knownDevices), unavailableDevices)
+			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices)
 			if len(deviceContext.Grants) > 0 {
 				identity["device_grants"] = deviceContext.Grants
+			}
+			if len(deviceContext.ExplicitGrants) > 0 {
+				identity["device_target_authorizations"] = map[string]interface{}{
+					"schema": "catsco.device-targets.v1",
+					"grants": deviceContext.ExplicitGrants,
+				}
 			}
 			if deviceContext.Selection != nil {
 				identity["device_selection"] = deviceContext.Selection

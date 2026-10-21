@@ -5,8 +5,9 @@ NOT deployed to production or approved for release. This is the authorization
 prerequisite for multi-device target stability, not completed rollout acceptance.
 
 2026-10-21 follow-up: see "Default selection and explicit task targets" below.
-For native same-account turns the picker is now a default, not an exclusive
-target restriction; older single-selected-device notes are historical.
+For native same-account turns the picker is a default. Explicit task targets
+require the separately gated v2 authorization envelope and paired client below;
+the legacy grant list remains selected-only.
 
 Directory/selection follow-up: the server supports two rollout states. By
 default it emits the legacy `xiaoba.runtime.v1` envelope with only routable
@@ -448,18 +449,37 @@ uses its own current grant; a request for multiple devices uses separate calls
 and reports results per device. Task targets never change the stored default.
 Device mentions, quotations and negations do not mutate selection state.
 
-For native same-account turns, `device_grants` includes a separate short-lived
-grant for each routable device, with `targetScope: "explicit_device"`. Every
-grant retains its own device ID, capabilities, actor, owner, conversation, Bot,
-expiry and selection revision. Switching the picker invalidates all prior
-revision grants, including grants for the newly selected device. Already-issued
-requests retain their original target/result attribution. Offline defaults never
-fall back to another computer, while a new explicit request for an online device
-can still execute. Missing/ambiguous targets remain unresolved.
+`catsco_identity.device_grants` always contains at most the selected default's
+short-lived grant. With no available, active default it contains no grants.
+Legacy Bots therefore never receive another device's executable grant in that
+field, regardless of directory or heartbeat order. Consumers must match grants
+by exact `deviceId`, never infer the default from array position.
 
-This requires the paired XiaoBa cloud-runtime implementation to interpret default
-versus explicit targets. Old selected-only grants do not authorize a different
-device. Delegated channel grants keep their existing selected-only behavior.
+Only with `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1`, native same-account turns also
+receive `catsco_identity.device_target_authorizations`, schema
+`catsco.device-targets.v1`, whose `grants` array contains independent short-lived
+`targetScope: "explicit_device"` capabilities for routable devices. This is an
+intentional authorization expansion in the opt-in v2 protocol, not automatic
+natural-language target resolution by the server. Keep the flag off until the
+paired cloud runtime has been deployed and verified; the default compatibility
+state emits no such envelope. Disabling v2 also rejects previously issued
+explicit grants. Merely receiving the directory does not authorize execution.
+
+The paired runtime resolves an exact device name/ID for explicit requests and
+sends `target_scope: "explicit_device"` plus that exact device ID. Both
+`device_rpc` and ordinary `thin_tool_rpc` enforce the request/grant scope match;
+missing/default scope cannot consume an explicit grant, and an explicit scope
+cannot borrow a default grant or downgrade to unscoped compatibility. The runtime
+must use a default grant for aliases such as `speaker_default`. Missing or
+ambiguous targets are rejected by the paired runtime; the server enforces exact
+device ID and scope rather than judging intent from natural-language text.
+
+Every grant retains device capabilities, actor, owner, conversation, Bot, expiry
+and selection revision. Switching the picker invalidates both sets of old grants.
+Already-issued requests retain original target/result attribution. An offline or
+expired default yields no default grant and cannot silently select online B;
+only B's independent, unexpired explicit capability can operate B. Delegated
+channel grants remain selected-only and receive no explicit envelope.
 The picker description now says "default computer". No new operation confirmation
 or Skill workflow is introduced; agent-host execution stays local. These changes
 do not enable global strict-enforcement flags or constitute a production rollout.

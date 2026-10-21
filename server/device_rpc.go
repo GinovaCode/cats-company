@@ -630,6 +630,12 @@ func (h *Hub) pendingMatchesDeviceClient(pending deviceRPCPending, client *Clien
 }
 
 func validateDeviceRPCGrant(client *Client, msg *MsgDeviceRPC, grant ScopedDeviceGrant, operation DeviceGrantOperation) error {
+	if grant.TargetScope != msg.TargetScope {
+		return fmt.Errorf("target_scope does not match grant")
+	}
+	if grant.TargetScope == "explicit_device" && (strings.TrimSpace(msg.DeviceID) != grant.DeviceID || grant.OwnerUserID != grant.ActorUserID) {
+		return fmt.Errorf("explicit device authorization requires an exact same-account device_id")
+	}
 	if grant.Status != "active" || grant.IdentityTrust != "server_canonical" {
 		return fmt.Errorf("device grant is not trusted")
 	}

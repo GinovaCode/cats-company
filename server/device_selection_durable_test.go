@@ -63,11 +63,11 @@ func TestDurableSelectionSurvivesRegistryAndRuntimeRestart(t *testing.T) {
 	// New server process and empty Redis/runtime state: only B reconnects first.
 	after := newUserDeviceRegistry(time.Minute).withSelectionStore(db).withSharedRuntime(newSharedMemoryRuntimeState())
 	after.now = func() time.Time { return time.Now().Add(24 * time.Hour) }
-	selection, target := after.selectDeviceForTurn(7, "grp_1", "group", 42, []UserDevice{b}, "读取刚才的文件")
+	selection, target := after.selectDeviceForTurn(7, "grp_1", "group", 42, []UserDevice{b})
 	if target != nil || selection.Status != DeviceSelectionUnavailable || selection.SelectedDevice.DeviceID != "a" {
 		t.Fatalf("restart silently chose B: %#v", selection)
 	}
-	selection, target = after.selectDeviceForTurn(7, "grp_1", "group", 42, []UserDevice{b, a}, "继续读取")
+	selection, target = after.selectDeviceForTurn(7, "grp_1", "group", 42, []UserDevice{b, a})
 	if target == nil || target.DeviceID != "a" || selection.Revision != first.Revision {
 		t.Fatal("durable preference expired or reordered")
 	}
@@ -87,6 +87,7 @@ func TestDurableSelectionSurvivesRegistryAndRuntimeRestart(t *testing.T) {
 }
 
 func TestDurableSelectionDatabaseFailureNeverFallsBack(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	db := &durableSelectionTestStore{}
 	r := newUserDeviceRegistry(time.Minute).withSelectionStore(db)
 	session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
@@ -96,8 +97,8 @@ func TestDurableSelectionDatabaseFailureNeverFallsBack(t *testing.T) {
 	}
 	r.preferences[7] = map[string]deviceSelectionPreference{session: {DeviceID: "b", Revision: "unsafe-runtime", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}}
 	db.fail = true
-	ctx := r.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", "继续", []UserDevice{{OwnerUID: 7, DeviceID: "b", Capabilities: []DeviceGrantOperation{DeviceGrantReadFile}}}, nil)
-	if len(ctx.Grants) != 0 || ctx.Selection.Status != DeviceSelectionUnavailable || ctx.Selection.SelectionSource != "selection_store_unavailable" {
+	ctx := r.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", []UserDevice{{OwnerUID: 7, DeviceID: "b", Capabilities: []DeviceGrantOperation{DeviceGrantReadFile}}}, nil)
+	if len(ctx.Grants) != 0 || len(ctx.ExplicitGrants) != 0 || ctx.Selection.Status != DeviceSelectionUnavailable || ctx.Selection.SelectionSource != "selection_store_unavailable" {
 		t.Fatal("database failure used runtime fallback")
 	}
 	if _, err := r.confirmDeviceSelection(7, session, "b", "user_confirmation", ""); err == nil {
