@@ -7,7 +7,7 @@ import (
 )
 
 func TestDeviceSelectionStartupSchemaMatchesMigration(t *testing.T) {
-	migration, err := os.ReadFile("../migrations/postgres/000041_conversation_device_selections.up.sql")
+	migration, err := os.ReadFile("../migrations/postgres/000049_conversation_device_selections.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

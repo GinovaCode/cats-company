@@ -122,11 +122,11 @@ func TestDeviceSelectionNumberedMigrationRealDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	up, err := os.ReadFile("../migrations/postgres/000041_conversation_device_selections.up.sql")
+	up, err := os.ReadFile("../migrations/postgres/000049_conversation_device_selections.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	down, err := os.ReadFile("../migrations/postgres/000041_conversation_device_selections.down.sql")
+	down, err := os.ReadFile("../migrations/postgres/000049_conversation_device_selections.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

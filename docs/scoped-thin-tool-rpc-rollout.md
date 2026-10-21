@@ -46,7 +46,7 @@ PostgreSQL 16 real-engine acceptance also passed on a separate, resource-limited
 test container, reached only through a loopback SSH tunnel. It covered the adapter
 contract, actual numbered up/repeated-up/down/up migration in a disposable schema,
 and fresh-process adapter readback after stopping and starting the database
-container. The test container was stopped afterward. Migration 000041 has NOT
+container. The test container was stopped afterward. Migration 000049 has NOT
 been deployed to any existing application database.
 
 Acceptance updates below cover a dispatch/switch race, baseline-source version
