@@ -4,6 +4,10 @@ Status: local changes with separately authorized isolated acceptance deployments
 NOT deployed to production or approved for release. This is the authorization
 prerequisite for multi-device target stability, not completed rollout acceptance.
 
+2026-10-21 follow-up: see "Default selection and explicit task targets" below.
+For native same-account turns the picker is now a default, not an exclusive
+target restriction; older single-selected-device notes are historical.
+
 Directory/selection follow-up: the server supports two rollout states. By
 default it emits the legacy `xiaoba.runtime.v1` envelope with only routable
 devices, so older XiaoBa clients keep working. Set
@@ -435,3 +439,31 @@ restarts, global strict enforcement or releases. The isolated test deployment
 above was separately approved. A single dispatch/switch race does not exhaust
 concurrent-turn interleavings or stress behavior; isolated real-engine and
 network coverage do not constitute production rollout acceptance.
+
+## Default selection and explicit task targets (2026-10-21)
+
+The conversation picker selects the **default** computer. An unspecified user
+desktop/file request uses that default. An explicitly requested different device
+uses its own current grant; a request for multiple devices uses separate calls
+and reports results per device. Task targets never change the stored default.
+Device mentions, quotations and negations do not mutate selection state.
+
+For native same-account turns, `device_grants` includes a separate short-lived
+grant for each routable device, with `targetScope: "explicit_device"`. Every
+grant retains its own device ID, capabilities, actor, owner, conversation, Bot,
+expiry and selection revision. Switching the picker invalidates all prior
+revision grants, including grants for the newly selected device. Already-issued
+requests retain their original target/result attribution. Offline defaults never
+fall back to another computer, while a new explicit request for an online device
+can still execute. Missing/ambiguous targets remain unresolved.
+
+This requires the paired XiaoBa cloud-runtime implementation to interpret default
+versus explicit targets. Old selected-only grants do not authorize a different
+device. Delegated channel grants keep their existing selected-only behavior.
+The picker description now says "default computer". No new operation confirmation
+or Skill workflow is introduced; agent-host execution stays local. These changes
+do not enable global strict-enforcement flags or constitute a production rollout.
+
+The earlier single-selected-device descriptions in this document record the earlier
+implementation/acceptance and are superseded by this section for native
+same-account explicit targets.

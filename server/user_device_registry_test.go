@@ -213,7 +213,7 @@ func TestUserDeviceRegistryIssuesShellGrantWhenDeviceCapabilityIsRegistered(t *t
 	}
 }
 
-func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing.T) {
+func TestUserDeviceRegistryTaskTargetsDoNotChangeDefault(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	registry := newUserDeviceRegistry(10 * time.Minute)
 	registry.now = func() time.Time { return now }
@@ -236,7 +236,7 @@ func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing
 	}
 
 	ctx := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "请在 Alice Laptop 上读取文件")
-	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || len(ctx.Grants) != 0 {
+	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || len(ctx.Grants) != 2 {
 		t.Fatalf("free text must not commit a device selection: %#v", ctx)
 	}
 	registry.rememberDeviceSelection(7, buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7), "alice-laptop", "confirmed_fixture")
@@ -247,8 +247,8 @@ func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing
 	if got := ctx.Selection.SelectedDevice.Operations; len(got) != 1 || got[0] != DeviceGrantReadFile {
 		t.Fatalf("selection should expose selected device operations: %#v", got)
 	}
-	if len(ctx.Grants) != 1 || ctx.Grants[0].DeviceID != "alice-laptop" {
-		t.Fatalf("grants should be scoped to explicit selected device: %#v", ctx.Grants)
+	if len(ctx.Grants) != 2 {
+		t.Fatalf("each account device should have its own grant: %#v", ctx.Grants)
 	}
 
 	followup := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "继续读取")
@@ -263,7 +263,7 @@ func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing
 	if otherTopic.Selection == nil || otherTopic.Selection.Status != DeviceSelectionNeedsSelection {
 		t.Fatalf("unexpected other topic selection: %#v", otherTopic.Selection)
 	}
-	if otherTopic.Selection.SelectedDevice != nil || len(otherTopic.Grants) != 0 {
+	if otherTopic.Selection.SelectedDevice != nil || len(otherTopic.Grants) != 2 {
 		t.Fatalf("new conversation must not silently choose a device: %#v", otherTopic)
 	}
 }

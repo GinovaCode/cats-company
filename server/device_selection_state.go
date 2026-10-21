@@ -139,6 +139,12 @@ func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool
 	if err != nil || current.Revision != grant.SelectionRevision {
 		return false
 	}
+	if grant.TargetScope == "explicit_device" {
+		// A default's lease controls aliases, not explicit task targets. The
+		// grant's own short expiry is checked by lookupGrant; a default switch
+		// still invalidates every grant through the revision comparison above.
+		return grant.OwnerUserID == grant.ActorUserID
+	}
 	if current.DeviceID == "" {
 		return grant.SelectionRevision == ""
 	}
