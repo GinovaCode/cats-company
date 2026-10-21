@@ -213,7 +213,8 @@ func TestUserDeviceRegistryIssuesShellGrantWhenDeviceCapabilityIsRegistered(t *t
 	}
 }
 
-func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing.T) {
+func TestUserDeviceRegistryTaskTargetsDoNotChangeDefault(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	registry := newUserDeviceRegistry(10 * time.Minute)
 	registry.now = func() time.Time { return now }
@@ -235,23 +236,23 @@ func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing
 		t.Fatalf("register desktop: %v", err)
 	}
 
-	ctx := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "请在 Alice Laptop 上读取文件")
-	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || len(ctx.Grants) != 0 {
+	ctx := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent")
+	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || len(ctx.Grants) != 0 || len(ctx.ExplicitGrants) != 2 {
 		t.Fatalf("free text must not commit a device selection: %#v", ctx)
 	}
 	registry.rememberDeviceSelection(7, buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7), "alice-laptop", "confirmed_fixture")
-	ctx = registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "请在 Alice Laptop 上读取文件")
+	ctx = registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent")
 	if ctx.Selection.SelectedDevice == nil || ctx.Selection.SelectedDevice.DeviceID != "alice-laptop" {
 		t.Fatalf("selected device = %#v, want alice-laptop", ctx.Selection.SelectedDevice)
 	}
 	if got := ctx.Selection.SelectedDevice.Operations; len(got) != 1 || got[0] != DeviceGrantReadFile {
 		t.Fatalf("selection should expose selected device operations: %#v", got)
 	}
-	if len(ctx.Grants) != 1 || ctx.Grants[0].DeviceID != "alice-laptop" {
-		t.Fatalf("grants should be scoped to explicit selected device: %#v", ctx.Grants)
+	if len(ctx.Grants) != 1 || ctx.Grants[0].DeviceID != "alice-laptop" || len(ctx.ExplicitGrants) != 2 {
+		t.Fatalf("each account device should have its own grant: %#v", ctx.Grants)
 	}
 
-	followup := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "继续读取")
+	followup := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent")
 	if followup.Selection == nil || followup.Selection.SelectionSource != "conversation_preference" {
 		t.Fatalf("unexpected follow-up selection: %#v", followup.Selection)
 	}
@@ -259,11 +260,11 @@ func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing
 		t.Fatalf("follow-up selected device = %#v, want alice-laptop", followup.Selection.SelectedDevice)
 	}
 
-	otherTopic := registry.turnContext(7, "p2p_7_99", "p2p", 99, "body-agent", "继续读取")
+	otherTopic := registry.turnContext(7, "p2p_7_99", "p2p", 99, "body-agent")
 	if otherTopic.Selection == nil || otherTopic.Selection.Status != DeviceSelectionNeedsSelection {
 		t.Fatalf("unexpected other topic selection: %#v", otherTopic.Selection)
 	}
-	if otherTopic.Selection.SelectedDevice != nil || len(otherTopic.Grants) != 0 {
+	if otherTopic.Selection.SelectedDevice != nil || len(otherTopic.Grants) != 0 || len(otherTopic.ExplicitGrants) != 2 {
 		t.Fatalf("new conversation must not silently choose a device: %#v", otherTopic)
 	}
 }
@@ -289,8 +290,8 @@ func TestUserDeviceRegistryGroupSessionKeyScopesActor(t *testing.T) {
 		t.Fatalf("register bob device: %v", err)
 	}
 
-	alice := registry.turnContext(7, "grp_80", "group", 42, "body-agent", "看文件")
-	bob := registry.turnContext(8, "grp_80", "group", 42, "body-agent", "看文件")
+	alice := registry.turnContext(7, "grp_80", "group", 42, "body-agent")
+	bob := registry.turnContext(8, "grp_80", "group", 42, "body-agent")
 	if len(alice.Grants) != 1 || len(bob.Grants) != 1 {
 		t.Fatalf("expected one grant each, alice=%#v bob=%#v", alice.Grants, bob.Grants)
 	}

@@ -169,10 +169,10 @@ func TestConversationDeviceSelectionAPI(t *testing.T) {
 	}
 	ctx := hub.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 1, "读取我的文件")
 	grants, ok := ctx["device_grants"].([]ScopedDeviceGrant)
-	if !ok || len(grants) != 1 || grants[0].DeviceID != "a" || grants[0].SelectionRevision == "" {
+	if !ok || len(grants) != 1 || grants[0].SelectionRevision == "" {
 		t.Fatalf("confirmed selection did not reach message grants: %#v", ctx)
 	}
-	grant := grants[0]
+	grant := deviceGrantForID(t, grants, "a")
 	request := &MsgThinToolRPC{Type: thinToolRPCTypeRequest, RequestID: "confirmed-selection", GrantID: grant.GrantID,
 		ActorUserID: grant.ActorUserID, SessionKey: grant.SessionKey, TargetOwnerUserID: "usr7", TargetDeviceID: "a", ToolName: "read_file"}
 	if err := hub.authorizeOrdinaryThinToolRPC(requester, request, 7, "a", "read_file"); err != nil {
@@ -226,10 +226,10 @@ func TestConversationDeviceSelectionAPI(t *testing.T) {
 	}
 	ctx = hub.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 2, "读取我的文件")
 	grants, ok = ctx["device_grants"].([]ScopedDeviceGrant)
-	if !ok || len(grants) != 1 || grants[0].DeviceID != "b" {
+	if !ok || len(grants) != 1 {
 		t.Fatal("new turn did not select B")
 	}
-	request.GrantID, request.TargetDeviceID = grants[0].GrantID, "b"
+	request.GrantID, request.TargetDeviceID = deviceGrantForID(t, grants, "b").GrantID, "b"
 	if err := hub.authorizeOrdinaryThinToolRPC(requester, request, 7, "b", "read_file"); err != nil {
 		t.Fatal(err)
 	}

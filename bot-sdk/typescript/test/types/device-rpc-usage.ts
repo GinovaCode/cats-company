@@ -66,7 +66,10 @@ void bot.sendDeviceRPC({
 
 bot.on('message', (ctx) => {
   const grants: ScopedDeviceGrant[] = ctx.deviceGrants;
-  const grantID: string | undefined = grants[0]?.grantId;
+  const selectedDeviceID = ctx.deviceSelection?.selectedDevice?.deviceId;
+  const grantID: string | undefined = selectedDeviceID
+    ? grants.find(grant => grant.deviceId === selectedDeviceID)?.grantId
+    : undefined;
   const selectionStatus = ctx.deviceSelection?.status;
   void grantID;
   void selectionStatus;

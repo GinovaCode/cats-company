@@ -515,7 +515,7 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if h == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountBot || client.wikiAgentUID > 0 {
 		return fmt.Errorf("ordinary device tools require an authenticated bot connection")
 	}
-	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != ""
+	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != "" || msg.TargetScope != ""
 	if !hasGrantFields && deviceGrantEnforcementRequired() {
 		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is required; upgrade the cloud Bot and start a new user turn"}
 	}
@@ -569,7 +569,7 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		return fmt.Errorf("device grant identity does not match requester or target owner")
 	}
 	if err := validateDeviceRPCGrant(client, &MsgDeviceRPC{
-		SessionKey: msg.SessionKey, ActorUserID: msg.ActorUserID, DeviceID: deviceID,
+		TargetScope: msg.TargetScope, SessionKey: msg.SessionKey, ActorUserID: msg.ActorUserID, DeviceID: deviceID,
 	}, grant, operation); err != nil {
 		return err
 	}

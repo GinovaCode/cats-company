@@ -87,6 +87,8 @@ type DeviceModelStatus struct {
 }
 
 type ScopedDeviceGrant struct {
+	// Explicit targets use their own grant; selection remains only the default.
+	TargetScope          string                 `json:"targetScope,omitempty"`
 	SelectionRevision    string                 `json:"selectionRevision,omitempty"`
 	Kind                 string                 `json:"kind"`
 	Source               string                 `json:"source"`
@@ -155,6 +157,7 @@ type DeviceSelectionDevice struct {
 }
 
 type DeviceSelectionCandidate struct {
+	OS                string                 `json:"os,omitempty"`
 	DeviceID          string                 `json:"deviceId"`
 	DisplayName       string                 `json:"displayName,omitempty"`
 	Status            string                 `json:"status,omitempty"`
@@ -167,8 +170,9 @@ type DeviceSelectionCandidate struct {
 }
 
 type DeviceTurnContext struct {
-	Grants    []ScopedDeviceGrant
-	Selection *DeviceSelection
+	Grants         []ScopedDeviceGrant
+	ExplicitGrants []ScopedDeviceGrant
+	Selection      *DeviceSelection
 }
 
 type deviceSelectionPreference struct {
@@ -497,19 +501,19 @@ func (r *userDeviceRegistry) grantsForTurn(actorUID int64, topicID string, topic
 	return r.grantsForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, operationsByDevice)
 }
 
-func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string) DeviceTurnContext {
+func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string) DeviceTurnContext {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return DeviceTurnContext{}
 	}
 	devices := r.activeDevices(actorUID)
-	return r.turnContextForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, nil)
+	return r.turnContextForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, nil)
 }
 
-func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
-	return r.turnContextForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, unavailableCandidates)
+func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	return r.turnContextForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, devices, unavailableCandidates)
 }
 
-func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return DeviceTurnContext{}
 	}
@@ -518,17 +522,24 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	}
 	devices = devicesForOwner(ownerUID, devices)
 	unavailableCandidates = devicesForOwner(ownerUID, unavailableCandidates)
-	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText, unavailableCandidates)
+	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, unavailableCandidates)
 	if selection != nil {
 		selection.OwnerUserID = formatUID(ownerUID)
 	}
-	var grants []ScopedDeviceGrant
+	var grants, explicitGrants []ScopedDeviceGrant
 	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
 		grants = r.grantsForOwnerDevices(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected}, selection.Revision)
 	}
+	// The legacy grant list remains selected-only even during a v2 rollout.
+	// Explicit capabilities live in a separate envelope ignored by old Bots,
+	// and cannot execute through either RPC without an exact explicit target.
+	if ownerUID == actorUID && xiaobaRuntimeV2Enabled() && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
+		explicitGrants = r.grantsForExplicitDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, selection.Revision)
+	}
 	return DeviceTurnContext{
-		Grants:    grants,
-		Selection: selection,
+		Grants:         grants,
+		ExplicitGrants: explicitGrants,
+		Selection:      selection,
 	}
 }
 
@@ -537,6 +548,14 @@ func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, to
 }
 
 func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, selectedRevision ...string) []ScopedDeviceGrant {
+	return r.issueDeviceGrants(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, devices, false, selectedRevision...)
+}
+
+func (r *userDeviceRegistry) grantsForExplicitDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, revision string) []ScopedDeviceGrant {
+	return r.issueDeviceGrants(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, devices, true, revision)
+}
+
+func (r *userDeviceRegistry) issueDeviceGrants(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, explicit bool, selectedRevision ...string) []ScopedDeviceGrant {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" || len(devices) == 0 {
 		return nil
 	}
@@ -570,14 +589,19 @@ func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int6
 		if device.OwnerUID != ownerUID {
 			continue
 		}
-		if preference.DeviceID != "" && (preference.DeviceID != device.DeviceID || !preference.active(createdAt)) {
+		if !explicit && preference.DeviceID != "" && (preference.DeviceID != device.DeviceID || !preference.active(createdAt)) {
 			continue
 		}
 		ops := deviceGrantOperations(device.Capabilities)
 		if len(ops) == 0 {
 			continue
 		}
+		targetScope := ""
+		if explicit {
+			targetScope = "explicit_device"
+		}
 		grants = append(grants, ScopedDeviceGrant{
+			TargetScope:          targetScope,
 			SelectionRevision:    revision,
 			Kind:                 "user_device_grant",
 			Source:               "catscompany",
@@ -673,7 +697,6 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 	topicType string,
 	agentUID int64,
 	devices []UserDevice,
-	messageText string,
 	unavailableSets ...[]UserDevice,
 ) (*DeviceSelection, *UserDevice) {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
@@ -722,15 +745,9 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 	}
 
 	preferredDeviceID, hasPreference := preference.DeviceID, preference.active(createdAt)
-	mentions := matchMentionedDevices(known, messageText)
-	// Text can mention a device in a question, quotation or negation. It may
-	// require clarification but must never commit a device switch. A confirmed
-	// user selection must arrive through a separate authenticated interaction.
-	if len(mentions) > 1 || (len(mentions) == 1 && len(known) > 1 && (!hasPreference || mentions[0].DeviceID != preferredDeviceID)) {
-		base.Status = DeviceSelectionNeedsSelection
-		base.SelectionSource = "selection_confirmation_required"
-		return &base, nil
-	}
+	// Conversation selection is a default, independent of task text. Naming
+	// another device (including in a quotation or negation) must never rewrite
+	// or invalidate it. Explicit tool targets use separate per-device grants.
 
 	if hasPreference {
 		if selected, ok := findDeviceByID(devices, preferredDeviceID); ok {
@@ -798,46 +815,6 @@ func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey 
 	_, _ = r.confirmDeviceSelection(actorUID, sessionKey, deviceID, source, current.Revision)
 }
 
-func matchMentionedDevices(devices []UserDevice, messageText string) []UserDevice {
-	normalizedText := normalizeDeviceSelectionText(messageText)
-	if normalizedText == "" {
-		return nil
-	}
-	matches := make([]UserDevice, 0, 1)
-	seen := make(map[string]struct{}, len(devices))
-	for _, device := range devices {
-		if device.DeviceID == "" {
-			continue
-		}
-		if deviceMentioned(device, normalizedText) {
-			if _, ok := seen[device.DeviceID]; ok {
-				continue
-			}
-			seen[device.DeviceID] = struct{}{}
-			matches = append(matches, device)
-		}
-	}
-	return matches
-}
-
-func deviceMentioned(device UserDevice, normalizedText string) bool {
-	candidates := []string{device.DisplayName, device.DeviceID, device.InstallationID}
-	for _, candidate := range candidates {
-		normalizedCandidate := normalizeDeviceSelectionText(candidate)
-		if normalizedCandidate == "" {
-			continue
-		}
-		if strings.Contains(normalizedText, normalizedCandidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeDeviceSelectionText(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
 func findDeviceByID(devices []UserDevice, deviceID string) (UserDevice, bool) {
 	for _, device := range devices {
 		if device.DeviceID == deviceID {
@@ -869,6 +846,8 @@ func deviceSelectionCandidates(devices []UserDevice) []DeviceSelectionCandidate 
 	out := make([]DeviceSelectionCandidate, 0, len(devices))
 	for _, device := range devices {
 		out = append(out, DeviceSelectionCandidate{
+			OS:                device.OS,
+			Active:            device.Active,
 			DeviceID:          device.DeviceID,
 			DisplayName:       device.DisplayName,
 			Status:            device.Status,

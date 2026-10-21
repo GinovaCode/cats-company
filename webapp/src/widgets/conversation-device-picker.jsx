@@ -124,15 +124,15 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
       : snapshot.status === 'needs_selection' ? (snapshot.devices?.length ? '请选择' : '未连接')
         : selected?.displayName || selected?.deviceId || '请选择';
   const scopedLabel = onAgentPick && agentId ? `${snapshot?.agent_name || agentName}：${label}` : label;
-  const description = `操作的电脑${agentId ? `（${snapshot?.agent_name || agentName}）` : ''}：${label}`;
+  const description = `默认操作的电脑${agentId ? `（${snapshot?.agent_name || agentName}）` : ''}：${label}`;
   return <>
     <button ref={trigger} type="button" disabled={busy} className="cc-device-trigger" aria-haspopup="dialog" aria-expanded={open}
       title={description} aria-label={description} onClick={() => { setOpen(true); void load(); }}>
-      <Laptop size={16} aria-hidden="true" /><span>操作的电脑</span><span className="cc-device-current">{scopedLabel}</span>
+      <Laptop size={16} aria-hidden="true" /><span>默认电脑</span><span className="cc-device-current">{scopedLabel}</span>
     </button>
     {open && createPortal(<div className="cc-device-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
       <section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titleId} className="cc-device-dialog">
-        <header><h2 id={titleId}>操作的电脑</h2><button type="button" aria-label="关闭设备选择" onClick={() => setOpen(false)}><X size={18} /></button></header>
+        <header><h2 id={titleId}>默认操作的电脑</h2><button type="button" aria-label="关闭设备选择" onClick={() => setOpen(false)}><X size={18} /></button></header>
         {agentId ? <p>仅用于你在当前对话中与「{snapshot?.agent_name || agentName}」的设备操作，不影响其他成员或 Bot。</p>
           : <p>请先选择这段对话中的 Bot。每位成员、每位 Bot 的设备选择分别保存。</p>}
         {onAgentPick && agentId && <button type="button" disabled={busy} onClick={() => onAgentPick(null)}>更换 Bot</button>}
@@ -140,7 +140,7 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
           {(snapshot.agents || []).map((agent) => <button type="button" key={agent.uid} disabled={busy} onClick={() => onAgentPick(agent)}>{agent.display_name} · {agent.uid}</button>)}
           {!snapshot.agents?.length && <p>当前对话中没有可选择的 Bot。</p>}
         </div>}
-        <p>选择后会保持使用这台电脑；断线不会自动改用其他电脑。</p>
+        <p>未指定设备时默认使用这台电脑；也可以在指令中指定其他设备或多台设备，不改变默认选择。设备断线不会自动改用其他电脑。</p>
         {error && <p role="alert" className="cc-device-error">{error}</p>}
         {busy && <p role="status">正在同步设备选择…</p>}
         <div className="cc-device-list" role="group" aria-label="我的电脑">
