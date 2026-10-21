@@ -4,7 +4,7 @@ import { useConversationFork } from './use-conversation-fork';
 import { api } from '../api';
 
 vi.mock('../api', () => ({ api: {
-  forkConversation: vi.fn(), getConversationFork: vi.fn(), getConversations: vi.fn(),
+  forkConversation: vi.fn(), getConversationFork: vi.fn(), getConversations: vi.fn(), cancelConversationFork: vi.fn(),
 } }));
 
 const record = { request_id: 'r1', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_9', state: 'pending' };
@@ -186,4 +186,49 @@ it('does not borrow readiness or provenance from the previous topic while queryi
   await mount({ topic: 'grp_10' });
   expect(value.blocked).toBe(true);
   expect(value.provenance).toBeNull();
+});
+
+it('clears the saved request and the banner once a cancellation is confirmed', async () => {
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  api.getConversationFork.mockResolvedValue(record);
+  api.cancelConversationFork.mockImplementation(async ({ requestId }) => ({
+    ...record, request_id: requestId, state: 'failed', error: 'session_fork_cancelled',
+  }));
+  await mount();
+  await act(async () => value.create({ newRequest: true }));
+  const requestId = value.operation.request_id;
+  expect(value.operation.state).toBe('pending');
+  expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).toBeTruthy();
+  await act(async () => value.cancel());
+  expect(api.cancelConversationFork).toHaveBeenCalledWith({ requestId }, { timeoutMs: 15000 });
+  expect(value.operation).toBeNull();
+  expect(value.error).toBe('');
+  expect(value.busy).toBe(false);
+  expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).toBeNull();
+});
+
+it('keeps a copy that turned ready before the cancellation landed', async () => {
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  api.getConversationFork.mockResolvedValue(record);
+  api.cancelConversationFork.mockImplementation(async ({ requestId }) => ({ ...record, request_id: requestId, state: 'ready' }));
+  await mount();
+  await act(async () => value.create({ newRequest: true }));
+  const saved = localStorage.getItem('cc:conversation-fork:1:p2p_1_2');
+  expect(saved).toBeTruthy();
+  await act(async () => value.cancel());
+  expect(value.operation.state).toBe('ready');
+  expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).toBe(saved);
+});
+
+it('sends no cancellation request without a stored request ID and surfaces a failed cancel', async () => {
+  await mount();
+  await act(async () => value.cancel());
+  expect(api.cancelConversationFork).not.toHaveBeenCalled();
+  api.getConversationFork.mockResolvedValue(record);
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await act(async () => value.create());
+  api.cancelConversationFork.mockRejectedValueOnce(new Error('offline'));
+  await act(async () => value.cancel());
+  expect(value.error).toContain('offline');
+  expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).toBeTruthy();
 });

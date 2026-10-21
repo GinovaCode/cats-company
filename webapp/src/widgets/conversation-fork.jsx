@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Copy, ExternalLink, Info, LoaderCircle, MoreHorizontal, RefreshCw } from 'lucide-react';
+import { Copy, ExternalLink, Info, LoaderCircle, MoreHorizontal, RefreshCw, X } from 'lucide-react';
 import { describeForkError } from '../utils/conversation-fork';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import '../css/conversation-fork.css';
@@ -84,6 +84,11 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
         </button>}
         {canCreate && (error && operation?.state !== 'ready' && operation?.state !== 'failed' || operation?.state === 'pending') && (
           <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create()}><RefreshCw size={15} aria-hidden="true" />重试复制</button>
+        )}
+        {fork.cancel && (operation?.state === 'pending' || error) && (
+          <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.cancel()}>
+            <X size={15} aria-hidden="true" />取消复制
+          </button>
         )}
       </div>}
     </>

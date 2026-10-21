@@ -42,3 +42,30 @@ it('shows explicit terminal failure with a distinct new request action', async (
   await act(async () => container.querySelector('button').click());
   expect(create).toHaveBeenCalledWith({ newRequest: true });
 });
+
+it('offers a cancel action while the copy is still pending or unconfirmed', async () => {
+  const cancel = vi.fn();
+  const create = vi.fn();
+  await act(async () => root.render(<ConversationForkNotice canCreate fork={{
+    operation: { state: 'pending' }, create, cancel,
+  }} />));
+  const button = [...container.querySelectorAll('button')].find(item => item.textContent.includes('取消复制'));
+  expect(button).toBeTruthy();
+  await act(async () => button.click());
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(create).not.toHaveBeenCalled();
+  await act(async () => root.render(<ConversationForkNotice canCreate fork={{ error: 'offline', create, cancel }} />));
+  expect(container.textContent).toContain('取消复制');
+});
+
+it('hides the cancel action once the copy is ready or failed', async () => {
+  const cancel = vi.fn();
+  await act(async () => root.render(<ConversationForkNotice fork={{ operation: { state: 'ready' }, cancel }} />));
+  expect(container.textContent).toContain('新会话已就绪');
+  expect(container.textContent).not.toContain('取消复制');
+  await act(async () => root.render(<ConversationForkNotice fork={{
+    operation: { state: 'failed', error: 'session_fork_ack_timeout' }, cancel,
+  }} />));
+  expect(container.textContent).toContain('升级');
+  expect(container.textContent).not.toContain('取消复制');
+});

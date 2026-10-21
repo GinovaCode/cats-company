@@ -35,8 +35,21 @@ func (h *ConversationHandler) HandleFork(w http.ResponseWriter, r *http.Request)
 		writeSessionFork(w, result, err)
 		return
 	}
+	// Cancel addresses one request ID, so it cannot be confused with a topic
+	// lookup, and the caller cannot close someone else's copy: the store scopes
+	// the row by actor_user_id.
+	if r.Method == http.MethodDelete {
+		request := strings.TrimSpace(r.URL.Query().Get("request_id"))
+		if request == "" || len(request) > 128 || containsControlCharacter(request) {
+			writeJSON(w, 400, map[string]string{"error": "request_id_required"})
+			return
+		}
+		result, err := db.CancelSessionFork(r.Context(), uid, request)
+		writeSessionFork(w, result, err)
+		return
+	}
 	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
 		return
 	}

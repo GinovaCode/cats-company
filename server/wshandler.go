@@ -213,6 +213,10 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	// timer still converges to stale (review 2026-08-05).
 	go hub.runConversationTaskReaper()
 	go hub.runArtifactRuntimeRunReaper()
+	// Bounds how long a session fork may stay pending. A runtime that predates
+	// session forks ignores the control frame silently, so the create path's
+	// single dispatch would otherwise leave the copy open forever.
+	go hub.runSessionForkReaper()
 	return hub
 }
 

@@ -45,6 +45,16 @@ Ruling (supersedes initial timeout proposal, per parent): no pending expiry.
 GET is read-only. Pending targets stay blocked and can retry after reconnect;
 source revision and body binding still gate completion. Failed IDs are terminal;
 an intentional new attempt needs a new request ID.
+Later amendment (ack-timeout follow-up): the no-expiry ruling assumed every
+runtime acknowledges. A runtime built before session forks ignores the control
+frame silently, so the copy stayed pending forever and the client waited on it
+indefinitely. Pending copies now expire to `failed`/`session_fork_ack_timeout`
+after CATS_SESSION_FORK_ACK_TIMEOUT_SECONDS (default 120), and the user may
+close a pending copy explicitly via DELETE with `session_fork_cancelled`. Both
+paths are conditional on the row still being pending, so a concurrent
+completion, cancel or a second reaper wins and a terminal state is never
+rewritten. A healthy runtime still acknowledges in seconds, so the window does
+not change the successful path.
 Ruling: revision triggers cover inserts, updates and deletes, including writers
 outside the normal HTTP/WebSocket handlers. Target state is stored on topics so
 the same row lock linearizes clone completion against writes.

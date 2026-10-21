@@ -29,6 +29,22 @@ type SessionFork struct {
 	CreatedAt      time.Time        `json:"-"`
 }
 
+// Terminal failure reasons the server records on its own behalf, as opposed to
+// reasons reported by the runtime. Clients map these to actionable guidance
+// instead of showing the raw code.
+const (
+	// SessionForkErrorAckTimeout marks a copy whose runtime never acknowledged
+	// it within the acknowledgement window: typically a device that is offline,
+	// or a runtime built before session forks existed. Such a runtime ignores
+	// the control frame entirely, so without this bound the copy stays pending
+	// forever and the UI waits on it indefinitely.
+	SessionForkErrorAckTimeout = "session_fork_ack_timeout"
+	// SessionForkErrorCancelled marks a copy the user abandoned while it was
+	// still pending. A copy that already reached a terminal state is never
+	// rewritten, so this can only ever replace a pending state.
+	SessionForkErrorCancelled = "session_fork_cancelled"
+)
+
 type SessionForkCompletion struct {
 	BodyID        string `json:"-"`
 	RequestID     string `json:"request_id"`

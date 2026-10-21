@@ -1,4 +1,4 @@
-import { canForkConversation, forkTargetTopic, normalizeForkRecord } from './conversation-fork';
+import { canForkConversation, describeForkError, forkTargetTopic, normalizeForkRecord } from './conversation-fork';
 
 const agent = { uid: 2, is_owner: true };
 
@@ -45,5 +45,25 @@ describe('fork wire records', () => {
     expect(() => normalizeForkRecord(record, { targetTopic: 'grp_10' })).toThrow();
     expect(() => normalizeForkRecord({ ...record, state: 'initializing' })).toThrow();
     expect(() => normalizeForkRecord({ ...record, target_topic_id: 'p2p_1_2' })).toThrow();
+  });
+});
+
+describe('fork error copy', () => {
+  it('turns an unanswered runtime into device advice instead of a raw code', () => {
+    const text = describeForkError('session_fork_ack_timeout');
+    expect(text).not.toBe('session_fork_ack_timeout');
+    expect(text).toContain('设备');
+    expect(text).toContain('升级');
+    expect(text).toContain('重新创建');
+  });
+  it('states that a user cancellation leaves the source conversation untouched', () => {
+    const text = describeForkError('session_fork_cancelled');
+    expect(text).not.toBe('session_fork_cancelled');
+    expect(text).toContain('已取消');
+  });
+  it('returns an unmapped code unchanged so diagnostics stay visible', () => {
+    expect(describeForkError('session_fork_source_busy')).toBe('原会话正在执行，请等待完成后重试。');
+    expect(describeForkError('unexpected_failure')).toBe('unexpected_failure');
+    expect(describeForkError(undefined)).toBe('');
   });
 });

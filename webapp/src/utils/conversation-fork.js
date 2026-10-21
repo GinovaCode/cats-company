@@ -62,6 +62,8 @@ export function describeForkError(error) {
     session_fork_source_unavailable: '原会话不可用或已变化，请检查原会话后重试。',
     session_fork_unavailable: '暂时无法复制会话，请稍后重试。',
     session_fork_not_found: '尚未找到此复制请求，可以使用原请求重试。',
+    session_fork_ack_timeout: '运行该 Agent 的设备长时间没有响应，可能版本过旧或已离线。请确认设备在线并升级到支持会话复制的版本后，重新创建副本。',
+    session_fork_cancelled: '复制已取消，原会话不受影响。',
   };
   return messages[text] || text;
 }

@@ -88,6 +88,70 @@ func TestSessionForkMySQLTerminalCompletionPrecedesSourceCheck(t *testing.T) {
 	}
 }
 
+func TestSessionForkMySQLCancelIsTerminalWins(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, wantState, wantError string
+		expectWrites                      bool
+	}{
+		{"pending is cancelled", "pending", "failed", types.SessionForkErrorCancelled, true},
+		{"ready is untouched", "ready", "ready", "", false},
+		{"failed keeps its reason", "failed", "failed", "source_changed_retry_needed", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			initial := ""
+			if tc.state == "failed" {
+				initial = "source_changed_retry_needed"
+			}
+			mock.ExpectBegin()
+			mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "one").
+				WillReturnRows(sqlmock.NewRows(sessionForkColumns).AddRow(7, "one", "p2p_7_9", "grp_20", 9, "body", "", 2, 4, 11, `{}`, tc.state, initial, time.Now()))
+			if tc.expectWrites {
+				mock.ExpectExec("UPDATE session_forks SET state = ").WithArgs("failed", types.SessionForkErrorCancelled, int64(7), "one").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("UPDATE topics SET fork_state").WithArgs("failed", "grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			mock.ExpectCommit()
+			got, err := (&Adapter{db: db}).CancelSessionFork(context.Background(), 7, "one")
+			if err != nil || got.State != tc.wantState || got.Error != tc.wantError {
+				t.Fatalf("cancel %#v %v want %q/%q", got, err, tc.wantState, tc.wantError)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSessionForkMySQLExpiryCountsOnlyRowsItMoved(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cutoff := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT actor_user_id, request_id, target_topic_id FROM session_forks WHERE state = 'pending'").WithArgs(cutoff, 100).
+		WillReturnRows(sqlmock.NewRows([]string{"actor_user_id", "request_id", "target_topic_id"}).
+			AddRow(7, "one", "grp_20").AddRow(8, "two", "grp_21"))
+	mock.ExpectExec("UPDATE session_forks SET state = 'failed'").WithArgs(types.SessionForkErrorAckTimeout, int64(7), "one").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE topics SET fork_state = 'failed'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
+	// A concurrent completion already moved this row, so the reaper must not
+	// count it as expired.
+	mock.ExpectExec("UPDATE session_forks SET state = 'failed'").WithArgs(types.SessionForkErrorAckTimeout, int64(8), "two").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	expired, err := (&Adapter{db: db}).ExpireSessionForks(context.Background(), cutoff, 0)
+	if err != nil || expired != 1 {
+		t.Fatalf("expired=%d err=%v", expired, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionForkMySQLMigrationMatchesStartup(t *testing.T) {
 	raw, err := os.ReadFile("../migrations/mysql/000041_session_forks.up.sql")
 	if err != nil {
