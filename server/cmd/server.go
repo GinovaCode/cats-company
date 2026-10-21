@@ -968,7 +968,11 @@ func main() {
 		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
 		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
 		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)
+		// 下架/上架都会改变目录可见性 → 让在线 MCP 会话立即收到 list_changed。
+		publishHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
+		// 收回分享（下架）：只有发布者本人能操作；重新发布同一 slug 即重新上架。
+		mux.HandleFunc("DELETE /api/service-agents/{slug}", jwtAuthWithDB(publishHandler.HandleUnpublish))
 		// Orchestration internal API for runtime instances (design §4.3; instances
 		// reach it over the shared VPC). Authn = per-instance bearer token
 		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with
@@ -976,6 +980,15 @@ func main() {
 		// so another instance can resume from the latest checkpoint.
 		serviceOrchestrator := server.NewServiceRunOrchestratorFromEnv(serviceAgentStore)
 		serviceOrchestrator.RegisterRoutes(mux)
+		// per-user worker 凭据：worker 跑在用户自己机器上，凭据只能认领
+		// 「自己名下应用」的 run（不再把全局实例 token 发给用户）。
+		if workerTokenStore, ok := db.(store.ServiceWorkerTokenStore); ok {
+			serviceOrchestrator.SetWorkerTokenStore(workerTokenStore)
+			credentialHandler := server.NewServiceWorkerCredentialHandlerFromEnv(workerTokenStore)
+			mux.HandleFunc("GET /api/service-worker/credentials", jwtAuthWithDB(credentialHandler.HandleList))
+			mux.HandleFunc("POST /api/service-worker/credentials", jwtAuthWithDB(credentialHandler.HandleCreate))
+			mux.HandleFunc("DELETE /api/service-worker/credentials/{id}", jwtAuthWithDB(credentialHandler.HandleRevoke))
+		}
 		go serviceOrchestrator.StartReaper(15 * time.Second)
 		// Lifecycle write-back delivery (design §3.3-2/§4.8-2): receipts persisted
 		// in the same transaction as terminal run transitions are pushed to the

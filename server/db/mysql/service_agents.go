@@ -64,7 +64,7 @@ func (a *Adapter) GetServiceAgentBySlug(ctx context.Context, slug string) (int64
 		       COALESCE(CAST(v.definition_json->>'$.async_threshold_seconds' AS UNSIGNED), 60)
 		FROM service_agents a
 		JOIN service_agent_versions v ON v.agent_id = a.id
-		WHERE a.slug = ?
+		WHERE a.slug = ? AND a.state = 'active'
 		ORDER BY v.version DESC
 		LIMIT 1`, slug).Scan(&id, &name, &version, &threshold)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -184,16 +184,21 @@ func (a *Adapter) CreateServiceRunIdempotent(ctx context.Context, sessionID, cli
 }
 
 func (a *Adapter) ClaimServiceRuns(ctx context.Context, instanceID string, limit int) ([]store.ServiceRun, error) {
-	return a.claimServiceRuns(ctx, instanceID, limit, nil)
+	return a.claimServiceRuns(ctx, instanceID, limit, nil, 0)
 }
 
 // ClaimServiceRunsScoped 只认领指定 slug 的 run（worker 声明自己服务哪些应用）。
 // agentSlugs 为空 = 不限（等价 ClaimServiceRuns）。
 func (a *Adapter) ClaimServiceRunsScoped(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error) {
-	return a.claimServiceRuns(ctx, instanceID, limit, agentSlugs)
+	return a.claimServiceRuns(ctx, instanceID, limit, agentSlugs, 0)
 }
 
-func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit int, agentSlugs []string) ([]store.ServiceRun, error) {
+// ClaimServiceRunsOwnedBy 只认领 ownerUID 名下应用的 run（per-user worker 凭据）。
+func (a *Adapter) ClaimServiceRunsOwnedBy(ctx context.Context, instanceID string, limit int, ownerUID int64) ([]store.ServiceRun, error) {
+	return a.claimServiceRuns(ctx, instanceID, limit, nil, ownerUID)
+}
+
+func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit int, agentSlugs []string, ownerUID int64) ([]store.ServiceRun, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -216,7 +221,20 @@ func (a *Adapter) claimServiceRuns(ctx context.Context, instanceID string, limit
 		LIMIT ?
 		FOR UPDATE SKIP LOCKED`
 	queryArgs := []any{limit}
-	if len(slugs) > 0 {
+	if ownerUID > 0 {
+		// per-user 凭据：只领自己名下应用的 run（平台 internal 应用不在此列）。
+		query = `
+			SELECT r.run_id
+			FROM service_runs r
+			JOIN service_sessions s ON s.session_id = r.session_id
+			JOIN service_agents a ON a.id = s.agent_id
+			WHERE r.state IN ('submitted','orphaned')
+			  AND a.owner_kind = 'user' AND a.owner_uid = ?
+			ORDER BY r.created_at
+			LIMIT ?
+			FOR UPDATE SKIP LOCKED`
+		queryArgs = []any{ownerUID, limit}
+	} else if len(slugs) > 0 {
 		// 按 agent slug 过滤：worker 只领自己声明的应用（FIND_IN_SET 兼容 MySQL 5.7）。
 		query = `
 		SELECT r.run_id

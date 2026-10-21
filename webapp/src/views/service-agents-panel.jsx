@@ -1,10 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
 import { api } from '../api';
 
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
 // 添加/删除跟账号、跨设备生效：删除后从你的 Agent 工具集（tools/list）隐去、调用也被拒绝；
 // 重新添加即恢复。变更即时同步在线 MCP 会话（服务端 list_changed）。
+
+// 凭据时间只用于「最近使用」提示，解析失败就不显示。
+const formatCredentialTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString();
+};
+
 export default function ServiceAgentsPanel({ onClose }) {
   const [agents, setAgents] = useState([]);
   const [bots, setBots] = useState([]);
@@ -19,6 +27,14 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishResult, setPublishResult] = useState(null);
+  // 收回分享：二次确认（避免误点）+ 逐行进行中状态 + 成功通知。
+  const [unpublishTarget, setUnpublishTarget] = useState('');
+  const [unpublishing, setUnpublishing] = useState(() => new Set());
+  const [notice, setNotice] = useState(null);
+  // 本机 worker 凭据（per-user）：只能领自己名下应用的 run，明文只显示一次。
+  const [credentials, setCredentials] = useState([]);
+  const [issued, setIssued] = useState(null);
+  const [credentialBusy, setCredentialBusy] = useState(false);
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -34,11 +50,15 @@ export default function ServiceAgentsPanel({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const [catalogData, botsData] = await Promise.all([
+      const [catalogData, botsData, credentialData] = await Promise.all([
         api.getServiceAgentsCatalog(),
         typeof api.getMyBots === 'function' ? api.getMyBots().catch(() => null) : Promise.resolve(null),
+        typeof api.listServiceWorkerCredentials === 'function'
+          ? api.listServiceWorkerCredentials().catch(() => null)
+          : Promise.resolve(null),
       ]);
       setAgents(Array.isArray(catalogData?.agents) ? catalogData.agents : []);
+      setCredentials(Array.isArray(credentialData?.credentials) ? credentialData.credentials : []);
       const rawBots = botsData?.bots ?? botsData?.agents ?? botsData;
       setBots(Array.isArray(rawBots) ? rawBots : []);
     } catch (err) {
@@ -192,6 +212,92 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishing(false);
     }
   }, [form, load]);
+
+  // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
+  // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
+  const submitUnpublish = useCallback(async (agent) => {
+    const slug = agent?.slug;
+    if (!slug || unpublishing.has(slug)) return;
+    setUnpublishing((prev) => new Set(prev).add(slug));
+    setError('');
+    setNotice(null);
+    try {
+      await api.unpublishServiceAgent(slug);
+      setAgents((prev) => prev.filter((item) => item.slug !== slug));
+      setNotice({ slug, name: agent?.name || slug, alreadyGone: false });
+    } catch (err) {
+      if (err?.status === 404) {
+        // 已经不在了（可能刚被收回）：按成功处理，顺手刷掉这一行。
+        setAgents((prev) => prev.filter((item) => item.slug !== slug));
+        setNotice({ slug, name: agent?.name || slug, alreadyGone: true });
+      } else if (err?.status === 403) {
+        setError('只有发布者本人能收回该应用。');
+      } else {
+        setError(err?.message || '收回失败，请稍后重试。');
+      }
+    } finally {
+      setUnpublishing((prev) => {
+        const next = new Set(prev);
+        next.delete(slug);
+        return next;
+      });
+      setUnpublishTarget('');
+    }
+  }, [unpublishing]);
+
+  // 本机 worker 凭据：生成 → 一次性明文；撤销即时生效（下次 claim 就 401）。
+  const createCredential = useCallback(async () => {
+    if (credentialBusy) return;
+    setCredentialBusy(true);
+    setError('');
+    try {
+      const result = await api.createServiceWorkerCredential('本机 worker');
+      setIssued({
+        token: result?.token || '',
+        prefix: result?.prefix || '',
+        id: result?.id,
+        createdAt: result?.created_at || '',
+      });
+      setCredentials((prev) => [
+        {
+          id: result?.id,
+          prefix: result?.prefix || '',
+          label: result?.label || '',
+          created_at: result?.created_at || '',
+        },
+        ...prev.filter((item) => item.id !== result?.id),
+      ]);
+    } catch (err) {
+      setError(err?.message || '生成凭据失败，请稍后重试。');
+    } finally {
+      setCredentialBusy(false);
+    }
+  }, [credentialBusy]);
+
+  const revokeCredential = useCallback(async (credential) => {
+    const id = credential?.id;
+    if (!id || credentialBusy) return;
+    setCredentialBusy(true);
+    setError('');
+    try {
+      await api.revokeServiceWorkerCredential(id);
+      setCredentials((prev) => prev.filter((item) => item.id !== id));
+      setIssued((prev) => (prev?.id === id ? null : prev));
+    } catch (err) {
+      setError(err?.message || '撤销凭据失败，请稍后重试。');
+    } finally {
+      setCredentialBusy(false);
+    }
+  }, [credentialBusy]);
+
+  const copyCredential = useCallback(async (token) => {
+    try {
+      await navigator.clipboard.writeText(token);
+      setError('');
+    } catch {
+      setError('复制失败，请手动选中上面的凭据复制。');
+    }
+  }, []);
 
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
@@ -372,6 +478,62 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button type="button" onClick={() => setPublishResult(null)}>知道了</button>
         </div>
       ) : null}
+      {notice ? (
+        <div className="v3-service-agents-notice" role="status">
+          <div className="v3-service-agents-notice-body">
+            <div className="v3-service-agents-notice-title">
+              已收回 <code title={`catsco_${notice.slug}`}>catsco_{notice.slug}</code>
+            </div>
+            <div className="v3-service-agents-notice-hint">
+              {notice.alreadyGone
+                ? '该应用此前已不在目录中。'
+                : '别人的工具列表里会立即消失，再调用会提示“已被发布者收回”。'}
+              重新发布同一调用名即可恢复分享。
+            </div>
+          </div>
+          <button type="button" onClick={() => setNotice(null)}>知道了</button>
+        </div>
+      ) : null}
+      <div className="v3-service-worker-credentials">
+        <div className="v3-service-worker-credentials-head">
+          <span>本机 worker 凭据</span>
+          <button type="button" onClick={createCredential} disabled={credentialBusy}>
+            {credentialBusy ? '处理中…' : '生成'}
+          </button>
+        </div>
+        {issued ? (
+          <div className="v3-service-worker-credentials-issued" role="status">
+            <div className="v3-service-worker-credentials-issued-title">
+              已生成，<strong>只显示这一次</strong>，请立即复制：
+            </div>
+            <code title={issued.token}>{issued.token}</code>
+            <div className="v3-service-worker-credentials-issued-actions">
+              <button type="button" onClick={() => copyCredential(issued.token)}>复制</button>
+              <button type="button" onClick={() => setIssued(null)}>我已保存</button>
+            </div>
+          </div>
+        ) : null}
+        {credentials.length === 0 ? (
+          <p className="v3-service-worker-credentials-empty">
+            还没有凭据。生成后填到自己机器的 worker 里，它
+            <strong>只能认领你自己应用</strong>的 run，撤销即刻失效。
+          </p>
+        ) : (
+          <ul className="v3-service-worker-credentials-list">
+            {credentials.map((credential) => (
+              <li key={credential.id}>
+                <code title={credential.prefix}>{credential.prefix}…</code>
+                <span className="v3-service-worker-credentials-meta">
+                  {credential.last_used_at ? `最近使用 ${formatCredentialTime(credential.last_used_at)}` : '尚未使用'}
+                </span>
+                <button type="button" onClick={() => revokeCredential(credential)} disabled={credentialBusy}>
+                  撤销
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <div className="v3-service-agents-scope">
         <label className="v3-service-agents-scope-label" htmlFor="v3-service-agents-scope-select">
           配置范围
@@ -447,7 +609,9 @@ export default function ServiceAgentsPanel({ onClose }) {
       ) : (
         <ul className="v3-service-agents-list">
           {agents.map((agent) => {
-            const busy = pending.has(agent.slug) || (scopeBotUid && scopeLoading);
+            const busy = pending.has(agent.slug)
+              || unpublishing.has(agent.slug)
+              || (scopeBotUid && scopeLoading);
             const accountHidden = Boolean(agent.hidden);
             const selected = scopeBotUid
               ? (accountHidden
@@ -474,23 +638,60 @@ export default function ServiceAgentsPanel({ onClose }) {
                     <div className="v3-service-agent-note">账号清单中已移除</div>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  className={`v3-service-agent-toggle${hidden ? ' is-add' : ' is-remove'}`}
-                  disabled={busy || (scopeBotUid && accountHidden)}
-                  onClick={() => toggle(agent)}
-                  aria-label={`${hidden ? '添加' : '删除'}${agent.name || agent.slug}`}
-                  title={
-                    scopeBotUid && accountHidden
-                      ? '先在账号清单中添加该工具'
-                      : hidden
-                        ? (scopeBotUid ? '添加到该 Agent 的工具清单' : '重新添加该工具')
-                        : (scopeBotUid ? '从该 Agent 的工具清单移除' : '从我的清单中删除该工具')
-                  }
-                >
-                  {hidden ? <Plus size={15} /> : <X size={15} />}
-                  <span>{hidden ? '添加' : '删除'}</span>
-                </button>
+                <div className="v3-service-agent-actions">
+                  {agent.mine ? (
+                    unpublishTarget === agent.slug ? (
+                      <>
+                        <button
+                          type="button"
+                          className="v3-service-agent-unpublish is-confirm"
+                          disabled={unpublishing.has(agent.slug)}
+                          onClick={() => submitUnpublish(agent)}
+                          title="确认从目录下架该应用"
+                        >
+                          {unpublishing.has(agent.slug) ? '收回中…' : '确认收回'}
+                        </button>
+                        <button
+                          type="button"
+                          className="v3-service-agent-unpublish"
+                          disabled={unpublishing.has(agent.slug)}
+                          onClick={() => setUnpublishTarget('')}
+                        >
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="v3-service-agent-unpublish"
+                        disabled={busy}
+                        onClick={() => setUnpublishTarget(agent.slug)}
+                        aria-label={`收回${agent.name || agent.slug}的分享`}
+                        title="收回分享：下架后别人就调不到了（重新发布同一调用名即可恢复）"
+                      >
+                        <Undo2 size={15} />
+                        <span>收回</span>
+                      </button>
+                    )
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`v3-service-agent-toggle${hidden ? ' is-add' : ' is-remove'}`}
+                    disabled={busy || (scopeBotUid && accountHidden)}
+                    onClick={() => toggle(agent)}
+                    aria-label={`${hidden ? '添加' : '删除'}${agent.name || agent.slug}`}
+                    title={
+                      scopeBotUid && accountHidden
+                        ? '先在账号清单中添加该工具'
+                        : hidden
+                          ? (scopeBotUid ? '添加到该 Agent 的工具清单' : '重新添加该工具')
+                          : (scopeBotUid ? '从该 Agent 的工具清单移除' : '从我的清单中删除该工具')
+                    }
+                  >
+                    {hidden ? <Plus size={15} /> : <X size={15} />}
+                    <span>{hidden ? '添加' : '删除'}</span>
+                  </button>
+                </div>
               </li>
             );
           })}
