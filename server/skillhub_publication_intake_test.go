@@ -436,15 +436,21 @@ func TestSkillHubPublicationWorkspaceDurableCapabilities(t *testing.T) {
 		t.Setenv("CATSCO_SKILLHUB_PUBLICATION_WORKSPACE_ENTRIES_ENABLED", "true")
 		t.Setenv("CATSCO_SKILLHUB_PUBLICATION_DELIVERY_ENABLED", delivery)
 		for _, backend := range []store.Store{s, f.db} {
-			h := NewSkillHubPublicationReadHandlerFromEnv(backend)
-			rec := runPublicationRead(t, h, publicationReadRequest(t, "GET", skillHubPublicationPrefix+"/capabilities", 7), 200)
-			var caps map[string]any
-			if err := json.Unmarshal(rec.Body.Bytes(), &caps); err != nil {
-				t.Fatal(err)
-			}
-			want := delivery == "1" && backend == s
-			if caps["workspaceDurableCreateEnabled"] != want || caps["workspaceCreateEnabled"] != true || caps["chatCreateEnabled"] != false {
-				t.Fatalf("caps=%v", caps)
+			for _, ui := range []string{"", "false", "yes", "1", "TRUE"} {
+				t.Setenv("CATSCO_SKILLHUB_PUBLICATION_DURABLE_PUBLISH_UI_ENABLED", ui)
+				h := NewSkillHubPublicationReadHandlerFromEnv(backend)
+				rec := runPublicationRead(t, h, publicationReadRequest(t, "GET", skillHubPublicationPrefix+"/capabilities", 7), 200)
+				var caps map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &caps); err != nil {
+					t.Fatal(err)
+				}
+				want := delivery == "1" && backend == s
+				if caps["workspaceDurableCreateEnabled"] != want || caps["workspaceCreateEnabled"] != true || caps["chatCreateEnabled"] != false {
+					t.Fatalf("caps=%v", caps)
+				}
+				if caps["workspaceDurablePublishUiEnabled"] != (want && (ui == "1" || ui == "TRUE")) {
+					t.Fatalf("UI flag=%q delivery=%q caps=%v", ui, delivery, caps)
+				}
 			}
 		}
 	}

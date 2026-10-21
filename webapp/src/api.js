@@ -942,12 +942,6 @@ export const api = {
     undefined,
     options,
   ),
-  getSkillHubPublicationEntry: (entryRequestId, options = {}) => request(
-    'GET',
-    `/api/skillhub/publications/entries/${encodeURIComponent(entryRequestId)}`,
-    undefined,
-    options,
-  ),
   getSkillHubPublicationEntryByRequest: (requestId, options = {}) => request(
     'GET',
     `/api/skillhub/publications/requests/${encodeURIComponent(requestId)}`,

@@ -193,7 +193,7 @@ func TestSkillHubPublicationReadRoutesAndDisabledMode(t *testing.T) {
 				t.Fatal(err)
 			}
 			enabled := value == "1" || value == "TRUE"
-			if capabilities["entryReadsEnabled"] != enabled || capabilities["workspaceCreateEnabled"] != false || capabilities["chatCreateEnabled"] != false {
+			if capabilities["entryReadsEnabled"] != enabled || capabilities["workspaceCreateEnabled"] != false || capabilities["chatCreateEnabled"] != false || capabilities["workspaceDurablePublishUiEnabled"] != false {
 				t.Fatalf("capabilities=%v", capabilities)
 			}
 			status := 404

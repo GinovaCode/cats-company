@@ -104,26 +104,62 @@ function newSkillHubPublicationRequestID() {
   return `pubreq_${String(suffix).replace(/[^A-Za-z0-9_-]/g, '')}`.slice(0, 128);
 }
 
-function publicationRequestStorageKey(botUID, localSkillID) {
-  return `catsco.skillhub.publication.request.${String(botUID || '').trim()}.${String(localSkillID || '').trim()}`;
+function publicationRequestStorageKey(userUID, deviceID, botUID, localSkillID) {
+  const scope = [userUID, deviceID, botUID, localSkillID].map((value) => encodeURIComponent(String(value || '').trim()));
+  return `catsco.skillhub.publication.request.${scope.join('.')}`;
 }
 
 function readStoredPublicationRequest(key) {
   try {
-    return String(window.sessionStorage?.getItem(key) || '').trim();
+    const raw = String(window.sessionStorage?.getItem(key) || '').trim();
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== 'object'
+      || !/^pubreq_[A-Za-z0-9_-]{1,120}$/.test(String(value.requestId || ''))
+      || !/^[0-9a-f]{64}$/.test(String(value.workspaceRevision || ''))) {
+      return null;
+    }
+    return {
+      requestId: String(value.requestId),
+      workspaceRevision: String(value.workspaceRevision).toLowerCase(),
+    };
   } catch {
-    return '';
+    return null;
   }
 }
 
 function writeStoredPublicationRequest(key, value) {
   try {
-    if (value) window.sessionStorage?.setItem(key, value);
+    if (value?.requestId && value?.workspaceRevision) {
+      window.sessionStorage?.setItem(key, JSON.stringify({
+        requestId: String(value.requestId),
+        workspaceRevision: String(value.workspaceRevision).toLowerCase(),
+      }));
+    }
     else window.sessionStorage?.removeItem(key);
   } catch {
     // Session storage is only a lost-reply recovery hint; admission remains
     // durable even when storage is unavailable or blocked by the browser.
   }
+}
+
+function clearStoredPublicationRequest(key, requestId) {
+  // An older observer must not remove the hint for a newer user action.
+  if (readStoredPublicationRequest(key)?.requestId === requestId) {
+    writeStoredPublicationRequest(key, null);
+  }
+}
+
+function readRecoveredPublicationEntry(response, botUID) {
+  const entry = response?.entry;
+  if (response?.schemaVersion !== 1
+    || !/^pubentry_[a-f0-9]{32}$/.test(String(entry?.entryRequestId || ''))
+    || String(entry?.botUid || '') !== String(botUID)
+    || entry?.entrypoint !== 'workspace'
+    || !['waiting_runtime', 'cancelled'].includes(entry?.state)) {
+    throw new Error('SkillHub 没有返回有效的持久发布恢复结果，请刷新后重试。');
+  }
+  return entry;
 }
 
 export function shouldUseDurablePublicationUI(capabilities) {
@@ -876,7 +912,7 @@ export async function waitForSkillHubPublicationSource({
   getReport = api.getSkillHubPublicationValidationReport,
   waitFor = wait,
   maxAttempts = 12,
-  retryDelayMs = 15_000,
+  retryDelayMs = 20_000,
 }) {
   const id = String(entryRequestId || '').trim();
   if (!id) throw new Error('SkillHub 没有返回持久发布请求标识。');
@@ -886,6 +922,7 @@ export async function waitForSkillHubPublicationSource({
       const response = await getSourceStatus(id);
       const sourceStatus = response?.sourceStatus || response?.source_status;
       const stage = String(sourceStatus?.stage || '').trim();
+      if (stage === 'cancelled') return { entryRequestId: id, stage, sourceStatus };
       if (stage === 'needs_user_action') {
         let report = null;
         try {
@@ -905,6 +942,9 @@ export async function waitForSkillHubPublicationSource({
           // the source record when an older server does not expose it.
         }
         const capture = captureStatus?.captureStatus || captureStatus?.capture_status;
+        if (capture?.stage === 'cancelled') {
+          return { entryRequestId: id, stage: 'cancelled', sourceStatus, captureStatus };
+        }
         if (capture?.stage === 'needs_user_action') {
           let report = null;
           try {
@@ -928,6 +968,9 @@ export async function waitForSkillHubPublicationSource({
           // source verification into a false failure.
         }
         const cloud = cloudStatus?.cloudStatus || cloudStatus?.cloud_status;
+        if (cloud?.localIntentState === 'cancelled') {
+          return { entryRequestId: id, stage: 'cancelled', sourceStatus, captureStatus, cloudStatus };
+        }
         if (cloud?.stage === 'acceptance_recorded') {
           try {
             const report = await getReport(id);
@@ -937,7 +980,14 @@ export async function waitForSkillHubPublicationSource({
             // keep the same entry and retry the read on the next poll.
           }
         }
-        return { entryRequestId: id, stage, sourceStatus, captureStatus, cloudStatus };
+        // A recorded acceptance can precede its report. Keep this entry in
+        // observation; otherwise show the available source/Cloud projection.
+        if (cloud?.stage !== 'acceptance_recorded') {
+          return { entryRequestId: id, stage, sourceStatus, captureStatus, cloudStatus };
+        }
+        last = { entryRequestId: id, stage, sourceStatus, captureStatus, cloudStatus };
+        if (attempt < maxAttempts - 1) await waitFor(retryDelayMs);
+        continue;
       }
       last = { entryRequestId: id, stage, sourceStatus };
     } catch (error) {
@@ -2220,62 +2270,87 @@ export default function SkillHubView({
         if (!localWorkspaceRevision) {
           throw new Error('当前运行工作区没有可验证版本，请刷新工作区后重试发布。');
         }
-        const requestStorageKey = publicationRequestStorageKey(requestedBotUID, localSkill.localSkillId);
+        const requestStorageKey = publicationRequestStorageKey(user?.uid, requestedDeviceID, requestedBotUID, localSkill.localSkillId);
         let admitted;
-        const savedRequestID = readStoredPublicationRequest(requestStorageKey);
-        if (savedRequestID) {
+        const savedRequest = readStoredPublicationRequest(requestStorageKey);
+        const sameWorkspaceRequest = savedRequest?.workspaceRevision === localWorkspaceRevision;
+        if (savedRequest && !sameWorkspaceRequest) {
+          // A changed workspace is a new candidate. Never replay an older
+          // idempotency key against the new bytes.
+          writeStoredPublicationRequest(requestStorageKey, null);
+        }
+        if (sameWorkspaceRequest) {
           try {
-            const recovered = await api.getSkillHubPublicationEntryByRequest(savedRequestID);
-            const recoveredEntry = recovered?.entry || recovered;
-            if (recoveredEntry?.entryRequestId) {
-              admitted = assertSkillHubPublicationAdmission({
-                schema_version: 2,
-                entry_request_id: recoveredEntry.entryRequestId,
-                state: recoveredEntry.state,
-                replay: true,
-              }, requestedBotUID);
+            const recovered = await api.getSkillHubPublicationEntryByRequest(savedRequest.requestId);
+            const recoveredEntry = readRecoveredPublicationEntry(recovered, requestedBotUID);
+            if (recoveredEntry.state === 'cancelled') {
+              // A cancelled entry is terminal and cannot be revived by a
+              // retry. Drop only this recovery hint, then create a fresh
+              // idempotency key for the new user action.
+              clearStoredPublicationRequest(requestStorageKey, savedRequest.requestId);
+            } else {
+              admitted = { entry_request_id: recoveredEntry.entryRequestId };
             }
           } catch (recoveryError) {
             if (recoveryError?.status !== 404) throw recoveryError;
-            writeStoredPublicationRequest(requestStorageKey, '');
+            clearStoredPublicationRequest(requestStorageKey, savedRequest.requestId);
           }
         }
-        const requestID = savedRequestID || newSkillHubPublicationRequestID();
+        const requestID = admitted
+          ? savedRequest.requestId
+          : newSkillHubPublicationRequestID();
         if (!admitted) {
-          writeStoredPublicationRequest(requestStorageKey, requestID);
+          writeStoredPublicationRequest(requestStorageKey, {
+            requestId: requestID,
+            workspaceRevision: localWorkspaceRevision,
+          });
           admitted = assertSkillHubPublicationAdmission(await requestSkillHubDeviceTool({
-          deviceId: requestedDeviceID,
-          ownerUserId: user?.uid,
-          toolName: SKILLHUB_DEVICE_TOOLS.publicationCreateEntry,
-          requestId: requestID,
-          payload: {
-            bot_uid: requestedBotUID,
-            local_skill_id: localSkill.localSkillId,
-            workspace_generation: localWorkspaceRevision,
-          },
-          timeoutMs: 30_000,
+            deviceId: requestedDeviceID,
+            ownerUserId: user?.uid,
+            toolName: SKILLHUB_DEVICE_TOOLS.publicationCreateEntry,
+            requestId: requestID,
+            payload: {
+              bot_uid: requestedBotUID,
+              local_skill_id: localSkill.localSkillId,
+              workspace_generation: localWorkspaceRevision,
+            },
+            timeoutMs: 30_000,
           }), requestedBotUID);
         }
         const entryRequestId = String(
           admitted?.entry_request_id || admitted?.entryRequestId || '',
         ).trim();
         if (!entryRequestId) throw new Error('SkillHub 没有返回持久发布请求标识。');
-        writeStoredPublicationRequest(requestStorageKey, requestID);
+        writeStoredPublicationRequest(requestStorageKey, {
+          requestId: requestID,
+          workspaceRevision: localWorkspaceRevision,
+        });
         if (requestedBotUID !== selectedBotUIDRef.current) return;
         setLocalNotice(`“${localSkill.name}”已持久受理，正在等待运行环境检查；完成后仍需继续确认发布与添加到 Agent。`);
         // The admission response is the only synchronous result. Continue
         // observing in the background so leaving the page cannot create a
         // duplicate publication or make the request appear to have failed.
         void waitForSkillHubPublicationSource({ entryRequestId }).then((observation) => {
+          const rejected = observation.report?.validation?.outcome === 'rejected';
+          if (['needs_user_action', 'cancelled'].includes(observation.stage) || rejected) {
+            clearStoredPublicationRequest(requestStorageKey, requestID);
+          }
           if (requestedBotUID !== selectedBotUIDRef.current) return;
           if (observation.stage === 'needs_user_action') {
-            const code = observation.sourceStatus?.code || observation.report?.validation?.issues?.[0]?.code;
+            setLocalNotice('');
+            const code = observation.captureStatus?.captureStatus?.code
+              || observation.captureStatus?.capture_status?.code
+              || observation.sourceStatus?.code || observation.report?.validation?.issues?.[0]?.code;
             setLocalSkillsError(code
               ? `发布请求需要处理（${code}）。请打开发布详情查看报告。`
               : '发布请求需要处理，请打开发布详情查看报告。');
+          } else if (observation.stage === 'cancelled') {
+            setLocalNotice('');
+            setLocalSkillsError('发布请求已取消，可以重新发起发布。');
           } else if (observation.stage === 'report') {
             const validation = observation.report?.validation;
             if (validation?.outcome === 'rejected') {
+              setLocalNotice('');
               const code = validation.issues?.[0]?.code || 'publication.validation_rejected';
               setLocalSkillsError(`发布校验未通过（${code}）。请打开发布详情查看报告。`);
             } else if (validation?.outcome === 'passed') {
@@ -2290,6 +2365,7 @@ export default function SkillHubView({
               ? `“${localSkill.name}”的来源已核验，云端状态：${cloudState}；仍需继续确认发布与添加到 Agent。`
               : `“${localSkill.name}”的来源已核验，仍需继续确认发布与添加到 Agent。`);
           } else if (observation.stage === 'waiting') {
+            setLocalNotice('');
             setLocalSkillsError('发布请求已持久保存，但当前页面轮询已结束。请刷新后继续查看状态，不会重复创建任务。');
           }
         }).catch(() => {});

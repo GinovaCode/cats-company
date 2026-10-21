@@ -87,7 +87,7 @@ request body or arbitrary source path. A display name is never an identity key.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `sourceStatusReadsEnabled`, `cloudStatusReadsEnabled`, effective `workspaceCreateEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. Adapter support is not a database or target-runtime health check. |
+| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `sourceStatusReadsEnabled`, `cloudStatusReadsEnabled`, effective `workspaceCreateEnabled`, `workspaceDurableCreateEnabled`, `workspaceDurablePublishUiEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. `workspaceDurablePublishUiEnabled` is a separate default-off rollout flag; it is true only when `CATSCO_SKILLHUB_PUBLICATION_DURABLE_PUBLISH_UI_ENABLED` is enabled in addition to durable admission support. Adapter support is not a database or target-runtime health check. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}` | When enabled on a supported store, reads the original publisher's record. Missing, wrong-publisher and disabled reads return the same 404. Bot ownership transfer does not grant historical record access to the new owner. |
 | `GET /api/skillhub/publications/requests/{requestId}` | Same private projection, using the original account-scoped request ID to recover a lost creation response. This does not reauthorize, create, replay or mutate an entry. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}/source-status` | Original publisher's historical source-probe progress, using the same read flag and private transport guards. Requires the optional PostgreSQL source-status reader. Never claims, settles or resumes a task. |
@@ -223,8 +223,16 @@ deployed three-component publication test.
 
 New orchestration clients should use `skillhub.publication.createEntry.v2` when
 `workspaceDurableCreateEnabled` is true in the capabilities response. The original
-`createEntry.v1` below keeps its probe-before-admission contract; neither protocol
-is connected to the production publishing UI yet. v2 requires all three existing
+`createEntry.v1` below keeps its probe-before-admission contract. The workspace UI
+uses v2 only when the separate `workspaceDurablePublishUiEnabled` capability is
+also true. This rollout is for isolated staging of admission and read-only
+observation; final publication confirmation and Agent binding are not implemented
+on this branch. Do not enable it in production yet. With the flag off, the existing
+publish-and-add flow remains in use. The observer polls at 20-second intervals,
+leaving headroom below the shared 12/minute source/capture/Cloud read budget.
+Recovery hints are scoped to the account, device, Bot, Skill and workspace revision;
+terminal failures/cancellation clear them, while a passed validation report is
+still in-flight and retains its hint. v2 requires all three existing
 read/workspace/delivery flags, all default off, and a supported durable adapter.
 Capabilities describe configuration/support, not worker or runtime health; the
 RPC also refuses admission when the local delivery worker is not running.
