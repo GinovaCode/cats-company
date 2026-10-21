@@ -229,7 +229,7 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 	}
 	if err := h.authorizeSkillHubThinToolRPC(client, msg, ownerUID, deviceID, toolName); err != nil {
 		code := thinToolRPCAuthorizationErrorCode(err)
-		log.Printf("[thin_tool_rpc] skillhub request denied: request_id=%s requester_uid=%s target_owner=%s target_device=%s tool=%s code=%s reason=%s", requestID, formatUID(clientUID(client)), formatUID(ownerUID), deviceID, toolName, code, err.Error())
+		log.Printf("[thin_tool_rpc] request denied: request_id=%s requester_uid=%s target_owner=%s target_device=%s tool=%s code=%s reason=%s", requestID, formatUID(clientUID(client)), formatUID(ownerUID), deviceID, toolName, code, err.Error())
 		h.sendThinToolRPCResultToRequester(client, requestID, msg, code, err.Error())
 		h.sendThinToolRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
 		return
@@ -294,7 +294,7 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 		return
 	}
 	if !isSkillHubThinToolOperation(DeviceGrantOperation(toolName)) {
-		if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
+		if err := h.authorizeOrdinaryThinToolRPC(client, &forward, ownerUID, deviceID, toolName); err != nil {
 			code := thinToolRPCAuthorizationErrorCode(err)
 			log.Printf("[thin_tool_rpc] ordinary target changed before forward: request_id=%s target_owner=%s target_device=%s tool=%s code=%s reason=%s", requestID, formatUID(ownerUID), deviceID, toolName, code, err.Error())
 			if _, ok := h.thinToolRPC.finishMatching(pending); ok {
@@ -422,7 +422,7 @@ func (h *Hub) authorizeSkillHubThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 		if client != nil && client.accountType == types.AccountHuman {
 			return fmt.Errorf("human thin_tool_rpc requests are limited to SkillHub device operations")
 		}
-		return h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID)
+		return h.authorizeOrdinaryThinToolRPC(client, msg, ownerUID, deviceID, toolName)
 	}
 	if h == nil || h.db == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountHuman {
 		return fmt.Errorf("SkillHub device operations require an authenticated human WebApp connection")
@@ -506,6 +506,100 @@ func (h *Hub) authorizeSkillHubDesktopBotBinding(botUID int64, device UserDevice
 		code:    thinToolRPCBotBoundElsewhereCode,
 		message: "target bot is bound to another Runtime; desktop switch was not performed",
 	}
+}
+
+// Ordinary Bot tools require a server-issued capability for this user turn.
+// Bot ownership is deliberately not used: a shared cloud Bot may legitimately
+// serve many users, but may not choose an arbitrary user's device without a grant.
+func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, ownerUID int64, deviceID, toolName string) error {
+	if h == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountBot || client.wikiAgentUID > 0 {
+		return fmt.Errorf("ordinary device tools require an authenticated bot connection")
+	}
+	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != ""
+	if !hasGrantFields && deviceGrantEnforcementRequired() {
+		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is required; upgrade the cloud Bot and start a new user turn"}
+	}
+	if hasGrantFields && (strings.TrimSpace(msg.GrantID) == "" || strings.TrimSpace(msg.SessionKey) == "" || strings.TrimSpace(msg.ActorUserID) == "") {
+		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is incomplete; start a new user turn"}
+	}
+	operation := DeviceGrantOperation(toolName)
+	if toolName == "import_file" {
+		operation = DeviceGrantSendFile
+	}
+	if !isAllowedDeviceRPCOperation(operation) && operation != DeviceGrantSendFile {
+		return fmt.Errorf("tool is not supported by ordinary device rpc")
+	}
+	if !hasGrantFields {
+		// Compatibility mode still validates owner, runtime role, liveness and
+		// capabilities. It only omits the new per-turn grant until the Bot has
+		// been upgraded and strict enforcement is enabled.
+		if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
+			return err
+		}
+		device, ok := h.userDevices.activeDevice(ownerUID, deviceID)
+		if !ok {
+			return fmt.Errorf("target device is not active")
+		}
+		allowed := false
+		for _, capability := range device.Capabilities {
+			if capability == operation {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("target device does not support the requested operation")
+		}
+		if msg.ExpiresAt <= 0 {
+			msg.ExpiresAt = unixMillis(h.userDevices.now().Add(defaultThinToolRPCTTL))
+		}
+		if msg.ExpiresAt <= unixMillis(h.userDevices.now()) {
+			return fmt.Errorf("device request has expired")
+		}
+		return nil
+	}
+	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
+	if !ok {
+		return fmt.Errorf("device grant is not active")
+	}
+	if grant.Source != "catscompany" || parseFormattedUID(grant.ActorUserID) <= 0 ||
+		grant.AgentID != formatUID(client.uid) || grant.OwnerUserID != formatUID(ownerUID) ||
+		grant.SessionKey != buildCatsCoSessionKey(grant.TopicID, grant.TopicType, grant.AgentID, parseFormattedUID(grant.ActorUserID)) ||
+		(grant.AgentBodyID != "" && grant.AgentBodyID != client.bodyID) {
+		return fmt.Errorf("device grant identity does not match requester or target owner")
+	}
+	if err := validateDeviceRPCGrant(client, &MsgDeviceRPC{
+		SessionKey: msg.SessionKey, ActorUserID: msg.ActorUserID, DeviceID: deviceID,
+	}, grant, operation); err != nil {
+		return err
+	}
+	if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
+		return err
+	}
+	device, ok := h.userDevices.activeDevice(ownerUID, deviceID)
+	if !ok || (grant.DeviceBodyID != "" && device.BodyID != grant.DeviceBodyID) ||
+		(grant.DeviceInstallationID != "" && device.InstallationID != grant.DeviceInstallationID) {
+		return fmt.Errorf("target device identity changed since authorization")
+	}
+	allowed := false
+	for _, capability := range device.Capabilities {
+		if capability == operation {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("target device no longer supports the authorized operation")
+	}
+	// Bound the forwarded execution deadline to the capability, including on
+	// revalidation immediately before dispatch. Never forward an expired request.
+	if msg.ExpiresAt <= 0 || msg.ExpiresAt > grant.ExpiresAt {
+		msg.ExpiresAt = grant.ExpiresAt
+	}
+	if msg.ExpiresAt <= unixMillis(h.userDevices.now()) {
+		return fmt.Errorf("device request has expired")
+	}
+	return nil
 }
 
 func (h *Hub) authorizeOrdinaryThinToolRPCTarget(ownerUID int64, deviceID string) error {

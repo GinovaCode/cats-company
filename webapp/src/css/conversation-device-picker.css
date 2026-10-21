@@ -1,0 +1,23 @@
+.cc-device-trigger { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--cc-border, #dedede); border-radius: 7px; background: var(--cc-panel-raised, #fff); color: var(--cc-text, #222); padding: 6px 9px; font: inherit; font-size: 12px; cursor: pointer; min-width: 0; }
+.cc-device-trigger:disabled { opacity: .65; cursor: default; }
+.cc-device-current { max-width: 110px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--cc-text-secondary, #666); }
+.cc-device-backdrop { position: fixed; inset: 0; z-index: 1100; display: grid; place-items: center; padding: 20px; background: #0005; }
+.cc-device-dialog { width: min(460px, 100%); max-height: calc(100dvh - 40px); overflow-y: auto; background: var(--cc-panel-raised, #fff); color: var(--cc-text, #222); border-radius: 12px; padding: 20px; box-shadow: 0 12px 40px #0003; box-sizing: border-box; }
+.cc-device-dialog header, .cc-device-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cc-device-dialog h2 { font-size: 18px; margin: 0; }
+.cc-device-dialog p { font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.cc-device-dialog button { padding: 7px 11px; background: transparent; color: inherit; border: 1px solid var(--cc-border, #dedede); border-radius: 6px; cursor: pointer; }
+.cc-device-dialog button:disabled { opacity: .5; cursor: default; }
+.cc-device-dialog header button { border: 0; display: flex; }
+.cc-device-option { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--cc-border, #dedede); font-size: 13px; }
+.cc-device-option > span:nth-child(2) { flex: 1; min-width: 0; }
+.cc-device-option strong, .cc-device-option small { display: block; overflow-wrap: anywhere; }
+.cc-device-option small, .cc-device-note { color: var(--cc-text-secondary, #666); }
+.cc-device-option input { flex: none; }
+.cc-device-error { color: #b34236; }
+@media (max-width: 700px) { .cc-device-trigger > span:not(.cc-device-current) { display: none; } .cc-device-current { max-width: 70px; } .cc-device-dialog { padding: 16px; } }
+@media (max-width: 520px) {
+  .cc-device-trigger { width: 32px; height: 32px; padding: 7px; }
+  .cc-device-trigger > span { display: none; }
+  .v3-local-assistant-bar:has(.cc-device-trigger) :is(.v3-shell-title, .v3-shell-title-input) { max-width: calc(100vw - 190px); }
+}

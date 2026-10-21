@@ -436,6 +436,9 @@ func TestGenericThinToolRPCRejectsServerRuntimeTarget(t *testing.T) {
 	hub.addClient(target)
 	hub.bindDeviceClient(7, serverRuntime, target)
 	desktopRequest := &MsgThinToolRPC{TargetOwnerUserID: "usr7", TargetDeviceID: "alice-desktop", ToolName: "execute_shell"}
+	desktopDevice, _ := hub.userDevices.registeredDevice(7, "alice-desktop")
+	desktopGrant := hub.userDevices.grantsForDevices(7, "p2p_7_42", "p2p", 42, "", []UserDevice{desktopDevice})[0]
+	desktopRequest.GrantID, desktopRequest.SessionKey, desktopRequest.ActorUserID = desktopGrant.GrantID, desktopGrant.SessionKey, desktopGrant.ActorUserID
 	if err := hub.authorizeSkillHubThinToolRPC(requester, desktopRequest, 7, "alice-desktop", desktopRequest.ToolName); err != nil {
 		t.Fatalf("desktop Runtime target rejected: %v", err)
 	}
@@ -455,6 +458,10 @@ func TestGenericThinToolRPCRejectsServerRuntimeTarget(t *testing.T) {
 		TargetDeviceID:    "monica-server",
 		ToolName:          "execute_shell",
 	}
+	// Even an otherwise valid capability must never allow targeting a server
+	// Runtime. Deliberately issue one here to exercise that independent fence.
+	serverGrant := hub.userDevices.grantsForDevices(7, "p2p_7_42", "p2p", 42, "", []UserDevice{serverRuntime})[0]
+	request.GrantID, request.SessionKey, request.ActorUserID = serverGrant.GrantID, serverGrant.SessionKey, serverGrant.ActorUserID
 	hub.handleThinToolRPCRequest(requester, request)
 	var denied ServerMessage
 	decodeQueuedServerMessage(t, requester.send, &denied)
@@ -501,9 +508,13 @@ func TestGenericThinToolRPCRejectsUnregisteredLiveRoute(t *testing.T) {
 	if !hub.routeConnected(targetRoute) {
 		t.Fatal("test setup requires the unregistered target route to remain connected")
 	}
+	grant := hub.userDevices.grantsForDevices(7, "p2p_7_42", "p2p", 42, "", []UserDevice{device})[0]
 
 	hub.handleThinToolRPCRequest(requester, &MsgThinToolRPC{
 		ID:                "unregistered-msg",
+		GrantID:           grant.GrantID,
+		SessionKey:        grant.SessionKey,
+		ActorUserID:       grant.ActorUserID,
 		Type:              thinToolRPCTypeRequest,
 		RequestID:         "unregistered-request",
 		TargetOwnerUserID: "usr7",

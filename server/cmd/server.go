@@ -281,6 +281,9 @@ func main() {
 		log.Fatalf("database connection failed: %v", err)
 	}
 	defer db.Close()
+	if _, ok := db.(store.ConversationDeviceSelectionStore); !ok {
+		log.Fatal("database adapter must support durable conversation device selections")
+	}
 
 	if err := db.CreateSchema(); err != nil {
 		if schemaInitializationFatal(err) {
@@ -1034,6 +1037,7 @@ func main() {
 	mux.HandleFunc("/api/relay/key/reveal", ownerAuthWithDB(relayKeyHandler.HandleReveal))
 	mux.HandleFunc("/api/relay/usage", ownerAuthWithDB(relayKeyHandler.HandleUsage))
 	mux.HandleFunc("/api/devices", authWithDB(deviceHandler.HandleListDevices))
+	mux.HandleFunc("/api/conversations/device-selection", ownerAuthWithDB(deviceHandler.HandleConversationSelection))
 	mux.HandleFunc("/api/devices/", jwtAuthWithDB(deviceHandler.HandleDeviceByID))
 	mux.HandleFunc("/api/devices/register", authWithDB(deviceHandler.HandleRegisterDevice))
 	mux.HandleFunc("/api/devices/rpc-status", jwtAuthWithDB(deviceHandler.HandleDeviceRPCStatus))

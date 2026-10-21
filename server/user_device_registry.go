@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	defaultUserDeviceTTL          = 5 * time.Minute
-	defaultDeviceGrantTTL         = 10 * time.Minute
-	defaultDevicePreferenceTTL    = 30 * time.Minute
-	maxUserDeviceIDLength         = 128
-	deviceGrantIDRandomLength     = 12
-	userDeviceGrantIdentitySrc    = "metadata.catsco_identity"
-	channelDeviceGrantIdentitySrc = "channel_identity_link"
+	defaultUserDeviceTTL             = 5 * time.Minute
+	defaultDeviceGrantTTL            = 10 * time.Minute
+	defaultDevicePreferenceTTL       = 30 * time.Minute
+	maxUserDeviceIDLength            = 128
+	maxDeviceSelectionRevisionLength = 64
+	deviceGrantIDRandomLength        = 12
+	userDeviceGrantIdentitySrc       = "metadata.catsco_identity"
+	channelDeviceGrantIdentitySrc    = "channel_identity_link"
 )
 
 var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -86,6 +87,7 @@ type DeviceModelStatus struct {
 }
 
 type ScopedDeviceGrant struct {
+	SelectionRevision    string                 `json:"selectionRevision,omitempty"`
 	Kind                 string                 `json:"kind"`
 	Source               string                 `json:"source"`
 	GrantID              string                 `json:"grantId"`
@@ -120,6 +122,7 @@ const (
 )
 
 type DeviceSelection struct {
+	Revision        string                     `json:"revision"`
 	Kind            string                     `json:"kind"`
 	Source          string                     `json:"source"`
 	SchemaVersion   int                        `json:"schemaVersion"`
@@ -169,6 +172,8 @@ type DeviceTurnContext struct {
 }
 
 type deviceSelectionPreference struct {
+	Durable   bool
+	Revision  string
 	DeviceID  string
 	Source    string
 	UpdatedAt int64
@@ -189,15 +194,16 @@ type RegisterUserDeviceRequest struct {
 }
 
 type userDeviceRegistry struct {
-	mu            sync.RWMutex
-	ttl           time.Duration
-	grantTT       time.Duration
-	preferenceTTL time.Duration
-	now           func() time.Time
-	shared        sharedRuntimeState
-	devices       map[int64]map[string]UserDevice
-	preferences   map[int64]map[string]deviceSelectionPreference
-	grants        map[string]ScopedDeviceGrant
+	selectionStore store.ConversationDeviceSelectionStore
+	mu             sync.RWMutex
+	ttl            time.Duration
+	grantTT        time.Duration
+	preferenceTTL  time.Duration
+	now            func() time.Time
+	shared         sharedRuntimeState
+	devices        map[int64]map[string]UserDevice
+	preferences    map[int64]map[string]deviceSelectionPreference
+	grants         map[string]ScopedDeviceGrant
 }
 
 func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
@@ -512,18 +518,13 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	}
 	devices = devicesForOwner(ownerUID, devices)
 	unavailableCandidates = devicesForOwner(ownerUID, unavailableCandidates)
-	if len(devices) == 0 && len(unavailableCandidates) > 0 {
-		return DeviceTurnContext{
-			Selection: r.unavailableDeviceSelectionForOwner(actorUID, ownerUID, topicID, topicType, agentUID, "no_routable_devices", unavailableCandidates),
-		}
-	}
-	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText)
+	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText, unavailableCandidates)
 	if selection != nil {
 		selection.OwnerUserID = formatUID(ownerUID)
 	}
 	var grants []ScopedDeviceGrant
 	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
-		grants = r.grantsForOwnerDevices(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected})
+		grants = r.grantsForOwnerDevices(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected}, selection.Revision)
 	}
 	return DeviceTurnContext{
 		Grants:    grants,
@@ -531,42 +532,11 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	}
 }
 
-func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
-	return r.unavailableDeviceSelectionForOwner(actorUID, actorUID, topicID, topicType, agentUID, reason, candidates)
-}
-
-func (r *userDeviceRegistry) unavailableDeviceSelectionForOwner(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
-	createdAt := unixMillis(r.now())
-	actorUserID := formatUID(actorUID)
-	ownerUserID := formatUID(ownerUID)
-	agentID := ""
-	if agentUID > 0 {
-		agentID = formatUID(agentUID)
-	}
-	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID, actorUID)
-	return &DeviceSelection{
-		Kind:            "user_device_selection",
-		Source:          "catscompany",
-		SchemaVersion:   1,
-		Status:          DeviceSelectionUnavailable,
-		SelectionSource: reason,
-		SessionKey:      sessionKey,
-		TopicID:         topicID,
-		TopicType:       topicType,
-		ActorUserID:     actorUserID,
-		OwnerUserID:     ownerUserID,
-		AgentID:         agentID,
-		Candidates:      deviceSelectionCandidates(candidates),
-		CandidateCount:  len(candidates),
-		CreatedAt:       createdAt,
-	}
-}
-
 func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
 	return r.grantsForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, devices)
 }
 
-func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
+func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, selectedRevision ...string) []ScopedDeviceGrant {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" || len(devices) == 0 {
 		return nil
 	}
@@ -587,9 +557,20 @@ func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int6
 	}
 	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID, actorUID)
 
+	preference, err := r.selectionRecord(actorUID, sessionKey)
+	if err != nil {
+		return nil
+	}
+	revision := preference.Revision
+	if len(selectedRevision) > 0 && selectedRevision[0] != revision {
+		return nil
+	}
 	grants := make([]ScopedDeviceGrant, 0, len(devices))
 	for _, device := range devices {
 		if device.OwnerUID != ownerUID {
+			continue
+		}
+		if preference.DeviceID != "" && (preference.DeviceID != device.DeviceID || !preference.active(createdAt)) {
 			continue
 		}
 		ops := deviceGrantOperations(device.Capabilities)
@@ -597,6 +578,7 @@ func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int6
 			continue
 		}
 		grants = append(grants, ScopedDeviceGrant{
+			SelectionRevision:    revision,
 			Kind:                 "user_device_grant",
 			Source:               "catscompany",
 			GrantID:              "device_grant_" + randomDeviceGrantIDSuffix(),
@@ -664,16 +646,17 @@ func (r *userDeviceRegistry) lookupGrant(grantID string) (ScopedDeviceGrant, boo
 	}
 	now := unixMillis(r.now())
 	if r.shared != nil {
-		return r.shared.lookupDeviceGrant(strings.TrimSpace(grantID), now)
+		grant, ok := r.shared.lookupDeviceGrant(strings.TrimSpace(grantID), now)
+		return grant, ok && r.grantSelectionCurrent(grant)
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.cleanupExpiredGrantsLocked(now)
 	grant, ok := r.grants[strings.TrimSpace(grantID)]
+	r.mu.Unlock()
 	if !ok || grant.Status != "active" || grant.ExpiresAt <= now {
 		return ScopedDeviceGrant{}, false
 	}
-	return grant, true
+	return grant, r.grantSelectionCurrent(grant)
 }
 
 func (r *userDeviceRegistry) cleanupExpiredGrantsLocked(now int64) {
@@ -691,6 +674,7 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 	agentUID int64,
 	devices []UserDevice,
 	messageText string,
+	unavailableSets ...[]UserDevice,
 ) (*DeviceSelection, *UserDevice) {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return nil, nil
@@ -702,6 +686,10 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 		agentID = formatUID(agentUID)
 	}
 	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID, actorUID)
+	known := append([]UserDevice(nil), devices...)
+	if len(unavailableSets) > 0 {
+		known = append(known, unavailableSets[0]...)
+	}
 	base := DeviceSelection{
 		Kind:           "user_device_selection",
 		Source:         "catscompany",
@@ -711,48 +699,71 @@ func (r *userDeviceRegistry) selectDeviceForTurn(
 		TopicType:      topicType,
 		ActorUserID:    actorUserID,
 		AgentID:        agentID,
-		CandidateCount: len(devices),
+		CandidateCount: len(known),
+		Candidates:     deviceSelectionCandidates(known),
 		CreatedAt:      createdAt,
 	}
+	preference, err := r.selectionRecord(actorUID, sessionKey)
+	if err != nil {
+		base.Status, base.SelectionSource = DeviceSelectionUnavailable, "selection_store_unavailable"
+		return &base, nil
+	}
+	base.Revision = preference.Revision
 	if len(devices) == 0 {
 		base.Status = DeviceSelectionUnavailable
-		base.SelectionSource = "no_active_devices"
+		base.SelectionSource = "no_routable_devices"
+		if preferred, ok := r.deviceSelectionPreference(actorUID, sessionKey); ok {
+			base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preferred, UnavailableReason: "route_unavailable"}
+			if device, found := findDeviceByID(known, preferred); found {
+				base.SelectedDevice = deviceSelectionDevice(device)
+			}
+		}
 		return &base, nil
 	}
 
-	if explicitMatches := matchMentionedDevices(devices, messageText); len(explicitMatches) == 1 {
-		selected := explicitMatches[0]
-		base.Status = DeviceSelectionSelected
-		base.SelectionSource = "explicit_mention"
-		base.SelectedDevice = deviceSelectionDevice(selected)
-		r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, "explicit_mention")
-		return &base, &selected
-	} else if len(explicitMatches) > 1 {
+	preferredDeviceID, hasPreference := preference.DeviceID, preference.active(createdAt)
+	mentions := matchMentionedDevices(known, messageText)
+	// Text can mention a device in a question, quotation or negation. It may
+	// require clarification but must never commit a device switch. A confirmed
+	// user selection must arrive through a separate authenticated interaction.
+	if len(mentions) > 1 || (len(mentions) == 1 && len(known) > 1 && (!hasPreference || mentions[0].DeviceID != preferredDeviceID)) {
 		base.Status = DeviceSelectionNeedsSelection
-		base.SelectionSource = "explicit_ambiguous"
-		base.Candidates = deviceSelectionCandidates(explicitMatches)
+		base.SelectionSource = "selection_confirmation_required"
 		return &base, nil
 	}
 
-	if preferredDeviceID, ok := r.deviceSelectionPreference(actorUID, sessionKey); ok {
+	if hasPreference {
 		if selected, ok := findDeviceByID(devices, preferredDeviceID); ok {
 			base.Status = DeviceSelectionSelected
 			base.SelectionSource = "conversation_preference"
 			base.SelectedDevice = deviceSelectionDevice(selected)
+			r.refreshDeviceSelection(actorUID, sessionKey, preference)
 			return &base, &selected
 		}
+		base.Status, base.SelectionSource = DeviceSelectionUnavailable, "selected_device_unavailable"
+		base.SelectedDevice = &DeviceSelectionDevice{DeviceID: preferredDeviceID, UnavailableReason: "route_unavailable"}
+		if device, found := findDeviceByID(known, preferredDeviceID); found {
+			base.SelectedDevice = deviceSelectionDevice(device)
+		}
+		return &base, nil
 	}
 
+	if len(known) > 1 {
+		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "multiple_devices"
+		return &base, nil
+	}
 	selected := devices[0]
 	base.Status = DeviceSelectionSelected
-	if len(devices) == 1 {
-		base.SelectionSource = "single_active_device"
-	} else {
-		base.SelectionSource = "most_recent_online"
-		base.Candidates = deviceSelectionCandidates(devices)
-	}
+	base.SelectionSource = "single_active_device"
 	base.SelectedDevice = deviceSelectionDevice(selected)
 	r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, base.SelectionSource)
+	current, err := r.selectionRecord(actorUID, sessionKey)
+	if err != nil || current.DeviceID != selected.DeviceID || !current.active(createdAt) {
+		base.Status, base.SelectionSource = DeviceSelectionNeedsSelection, "selection_changed"
+		base.SelectedDevice = nil
+		return &base, nil
+	}
+	base.Revision = current.Revision
 	return &base, &selected
 }
 
@@ -760,18 +771,8 @@ func (r *userDeviceRegistry) deviceSelectionPreference(actorUID int64, sessionKe
 	if r == nil || actorUID <= 0 || sessionKey == "" {
 		return "", false
 	}
-	now := unixMillis(r.now())
-	if r.shared != nil {
-		return r.shared.deviceSelectionPreference(actorUID, sessionKey, now)
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	actorPreferences := r.preferences[actorUID]
-	if len(actorPreferences) == 0 {
-		return "", false
-	}
-	preference, ok := actorPreferences[sessionKey]
-	if !ok || preference.DeviceID == "" || preference.ExpiresAt <= now {
+	preference, err := r.selectionRecord(actorUID, sessionKey)
+	if err != nil || !preference.active(unixMillis(r.now())) {
 		return "", false
 	}
 	return preference.DeviceID, true
@@ -781,25 +782,20 @@ func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey 
 	if r == nil || actorUID <= 0 || sessionKey == "" || deviceID == "" {
 		return
 	}
-	now := r.now()
-	preference := deviceSelectionPreference{
-		DeviceID:  deviceID,
-		Source:    source,
-		UpdatedAt: unixMillis(now),
-		ExpiresAt: unixMillis(now.Add(r.preferenceTTL)),
-	}
-	if r.shared != nil {
-		r.shared.rememberDeviceSelection(actorUID, sessionKey, preference)
+	current, err := r.selectionRecord(actorUID, sessionKey)
+	if err != nil {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	actorPreferences := r.preferences[actorUID]
-	if actorPreferences == nil {
-		actorPreferences = make(map[string]deviceSelectionPreference)
-		r.preferences[actorUID] = actorPreferences
+	// Automatic selection and preference renewal must never overwrite a
+	// concurrent explicit confirmation or revive an expired different target.
+	if current.DeviceID != "" && current.DeviceID != deviceID {
+		return
 	}
-	actorPreferences[sessionKey] = preference
+	if current.DeviceID == deviceID && current.active(unixMillis(r.now())) {
+		r.refreshDeviceSelection(actorUID, sessionKey, current)
+		return
+	}
+	_, _ = r.confirmDeviceSelection(actorUID, sessionKey, deviceID, source, current.Revision)
 }
 
 func matchMentionedDevices(devices []UserDevice, messageText string) []UserDevice {

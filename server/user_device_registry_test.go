@@ -213,7 +213,7 @@ func TestUserDeviceRegistryIssuesShellGrantWhenDeviceCapabilityIsRegistered(t *t
 	}
 }
 
-func TestUserDeviceRegistrySelectsMentionedDeviceAndRemembersPreference(t *testing.T) {
+func TestUserDeviceRegistryRequiresConfirmationAndRemembersPreference(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	registry := newUserDeviceRegistry(10 * time.Minute)
 	registry.now = func() time.Time { return now }
@@ -236,9 +236,11 @@ func TestUserDeviceRegistrySelectsMentionedDeviceAndRemembersPreference(t *testi
 	}
 
 	ctx := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "请在 Alice Laptop 上读取文件")
-	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionSelected || ctx.Selection.SelectionSource != "explicit_mention" {
-		t.Fatalf("unexpected explicit selection: %#v", ctx.Selection)
+	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionNeedsSelection || len(ctx.Grants) != 0 {
+		t.Fatalf("free text must not commit a device selection: %#v", ctx)
 	}
+	registry.rememberDeviceSelection(7, buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7), "alice-laptop", "confirmed_fixture")
+	ctx = registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "请在 Alice Laptop 上读取文件")
 	if ctx.Selection.SelectedDevice == nil || ctx.Selection.SelectedDevice.DeviceID != "alice-laptop" {
 		t.Fatalf("selected device = %#v, want alice-laptop", ctx.Selection.SelectedDevice)
 	}
@@ -258,14 +260,11 @@ func TestUserDeviceRegistrySelectsMentionedDeviceAndRemembersPreference(t *testi
 	}
 
 	otherTopic := registry.turnContext(7, "p2p_7_99", "p2p", 99, "body-agent", "继续读取")
-	if otherTopic.Selection == nil || otherTopic.Selection.SelectionSource != "most_recent_online" {
+	if otherTopic.Selection == nil || otherTopic.Selection.Status != DeviceSelectionNeedsSelection {
 		t.Fatalf("unexpected other topic selection: %#v", otherTopic.Selection)
 	}
-	if otherTopic.Selection.SelectedDevice == nil || otherTopic.Selection.SelectedDevice.DeviceID != "alice-desktop" {
-		t.Fatalf("other topic selected device = %#v, want alice-desktop", otherTopic.Selection.SelectedDevice)
-	}
-	if got := otherTopic.Selection.SelectedDevice.Operations; len(got) != 2 || got[0] != DeviceGrantReadFile || got[1] != DeviceGrantSendFile {
-		t.Fatalf("other topic selected device should expose send_file: %#v", got)
+	if otherTopic.Selection.SelectedDevice != nil || len(otherTopic.Grants) != 0 {
+		t.Fatalf("new conversation must not silently choose a device: %#v", otherTopic)
 	}
 }
 
@@ -438,6 +437,7 @@ func TestDeviceHandlerReportsOwnerScopedDeviceRPCStatus(t *testing.T) {
 }
 
 func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
 			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
@@ -505,7 +505,7 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 		t.Fatalf("unexpected selected device: %#v", selection["selectedDevice"])
 	}
 	runtime := metadataMapFromServerMessage(t, &msg, "xiaoba_runtime")
-	if runtime["schema"] != "xiaoba.runtime.v1" {
+	if runtime["schema"] != "xiaoba.runtime.v2" {
 		t.Fatalf("unexpected xiaoba runtime schema: %#v", runtime)
 	}
 	devices, ok := runtime["devices"].([]interface{})
@@ -621,10 +621,12 @@ func TestBotRecipientIdentityExcludesServerRuntimeFromHumanDeviceRouting(t *test
 	}
 }
 
-func TestXiaobaRuntimeMetadataIncludesGroupHumanReadyDevices(t *testing.T) {
+func TestXiaobaRuntimeMetadataOnlyIncludesCurrentAccountDevices(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
 			42: {ID: 42, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot},
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman},
 		},
 		groupMembers: []*types.GroupMember{
 			{GroupID: 80, UserID: 7, Username: "alice", DisplayName: "Alice"},
@@ -660,18 +662,15 @@ func TestXiaobaRuntimeMetadataIncludesGroupHumanReadyDevices(t *testing.T) {
 	hub.bindDeviceClient(9, bobDevice, bobClient)
 
 	runtime := hub.buildXiaobaRuntimeMetadata(7, 42, "grp_80")
-	if runtime["schema"] != "xiaoba.runtime.v1" {
+	if runtime["schema"] != "xiaoba.runtime.v2" {
 		t.Fatalf("unexpected xiaoba runtime schema: %#v", runtime)
 	}
 	devices, ok := runtime["devices"].([]map[string]interface{})
-	if !ok || len(devices) != 2 {
-		t.Fatalf("runtime devices = %#v, want two devices", runtime["devices"])
+	if !ok || len(devices) != 1 {
+		t.Fatalf("runtime devices = %#v, want only the current account", runtime["devices"])
 	}
 	if devices[0]["userId"] != "usr7" || devices[0]["userName"] != "Alice" || devices[0]["deviceId"] != "alice-laptop" || devices[0]["os"] != "windows" {
 		t.Fatalf("unexpected Alice runtime device: %#v", devices[0])
-	}
-	if devices[1]["userId"] != "usr9" || devices[1]["userName"] != "Bob" || devices[1]["deviceId"] != "bob-mac" || devices[1]["os"] != "macos" {
-		t.Fatalf("unexpected Bob runtime device: %#v", devices[1])
 	}
 }
 
