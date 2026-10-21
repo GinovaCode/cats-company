@@ -96,11 +96,13 @@ request body or arbitrary source path. A display name is never an identity key.
 The entry response contains only `schemaVersion` and `entry` with
 `entryRequestId`, decimal-string `botUid`, `entrypoint`, `state` and UTC
 `createdAt`. It omits request keys, publisher identity, device/body/installation,
-workspace/source references, identity hash, candidates and credentials. The only
-currently supported states are `waiting_runtime` and `cancelled`; neither means
+workspace/source references, identity hash, candidates and credentials. This
+entry/status projection does not fetch a Cloud validation report; the separate
+human-only `report` action below does. The only currently supported states are
+`waiting_runtime` and `cancelled`; neither means
 capture, validation or publication success. Local cancellation does not confirm
 that a remote Cloud task has stopped. Unknown states fail closed with 503
-until their safe projection is implemented. No Cloud report is fetched here.
+until their safe projection is implemented.
 
 Every handler response, including authentication failures, is `private, no-store`
 JSON. Invalid credentials return 401; disabled/non-human accounts 403; malformed
@@ -1060,7 +1062,7 @@ source probing remain test setup, not a live user publishing experience.
 ### Human publication confirmation
 
 An independently default-off `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`
-registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with three
+registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with four
 actions. It uses the existing fixed issuer, Cloud audience and dedicated peer
 secret configuration. It is not a model/RPC tool and cannot use Bot/API-key or
 service credentials in place of the active original human's Bearer JWT.
@@ -1082,6 +1084,14 @@ service credentials in place of the active original human's Bearer JWT.
   when published, Skill/version/package/checksum/time. Original active-human
   privacy survives Bot ownership transfer; new owners do not inherit history.
   Internal receipt/permit IDs, paths and manifest hashes are never projected.
+- `GET report` has no body/query and reads the immutable validation report saved
+  when Cloud admitted the candidate. It is available only to the original
+  authenticated publisher, including for a cancelled or expired historical
+  entry. The response preserves the Cloud rule version, issue codes, locations,
+  candidate digest, coverage and `repairPolicy`, but never returns candidate
+  bytes, arbitrary paths, upstream errors or credentials. Reading the report
+  does not revalidate, allocate a version, record intent, authorize publication
+  or start repair.
 
 Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
 if its ACK claims published. Only verified status supplies the final result.
