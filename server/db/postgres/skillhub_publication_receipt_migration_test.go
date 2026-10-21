@@ -25,6 +25,7 @@ func TestSkillHubPublicationReceiptMigrationMatchesStartup(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationReceiptMigration(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"empty_sql", "historical_sql_first", "historical_startup_first"} {
 		t.Run(order, func(t *testing.T) {
 			db, _ := publicationEmptyDatabase(t)
@@ -61,7 +62,7 @@ func TestPostgresSkillHubPublicationReceiptMigration(t *testing.T) {
 					t.Fatal(err)
 				}
 				upload := store.SkillHubPublicationUploadInput{EntryID: e.ID, Binding: b, Issuer: "https://cats.example", Audience: "https://hub.example", Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: strings.Repeat("a", 64), SourceSnapshotHash: strings.Repeat("b", 64), RequestBytes: 100}
-				g, token = issueUpload(t, db, upload) // Stored before receipt schema exists.
+				g, token = seedLegacyUploadGrant(t, db, upload) // Frozen pre-capture/pre-receipt historical authority.
 			}
 			if order == "historical_startup_first" {
 				if err := db.CreateSchema(); err != nil {
@@ -69,6 +70,7 @@ func TestPostgresSkillHubPublicationReceiptMigration(t *testing.T) {
 				}
 			}
 			up, down := publicationReceiptMigration(t, "up"), publicationReceiptMigration(t, "down")
+			deliveryExec(t, db, commitDeliveryMigration(t, "down"))
 			deliveryExec(t, db, publicationCommitMigration(t, "down"))
 			for _, sql := range []string{up, up, down, down, up} {
 				deliveryExec(t, db, sql)

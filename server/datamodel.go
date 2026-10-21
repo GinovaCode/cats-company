@@ -31,6 +31,7 @@ type ClientMessage struct {
 
 // ServerMessage is the top-level server-to-client message envelope.
 type ServerMessage struct {
+	SessionFork        *types.SessionForkControl     `json:"session_fork,omitempty"`
 	Ctrl               *MsgServerCtrl                `json:"ctrl,omitempty"`
 	Data               *MsgServerData                `json:"data,omitempty"`
 	TaskStatus         *types.ConversationTaskStatus `json:"task_status,omitempty"`

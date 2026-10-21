@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -213,39 +212,7 @@ func normalizeGatewayAnnotations(value interface{}) (*gatewayAnnotationsDocument
 // storage may still apply its own JSON escaping; only the contract budget is
 // measured with this encoding.
 func compactGatewayAnnotationsJSON(value interface{}) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, err
-	}
-	raw := bytes.TrimRight(buffer.Bytes(), "\n")
-	// Go also escapes U+2028/U+2029. Walk complete JSON escapes so escaped
-	// backslashes (a user's literal "\\u2028") are never mistaken for the
-	// separator itself, regardless of how many backslashes precede it.
-	result := make([]byte, 0, len(raw))
-	for index := 0; index < len(raw); {
-		if raw[index] != '\\' || index+1 >= len(raw) {
-			result = append(result, raw[index])
-			index++
-			continue
-		}
-		if index+6 <= len(raw) && raw[index+1] == 'u' {
-			escape := string(raw[index : index+6])
-			if escape == `\u2028` || escape == `\u2029` {
-				if escape == `\u2028` {
-					result = append(result, []byte("\u2028")...)
-				} else {
-					result = append(result, []byte("\u2029")...)
-				}
-				index += 6
-				continue
-			}
-		}
-		result = append(result, raw[index], raw[index+1])
-		index += 2
-	}
-	return result, nil
+	return types.CompactAnnotationsJSON(value)
 }
 
 // canonicalGatewayAnnotationsJSON round-trips one raw value through JSON so

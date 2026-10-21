@@ -962,16 +962,23 @@ export default function SkillHubView({
   skillHubUpdateSummary = null,
   onRegisterSkillHubCatalogue,
   onRefreshSkillHubUpdateSummary,
+  viewStateRef,
 }) {
   const feedback = useFeedback();
+  // Keep browsing context in the owning workspace, never Agent authority or a
+  // writable Definition revision. Those are revalidated on every visit.
+  const browseStateRef = useRef(viewStateRef?.current?.userUID === String(user?.uid || '')
+    ? { ...viewStateRef.current }
+    : { userUID: String(user?.uid || '') });
+  const restoredView = browseStateRef.current;
   const [bots, setBots] = useState([]);
   const [selectedBotUID, setSelectedBotUID] = useState('');
   const [definition, setDefinition] = useState({ skills: [], revision: 0 });
   const [viewerSkills, setViewerSkills] = useState([]);
   const [definitionBotUID, setDefinitionBotUID] = useState('');
-  const [query, setQuery] = useState('');
-  const [addedSkillQuery, setAddedSkillQuery] = useState('');
-  const [catalogue, setCatalogue] = useState([]);
+  const [query, setQuery] = useState(restoredView.query || '');
+  const [addedSkillQuery, setAddedSkillQuery] = useState(restoredView.addedSkillQuery || '');
+  const [catalogue, setCatalogue] = useState(restoredView.catalogue || []);
   const [loadingBots, setLoadingBots] = useState(true);
   const [loadingDefinition, setLoadingDefinition] = useState(false);
   const [loadingCatalogue, setLoadingCatalogue] = useState(true);
@@ -990,8 +997,8 @@ export default function SkillHubView({
   const [sharingSkill, setSharingSkill] = useState('');
   const [syncingWorkspace, setSyncingWorkspace] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState('added');
-  const [updatesOnly, setUpdatesOnly] = useState(false);
+  const [activeSection, setActiveSection] = useState(restoredView.activeSection || 'added');
+  const [updatesOnly, setUpdatesOnly] = useState(restoredView.updatesOnly === true);
   const [skillAction, setSkillAction] = useState(null);
   const [actionNotice, setActionNotice] = useState('');
   const [devices, setDevices] = useState([]);
@@ -1003,16 +1010,46 @@ export default function SkillHubView({
   const devicesRef = useRef([]);
   const definitionBotUIDRef = useRef('');
   const definitionRequestRef = useRef(0);
+  const devicesRequestRef = useRef(0);
+  const botsRequestRef = useRef(0);
+  const libraryRequestRef = useRef(0);
   const catalogueRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
   const skillMutationRef = useRef('');
   const requestedBotSwitchRef = useRef('');
+  const previousBotUIDRef = useRef(restoredView.selectedBotUID || '');
+
+  useEffect(() => {
+    if (viewStateRef) viewStateRef.current = browseStateRef.current;
+  }, [viewStateRef]);
+
+  useEffect(() => {
+    Object.assign(browseStateRef.current, {
+      query, addedSkillQuery, activeSection, updatesOnly, catalogue,
+      ...(selectedBotUID ? { selectedBotUID } : {}),
+    });
+  }, [query, addedSkillQuery, activeSection, updatesOnly, catalogue, selectedBotUID]);
+
+  useEffect(() => () => {
+    // Responses from a previous visit must not revive state or trigger a
+    // workspace request after this view has been left.
+    devicesRequestRef.current += 1;
+    botsRequestRef.current += 1;
+    catalogueRequestRef.current += 1;
+    libraryRequestRef.current += 1;
+    definitionRequestRef.current += 1;
+    localRequestRef.current += 1;
+    saveRequestRef.current += 1;
+  }, []);
 
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
-    setAddedSkillQuery('');
-    setUpdatesOnly(false);
+    if (selectedBotUID && selectedBotUID !== previousBotUIDRef.current) {
+      setAddedSkillQuery('');
+      setUpdatesOnly(false);
+    }
+    if (selectedBotUID) previousBotUIDRef.current = selectedBotUID;
     saveRequestRef.current += 1;
     skillMutationRef.current = '';
     setSaving(false);
@@ -1160,14 +1197,17 @@ export default function SkillHubView({
   const selectedUpdateStatus = selectedUpdateSummary?.status || '';
   const selectedUnavailableSkillIds = selectedUpdateSummary?.unavailableSkillIds || [];
   const loadDevices = useCallback(async (options = {}) => {
+    const requestID = ++devicesRequestRef.current;
+    const requestedBotUID = selectedBotUIDRef.current;
+    const isCurrent = () => requestID === devicesRequestRef.current
+      && requestedBotUID === selectedBotUIDRef.current;
     setLoadingDevices(true);
     try {
-      const requestedBotUID = selectedBotUIDRef.current;
       const [deviceResponse, bodyStatus] = await Promise.all([
         api.getDevices(),
         api.getBotBodyStatus(requestedBotUID).catch(() => null),
       ]);
-      if (requestedBotUID !== selectedBotUIDRef.current) return [];
+      if (!isCurrent()) return [];
       const route = resolveSkillHubRuntimeRouteForBot(
         deviceResponse,
         requestedBotUID,
@@ -1217,6 +1257,7 @@ export default function SkillHubView({
       setSelectedDeviceID(next);
       return capable;
     } catch (error) {
+      if (!isCurrent()) return [];
       requestedBotSwitchRef.current = '';
       setRuntimeRouteError('');
       devicesRef.current = [];
@@ -1228,11 +1269,12 @@ export default function SkillHubView({
       setLocalWorkspaceIncomplete(false);
       return [];
     } finally {
-      setLoadingDevices(false);
+      if (isCurrent()) setLoadingDevices(false);
     }
   }, []);
 
   const loadBots = useCallback(async () => {
+    const requestID = ++botsRequestRef.current;
     const requestedUID = String(initialAgentId || botUID(initialAgent) || '');
     const requestedAgent = requestedUID ? {
       ...initialAgent,
@@ -1245,6 +1287,7 @@ export default function SkillHubView({
     setLoadingBots(true);
     try {
       const response = await api.getMyBots();
+      if (requestID !== botsRequestRef.current) return;
       const accessible = normalizeAccessibleBots(response, user?.uid);
       if (requestedUID && !accessible.some((bot) => String(botUID(bot)) === requestedUID)) {
         accessible.push(requestedAgent);
@@ -1255,16 +1298,19 @@ export default function SkillHubView({
           return requestedUID;
         }
         if (current && accessible.some((bot) => String(botUID(bot)) === current)) return current;
+        const restoredUID = browseStateRef.current.selectedBotUID;
+        if (restoredUID && accessible.some((bot) => String(botUID(bot)) === restoredUID)) return restoredUID;
         return resolvePreferredSkillHubBotUID(accessible, user?.uid);
       });
     } catch (error) {
+      if (requestID !== botsRequestRef.current) return;
       if (requestedAgent) {
         setBots([requestedAgent]);
         setSelectedBotUID(requestedUID);
       }
       throw error;
     } finally {
-      setLoadingBots(false);
+      if (requestID === botsRequestRef.current) setLoadingBots(false);
     }
   }, [initialAgent, initialAgentId, user?.uid]);
 
@@ -1331,7 +1377,10 @@ export default function SkillHubView({
       setCatalogue(normalizeSkillHubSkills(response));
     } catch (error) {
       if (requestID !== catalogueRequestRef.current) return;
-      setCatalogue([]);
+      if ([401, 403].includes(error?.status)) {
+        setCatalogue([]);
+        browseStateRef.current.catalogue = [];
+      }
       setCatalogueError(error?.message || 'SkillHub 暂时无法访问');
     } finally {
       if (requestID === catalogueRequestRef.current) setLoadingCatalogue(false);
@@ -1339,15 +1388,18 @@ export default function SkillHubView({
   }, []);
 
   const loadLibraryLocalSkills = useCallback(async () => {
+    const requestID = ++libraryRequestRef.current;
     setLoadingLibraryLocalSkills(true);
     setLibraryLocalError('');
     try {
-      setLibraryLocalSkills(normalizeLocalSkillHubSkills(await api.getLocalSkills()));
+      const skills = normalizeLocalSkillHubSkills(await api.getLocalSkills());
+      if (requestID === libraryRequestRef.current) setLibraryLocalSkills(skills);
     } catch (error) {
-      setLibraryLocalSkills([]);
+      if (requestID !== libraryRequestRef.current) return;
+      if ([401, 403].includes(error?.status)) setLibraryLocalSkills([]);
       setLibraryLocalError(error?.message || '暂时无法读取本机能力。');
     } finally {
-      setLoadingLibraryLocalSkills(false);
+      if (requestID === libraryRequestRef.current) setLoadingLibraryLocalSkills(false);
     }
   }, []);
 
@@ -1660,12 +1712,13 @@ export default function SkillHubView({
     // Publisher calibration is independent of browsing. Start both requests
     // together so the catalogue is not held behind a slow profile sync.
     api.syncSkillHubPublisherProfile().catch(() => {});
-    searchCatalogue('').catch(() => {});
+    searchCatalogue(browseStateRef.current.query || '').catch(() => {});
     loadLibraryLocalSkills().catch(() => {});
   }, [loadBots, loadLibraryLocalSkills, searchCatalogue]);
 
   useEffect(() => {
     if (!selectedBotUID || selectedAgentIsFriend) {
+      devicesRequestRef.current += 1;
       localRequestRef.current += 1;
       selectedDeviceIDRef.current = '';
       devicesRef.current = [];
@@ -2235,7 +2288,8 @@ export default function SkillHubView({
     });
   }, []);
 
-  return <MarketplaceProvider key={user?.uid || ''}><SkillHubContent
+  return <MarketplaceProvider key={user?.uid || ''} browseStateRef={browseStateRef}><SkillHubContent
+    browseStateRef={browseStateRef}
     actionNotice={actionNotice}
     activeSection={activeSection}
     addedSkillQuery={addedSkillQuery}
@@ -2280,6 +2334,7 @@ export default function SkillHubView({
     onRemoveSkill={removeSkill}
     onSearch={searchCatalogue}
     onSelectAgent={(nextBotUID) => {
+      devicesRequestRef.current += 1;
       // Friends expose BotDefinition metadata only. Leave an owner's Runtime
       // workspace before entering that read-only context, while preserving the
       // workspace view when switching between Bots the user owns.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -69,6 +70,10 @@ func isProductionEnv() bool {
 		}
 	}
 	return false
+}
+
+func schemaInitializationFatal(err error) bool {
+	return err != nil && (isProductionEnv() || errors.Is(err, mysql.ErrSessionForkSchema))
 }
 
 func configureJWTSecret() error {
@@ -281,7 +286,7 @@ func main() {
 	}
 
 	if err := db.CreateSchema(); err != nil {
-		if isProductionEnv() {
+		if schemaInitializationFatal(err) {
 			log.Fatalf("schema initialization failed: %v", err)
 		}
 		log.Printf("schema creation (may already exist): %v", err)
@@ -308,6 +313,12 @@ func main() {
 	publicationCtx, stopPublicationDelivery := context.WithCancel(context.Background())
 	defer stopPublicationDelivery()
 	go hub.RunPublicationDeliveries(publicationCtx)
+	stopCaptureDispatch := server.StartSkillHubPublicationCaptureDispatch(publicationCtx, hub)
+	defer stopCaptureDispatch()
+	stopUploadDispatch := server.StartSkillHubPublicationUploadDispatch(publicationCtx, hub)
+	defer stopUploadDispatch()
+	stopCommitDispatch := server.StartSkillHubPublicationCommitDispatch(publicationCtx, db)
+	defer stopCommitDispatch()
 
 	server.SetBotStats(hub.BotStats())
 
@@ -898,6 +909,9 @@ func main() {
 		pushTestUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
+	mux.HandleFunc("/api/conversations/fork", server.JWTAuthMiddlewareWithDB(db)(conversationHandler.HandleFork))
+	mux.HandleFunc("/api/bot/session-forks", server.BotAPIKeyMiddlewareWithDB(db)(conversationHandler.HandleBotFork))
+	mux.HandleFunc("/api/bot/session-forks/complete", server.BotAPIKeyMiddlewareWithDB(db)(conversationHandler.HandleForkComplete))
 	mux.HandleFunc("/api/conversations/notification-preferences", authWithDB(conversationHandler.HandleNotificationPreference))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
@@ -928,6 +942,13 @@ func main() {
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
 		serviceAgentsMCPHandler.SetBalanceChecker(server.NewServiceBalanceCheckerFromEnv())
+		// bot 身份（设计 P1b）：tools/call 可携带 bot_uid，校验 owner==caller 与
+		// bot 定义的 serviceAgents 清单，并把 caller_bot_uid 落进会话。
+		if botIdentity, ok := db.(server.ServiceAgentBotIdentity); ok {
+			serviceAgentsMCPHandler.SetBotIdentity(botIdentity)
+		}
+		// 外部执行后端（设计 §4.4）：声明 runner.type=http 的 agent 由平台转发执行。
+		serviceAgentsMCPHandler.SetExternalRunner(server.NewServiceExternalRunnerFromEnv(serviceAgentStore))
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
 		// 应用目录管理 API（设计 §3.3-9 目录与订阅）：网页 cats 的目录/管理界面数据面；
 		// 清单跟账号，变更即时同步在线 MCP 会话（list_changed）。
@@ -938,6 +959,10 @@ func main() {
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))
 		mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleRemove))
+		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
+		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
+		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)
+		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
 		// Orchestration internal API for runtime instances (design §4.3; instances
 		// reach it over the shared VPC). Authn = per-instance bearer token
 		// (CATS_SERVICE_INSTANCE_TOKEN); service tokens are minted on claim with
@@ -952,6 +977,9 @@ func main() {
 		receiptDeliverer := server.NewServiceRunReceiptDeliverer(serviceAgentStore, hub)
 		serviceOrchestrator.SetReceiptKicker(receiptDeliverer)
 		go receiptDeliverer.Start(5 * time.Second)
+		// run 级账本（设计 §4.5）：谁调用谁付费、按量给。补账扫描，只记账不动钱。
+		ledgerWriter := server.NewServiceRunLedgerWriterFromEnv(serviceAgentStore)
+		go ledgerWriter.Start(30 * time.Second)
 	} else {
 		log.Printf("service agents MCP endpoint disabled: store does not implement ServiceAgentStore")
 	}
@@ -1065,6 +1093,7 @@ func main() {
 	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))
 	mux.HandleFunc("/api/bots/definition/prompt-visibility", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPromptVisibility))
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
+	mux.HandleFunc("/api/bots/definition/service-agents", ownerAuthWithDB(botDefinitionHandler.HandleOwnerServiceAgents))
 	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
 	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
 	mux.HandleFunc("/api/agents/skill-versions", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkillHistory))
@@ -1080,6 +1109,8 @@ func main() {
 	skillHubPublicationReadHandler := server.NewSkillHubPublicationReadHandlerFromEnv(db)
 	mux.HandleFunc("/api/skillhub/publications", skillHubPublicationReadHandler.Handle)
 	mux.HandleFunc("/api/skillhub/publications/", skillHubPublicationReadHandler.Handle)
+	publicationHumanCommit := server.NewSkillHubPublicationHumanCommitHandlerFromEnv(db)
+	mux.HandleFunc(server.SkillHubPublicationHumanCommitPrefix, publicationHumanCommit.Handle)
 	// Dedicated, default-off service authentication. Never wrap this in human
 	// JWT/Bot auth or let the read API issue credentials on its behalf.
 	publicationPeer := server.NewSkillHubPublicationPeerHandlerFromEnv(db)
@@ -1200,6 +1231,7 @@ func main() {
 	<-quit
 	log.Println("shutting down gracefully...")
 	stopPublicationDelivery()
+	stopCommitDispatch()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -543,8 +543,9 @@ Cloud must independently recompute hashes and enforce its effective limits.
 These store inputs are trusted internal facts, not a browser/model request DTO.
 
 Issuance requires current active human/active enabled Bot ownership and body,
-current durable connection generation, an uncancelled entry and a successful
-source-probe receipt. **A probe is not capture proof.** The future adapter must
+current durable connection generation, an uncancelled entry, a successful
+source-probe receipt and a matching retained capture receipt (see below).
+**A probe is not capture proof.** The future adapter must
 also check the live socket/body lease, capture capability, current workspace,
 safe private-copy provenance and actual exact bytes before calling this store.
 In particular, the store must not become a shortcut for arbitrary runtime files.
@@ -1022,7 +1023,346 @@ denial and historical replay after later cancellation/disablement. Receipt and
 human intent are explicitly seeded test facts, not real user approval or a full
 publication E2E. No Cloud package-writing worker is registered by this transport.
 
+## Cloud plan and execution transport
+
+`NewPublicationCommitCloudClient` is an explicit, default-off service client for
+Cloud's fixed `/api/skills/publication-delegations/commit` HTTPS endpoint. It
+supports `Plan`, `Authorize` and read-only `Read`. The original complete receipt
+must match configured issuer/audience. No browser/model identity or upload grant
+is substituted for service authentication; no caller URL, proxy fallback or
+redirect is followed. Replies are bounded to 8 KiB, headers to 8 KiB, calls to
+22 seconds and concurrent operations to four, with strict nested JSON/echo checks.
+
+`Plan` returns one exact frozen target and verifies candidate/confirmation
+binding. Its boolean is not human authorization. A trusted human admission
+adapter must independently validate authority and required confirmations and
+record that exact intent before `Authorize`. This transport does not write an
+intent, issue permits, retry work, register a Hub worker, read a browser account,
+or enable any production switch. Receipt access itself must be authorized by
+that future adapter; do not expose this client as a generic RPC/model tool.
+
+An authorize ACK distinguishes committing, queued, failed and published, but
+contains no package result. Only `Read` with a validated published result supplies
+the exact Skill/version/package/checksum/time. Held and cancelled observations
+cannot contain a permit or final result; post-commit observations must contain
+the frozen target and permit. Private source, internal proof and upstream error
+text are not exposed. Wire results are internal, not a user-facing projection.
+
+TLS tests cover scope, malformed/duplicate/null/extra fields, status consistency,
+untrusted certificates, redirect and response-loss failures, bounded concurrency
+and context cancellation. The race CI group explicitly includes CommitClient.
+The paired Cloud contract exercises this actual Go client against its real Node
+handler/coordinator/worker and both PostgreSQL adapters. Human intent and Runtime
+source probing remain test setup, not a live user publishing experience.
+
 ## Verification
+
+### Human publication confirmation
+
+An independently default-off `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`
+registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with three
+actions. It uses the existing fixed issuer, Cloud audience and dedicated peer
+secret configuration. It is not a model/RPC tool and cannot use Bot/API-key or
+service credentials in place of the active original human's Bearer JWT.
+
+- `POST plan` takes exactly `{schemaVersion:1,confirmVersionPublish:boolean}`.
+  The server loads the original retained receipt, checks current Bot ownership,
+  body and enabled state, and obtains the immutable Cloud plan. The response
+  displays only Skill ID, version, publisher namespace, the version choice and a
+  `confirmationKey` bound to the complete plan and receipt. Planning never writes
+  human intent. A required new-version confirmation returns 409, not auto-approval.
+- `POST confirm` takes exactly `{schemaVersion:1,confirmationKey:string}`. It
+  retrieves the current immutable Cloud target independently; the caller cannot
+  send receipt, target, publisher, source, permit or actor fields. A changed key
+  returns 409. The exact human action is recorded by the existing SQL transaction,
+  which rechecks current authority and serializes against cancellation; only
+  after this commit is Cloud authorization attempted. The key is a content
+  binding, not a bearer credential or proof of authority by itself.
+- `GET status` has no body/query and reads verified execution state and, only
+  when published, Skill/version/package/checksum/time. Original active-human
+  privacy survives Bot ownership transfer; new owners do not inherit history.
+  Internal receipt/permit IDs, paths and manifest hashes are never projected.
+
+Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
+if its ACK claims published. Only verified status supplies the final result.
+Timeout/lost reply after intent recording is uncertain, not proof of rollback:
+read status, then retry the same entry/key if appropriate. No new version or
+intent is created by exact replay. A missing receipt means acceptance has not
+been observed, not that uploading never happened.
+
+Four calls may be in flight, with bounded per-actor/entry rates, a 2 KiB body,
+five-second body deadline and a 55-second operation context. Slots remain held
+until the actual call settles. Responses recheck original-account access after
+peer IO. Errors are static and private/no-store; no upstream SQL/content/token
+is returned. Cookies are not authentication; incidental browser cookies are
+ignored. Duplicate/unknown/null fields and malformed paths fail closed.
+
+This slice handles publication of an already accepted immutable candidate; it
+does not approve semantic repairs or synthesize description text. Future repair
+revisions require their own exact draft confirmation before being eligible for
+this publication step. No UI, Runtime capture/upload or automatic CatsCo intent
+dispatch is enabled. Cloud's separately gated delegated scheduler can execute
+only commits for which authorization already completed. Keep all new production
+switches off until isolated end-to-end acceptance.
+
+Tests cover signed human JWTs, exact plan binding, privacy, authority changes,
+cancel/deny/write failure, lost-reply replay, result consistency and concurrency.
+The existing required PostgreSQL peer test also drives the human handler over
+real TLS/JWT/PostgreSQL, with a synthetic Cloud plan/status adapter and a forced
+execution-call failure; it verifies durable exact intent before actual peer
+permit recovery. The separate dual-store contract tests real Cloud and CatsCo
+clients/handlers. Neither test is represented as a live UI/Runtime E2E.
+
+### Durable delivery of confirmed publication intents
+
+`CATSCO_SKILLHUB_PUBLICATION_COMMIT_DISPATCH_ENABLED` defaults off. When enabled,
+the server starts an independent bounded worker using the dedicated publication
+issuer, Cloud audience and peer secret. It requires the PostgreSQL adapter and
+migration 000041 (also mirrored in startup DDL), the Cloud commit service and
+CatsCo permit service. It does not enable human admission or Cloud execution.
+
+The existing immutable human intent is queue admission. Receipts alone never
+qualify, and the worker never calls plan, records intent or issues a permit.
+Existing confirmed intents become eligible only when this switch is explicitly
+enabled; the migration itself backfills neither intents nor delivery records.
+Each worker iteration claims one due intent, then waits five seconds. Database
+leases last 90 seconds; transport operations have a 60-second budget with at most
+four concurrent calls, and finish bookkeeping has an independent five-second
+budget after request cancellation. Multiple instances share fenced SQL leases.
+
+The worker reads Cloud first, compares the exact frozen target, and authorizes
+only the same held target. A committed observation or acknowledgement is retained
+as `accepted` only with a matching local permit. This means delivery accepted,
+**not published**; the existing human status route verifies final execution.
+Historical permit recovery does not require a live Bot/current Owner, but first
+permit issuance still rechecks authority and serializes against cancellation.
+
+Transient failures retry with durable backoff, at most eight transport attempts
+(distinct from three Cloud publishing attempts and three bounded format-repair rounds).
+Cancellation, denied authority, target conflict and missing task stop in
+`needs_attention`; budget depletion is `exhausted`. These states mean automatic
+delivery stopped, not proof that an uncertain remote commit rolled back. Terminal
+evidence cannot be reset/deleted. The original active human can read the private
+store projection; this PR adds no UI/status endpoint for delivery bookkeeping.
+
+An empty down migration is idempotent and atomic; populated rollback refuses.
+Tests cover lease races, expiry, lost replies, reopen, write rollback, bounded
+attempts, privacy and terminal retention. The required PostgreSQL/TLS peer test
+uses real human admission and permit requests with an explicitly synthetic Cloud
+observation adapter. It verifies dispatcher recovery after a lost permit reply,
+unchanged permit identity and cancellation-first refusal, not live Runtime upload.
+Production switches remain off pending isolated end-to-end acceptance.
+
+## Immutable runtime capture evidence
+
+### Internal authenticated capture transport
+
+`Hub.CaptureSkillHubPublication(ctx, actorUID, entryID)` is an internal Go service
+operation. It does not register an HTTP/browser/model endpoint or scheduler.
+It is disabled unless both the existing workspace-entry gate and
+`CATSCO_SKILLHUB_PUBLICATION_CAPTURE_ENABLED=true` are set at Hub construction.
+No production enablement is part of this change. A future lifecycle-bound
+dispatcher must call it explicitly with an already accepted entry.
+
+The transport reads the original actor, Bot and source from admission, requires
+a persisted successful source probe, and resolves the current authenticated
+node-local Bot socket, device, body lease, installation and durable connection
+generation. Reconnect may advance the generation but cannot move the source.
+The runtime must advertise `skillhub.publication.capture.v1` in addition to the
+probe capability. Old runtimes and remote-node routes fail closed.
+
+Each request has a server-generated `pubcapture_` ID. Its only payload fields
+are `entry_id`, `bot_uid`, `local_skill_id` and `workspace_generation`; the owner
+and device envelope is derived from the authenticated route. It never carries
+paths, file contents, upload tokens or a publication confirmation. The reserved
+`skillhub.publication.*` namespace remains rejected for generic client requests.
+Both source selectors are opaque references under the admission/store/schema
+contract (`^[A-Za-z0-9._:-]{1,128}$`) and are forwarded unchanged. For example,
+`local-skill-1` / `workspace-v1` remains valid here; this transport does not require
+a `pubsrc-` prefix or interpret a workspace generation as a digest. The runtime
+must still verify that these selectors identify its admitted source.
+The expected result has exactly six fields matching XiaoBa's retained receipt:
+`schemaVersion:1`, `entryId`, `candidateRevision:1`, `requestHash`,
+`sourceSnapshotHash`, `requestBytes`. Digests must be lowercase SHA256 and bytes
+must be an integer from 1 to 32 MiB, the current runtime transport ceiling.
+This does not lower the store's independent 75 MiB authority ceiling below.
+
+Only the exact authenticated runtime can claim the pending response. Owner
+sessions, other sockets, late/unknown IDs, mixed errors/results, extra fields
+and mismatched owner/device/tool/entry facts cannot supply capture evidence.
+The read loop queues only validated scalar facts and performs no DB work;
+the calling goroutine rechecks live authority before recording. Duplicate replies
+cannot replace a queued/in-flight write. Reserved late replies never fall through
+to generic routing/logging. The ack is 200 only after the store succeeds; it is
+not an upload or publication receipt. A returned record may describe the original
+connection after a legitimate reconnect; it is historical evidence, never current
+upload authority by itself.
+
+There are eight operation slots per Hub, one operation per entry and a maximum
+25-second deadline bounded by the caller's context. Sending is nonblocking and
+never disconnects a Bot for backpressure. There is no automatic retry or new
+durable attempt budget: future orchestration must provide bounded scheduling and
+recovery. A process loss can leave a private runtime capture, but no inferred DB
+receipt; a new authenticated request must return the same retained candidate.
+Cancellation can race with local capture, but store checks reject its late receipt
+and this operation never grants upload authority.
+
+Tests cover opaque selector pass-through, invalid admission references, strict
+receipt digests/byte bounds, bounded dispatch, spoof/malformed/duplicate/late replies, owner and
+generation changes, cancellation, disabled/legacy runtimes and a blocked database
+without blocking the socket read loop. The mandatory PostgreSQL contract uses
+real Hub routing and storage across adapter/reconnect reconstruction, candidate
+substitution and cancellation. Its runtime peer is synthetic; the XiaoBa RPC
+consumer, durable capture scheduler and upload-grant delivery remain to be wired
+before live three-repository acceptance or production enablement.
+
+Migration 000043 adds a retained capture receipt per entry, distinct from the
+read-only `source_verified` probe. It stores candidate revision 1, request SHA256,
+Cloud candidate SHA256, exact request byte count (at most 75 MiB, matching grants), and the
+observed route generation/node/socket with a database timestamp. It stores no
+files, local paths, upload secrets or model content. UPDATE, DELETE and populated
+down migrations are rejected; startup/up never infer evidence from old probes
+or grants.
+
+The capture migration was renumbered from 000042 to 000043 after PR674 merged:
+the independently merged session-fork migration already owns 000042. The capture
+up/down SQL is unchanged. Applying 000043 to a table already created by startup
+DDL preserves retained receipts and grants, and populated rollback remains
+forbidden. No migration ledger is reset or forced. SQL-only installations that
+manually recorded the old capture-only 000042 must check that the session-fork
+schema is also present; a version number alone cannot identify which colliding
+file was applied. Normal startup initializes both schemas idempotently.
+
+This is the CatsCo metadata/authority contract, not a promise that every runtime
+or transport can upload 75 MiB. Capture validation aliases
+`SkillHubPublicationUploadMaxBytes`; migration 000043 and startup DDL use the same
+78,643,200-byte ceiling. No candidate in the previously valid (32 MiB, 75 MiB]
+range is silently stranded between recording its receipt and issuing its grant.
+
+The separate XiaoBa implementation currently has a smaller limit. In merged
+[XiaoBa PR541](https://github.com/buildsense-ai/XiaoBa-CLI/pull/541),
+[`publication-upload.ts`](https://github.com/buildsense-ai/XiaoBa-CLI/blob/d7b3cbdea91bc300a0a5b3008cee51b83c0fc760/src/skillhub/publication-upload.ts#L46)
+rejects a grant request body larger than 32 MiB;
+[`publication-capture.ts`](https://github.com/buildsense-ai/XiaoBa-CLI/blob/d7b3cbdea91bc300a0a5b3008cee51b83c0fc760/src/skillhub/publication-capture.ts#L24)
+limits the serialized private envelope to 32 MiB (including envelope overhead,
+not just the HTTP request body). Those are runtime implementation limits, not
+CatsCo protocol constants. This PR does not increase them or Cloud's configured
+HTTP body limit, and does not claim end-to-end support for 75 MiB. A future
+dispatcher must respect the effective runtime/Cloud limits before issuing work.
+
+`RecordSkillHubPublicationCapture` is an **internal store API**, not a public
+HTTP/RPC endpoint. The internal Hub capture transport correlates a response
+with its own outstanding request and rechecks the exact live Bot socket, device,
+body lease and installation before calling it. The database independently checks
+the original active human, Bot ownership/enabled state, immutable source selector
+and durable connection generation, under the same entry lock used by cancellation
+and grant issuance. A probe alone does not prove that an immutable envelope exists.
+
+First capture freezes the candidate. Exact replay, including an authenticated
+reconnect of the same source, returns the original evidence and time. New bytes,
+digests, device/body/installation, generation rollback or same-generation socket
+substitution cannot replace it. Replays still check current authority and reject
+cancelled entries. Source files are not copied, modified, executed or deleted by
+CatsCo.
+
+New upload grants and renewals now require that stored receipt and matching
+digests/size/revision/binding. Pre-042 grants are not retroactively converted into
+evidence: an unexpired grant remains introspectable until its original expiry,
+subject to the existing authority checks; renewal requires an actual matching
+capture receipt. A late receipt cannot contradict a candidate already frozen in
+a legacy grant. No new grants are backfilled or automatically issued.
+
+Tests explicitly seed trusted-runtime receipts where an upload is required;
+source-probe dispatch tests are **not** live capture tests. The Cloud commit-peer
+contract fixture must likewise record its actual captured digests when its CatsCo
+pin advances past this change. Authenticated Runtime capture RPC is implemented
+in XiaoBa PR546. The default-off scheduler below consumes that capability;
+upload grant delivery and complete isolated publishing acceptance remain separate
+work. No production flag, capability or UI is enabled here.
+
+### Durable capture scheduling
+
+`CATSCO_SKILLHUB_PUBLICATION_CAPTURE_DISPATCH_ENABLED` is a separate default-off
+gate. A worker is started only on the final server Hub, with an enabled capture
+transport (which also requires the workspace-entry and capture gates). Shutdown
+cancels and joins its goroutines. Unsupported stores have no in-memory fallback.
+No deployment configuration enables this gate.
+
+Every sweep visits up to 16 local Bots in rotating order, selects at most eight
+tasks, and uses at most four concurrent workers. A sweep is followed by a
+five-second pause. Selection has its own five-second deadline. Only the exact
+online owner/Bot/device/body/installation with capture capability is considered;
+offline or unsupported runtimes consume no attempt. SQL applies that scope
+before LIMIT and accepts only verified sources lacking immutable capture evidence.
+Each claim and receipt independently rechecks current authority.
+
+Migration 000044 and startup DDL add a separate durable capture-delivery ledger.
+An entry row lock serializes claims with cancellation and capture recording.
+Each claim has a fresh token, exact route binding, attempt and 40-second lease.
+The transport still has a 25-second deadline; the caller reserves five seconds
+before lease expiry for settlement. Retry backoff starts at five seconds and is
+exponential, capped at five minutes. At most eight transport attempts survive
+restarts; this is **not** the three-round format-repair budget.
+
+Only well-formed, bound runtime busy/timeout errors are transient. Malformed
+receipts and source/security rejections stop at `needs_attention`; raw runtime
+messages never enter the ledger or logs. Route loss and database/network failures
+are bounded retries. A stale finisher cannot change another lease. A persisted
+capture always removes the entry from scheduling, even if the process died before
+marking the lease finished. No source probe, successful send or timeout can
+fabricate capture evidence. Populated rollback refuses to erase retry history.
+
+Internal diagnostics use `skillhub_publication_capture_deliveries` for attempts
+and fixed codes and `skillhub_publication_captures` for authoritative evidence.
+If evidence exists, a stale `leased` diagnostic row only means the finishing ACK
+was lost. These internal states are not a published Skill, Cloud task, upload
+authorization or user-facing completion. Do not enable this worker as a
+standalone user release.
+
+### Capture status and dedicated upload delivery
+
+`GET /api/skillhub/publications/entries/{id}/capture-status` shares the existing
+private human read gate and per-entry polling budget. The capabilities response
+adds `captureStatusReadsEnabled`. Only the original active human reads history,
+including after Bot transfer; the new Owner cannot inherit it. Projection is
+strictly limited to stage, bounded attempts, fixed code and relevant timestamps.
+Cancellation wins, then actual immutable capture evidence, then scheduler state:
+`waiting_source`, `waiting_runtime`, `capturing`, `recovery_wait`, `retry_wait`,
+`needs_user_action`, `captured`, `cancelled`. A lost scheduler settlement cannot
+hide an already persisted capture. `captured` never means uploaded or published.
+
+Internal `Hub.UploadSkillHubPublication` requires
+`CATSCO_SKILLHUB_PUBLICATION_UPLOAD_ENABLED=1` (default off), the capture/probe
+transport, a runtime advertising `skillhub.publication.upload.v1`, and distinct
+canonical HTTPS `CATSCO_SKILLHUB_PUBLICATION_ISSUER` /
+`CATSCO_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE`. All identities/selectors are read
+from the admitted entry and current same-node authenticated runtime. Capture
+evidence is read under live DB authority; grant issuance independently checks
+it again, with the existing 120-second TTL, eight epochs and renewal cooldown.
+
+The reserved `pubuploadrpc_` request carries exactly `entry_id`, `bot_uid`,
+`local_skill_id`, `workspace_generation` and an upload-only `grant`. The latter
+binds issuer/audience/action, entry/revision/epoch, Bot/Owner/body/install,
+request hash/candidate hash/bytes, stable idempotency key, token and expiration.
+The bearer goes only to that socket, not to model tools, browser, generic
+forwarding, pending metadata, Redis or logs. Four operation slots, one operation
+per entry and a 55-second total deadline bound delivery. Reconnect may use the
+same frozen source, but same-generation socket substitution is rejected.
+
+Runtime result is exactly `{schemaVersion:1,entryId,authorityEpoch,accepted:true}`.
+Spoofed, late, extra-field and mismatched replies cannot succeed. Temporary
+busy/timeout/unavailable/inactive and `BOT_NOT_ACTIVE`/`REQUEST_EXPIRED` remain
+retryable for a future bounded coordinator; other failures are rejected. There
+is no upload scheduler or browser entry point in this slice. Runtime ACK is
+untrusted: it never writes Cloud acceptance, changes entry state or publishes.
+The independently authenticated Cloud receipt remains authoritative. Uncertain
+delivery must later reconcile the same entry/key, never silently recapture.
+
+Tests include real PostgreSQL restart/lease/exhaustion/migration checks and a
+real Hub plus PostgreSQL scheduler round trip with a **simulated runtime reply**.
+That contract covers busy → persisted backoff → rebuilt dispatcher → capture,
+not deployed XiaoBa upload or full publishing acceptance. CI runs the dispatcher
+and PostgreSQL cases with the race detector.
 
 Pure store tests cover bounded inputs, policies and immutable identity fields.
 HTTP tests use real signed JWTs and adapter doubles to cover active-human-only

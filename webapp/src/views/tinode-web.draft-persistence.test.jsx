@@ -73,8 +73,8 @@ vi.mock('../utils/theme-access', () => ({
 }));
 
 vi.mock('./sidepanel-view', () => ({
-  default: ({ additionalSidebarTools, onSelectTopic, onStartAgentTask, onOpenCloudArtifacts }) => (
-    <nav>
+  default: ({ activeTopic, additionalSidebarTools, onSelectTopic, onStartAgentTask, onOpenCloudArtifacts }) => (
+    <nav data-visible-topic={activeTopic || ''}>
       {additionalSidebarTools}
       <button
         type="button"
@@ -99,7 +99,11 @@ vi.mock('./sidepanel-view', () => ({
 }));
 
 vi.mock('./skillhub-view', () => ({
-  default: () => <main data-testid="skillhub-view">SkillHub</main>,
+  default: ({ viewStateRef }) => { mocks.skillHubViewStateRef = viewStateRef; return <main data-testid="skillhub-view">SkillHub</main>; },
+}));
+
+vi.mock('./apps-view', () => ({
+  default: ({ viewStateRef }) => { mocks.appsViewStateRef = viewStateRef; return <main data-testid="apps-view">应用</main>; },
 }));
 
 vi.mock('./messages-view', () => ({
@@ -177,7 +181,7 @@ vi.mock('../widgets/relay-access-modal', () => ({
 }));
 
 import TinodeWeb from './tinode-web';
-import { api } from '../api';
+import { api, sendWSActiveTopic } from '../api';
 import { readComposerInputDraft, readComposerAttachmentDraft, writeComposerAttachmentDraft } from '../utils/composer-draft-storage';
 import { workspaceOnboardingStorageKey } from '../utils/workspace-onboarding';
 
@@ -251,6 +255,29 @@ function setCachedUser(createdAt) {
   mocks.getMe.mockResolvedValue(profile);
   localStorage.setItem('oc_user', JSON.stringify(profile));
 }
+
+test('only marks the displayed conversation active and retains each tool browse state', async () => {
+  await act(async () => renderWorkspace());
+  await selectTestConversation();
+  expect(container.querySelector('nav').dataset.visibleTopic).toBe('p2p_1_2');
+  expect(sendWSActiveTopic).toHaveBeenLastCalledWith('p2p_1_2');
+  for (const [label, refKey] of [['打开应用', 'appsViewStateRef'], ['打开 SkillHub', 'skillHubViewStateRef']]) {
+    await act(async () => container.querySelector(`[aria-label="${label}"]`).click());
+    expect(container.querySelector('nav').dataset.visibleTopic).toBe('');
+    expect(sendWSActiveTopic).toHaveBeenLastCalledWith('');
+    const holder = mocks[refKey];
+    expect(holder).toBeTruthy();
+    holder.current = { query: 'saved browse query' };
+    await selectTestConversation();
+    expect(container.querySelector('nav').dataset.visibleTopic).toBe('p2p_1_2');
+    expect(sendWSActiveTopic).toHaveBeenLastCalledWith('p2p_1_2');
+    await act(async () => container.querySelector(`[aria-label="${label}"]`).click());
+    expect(mocks[refKey]).toBe(holder);
+    expect(mocks[refKey].current.query).toBe('saved browse query');
+    await selectTestConversation();
+  }
+  expect(mocks.appsViewStateRef).not.toBe(mocks.skillHubViewStateRef);
+});
 
 test('shows the onboarding card once for a new account entering the workspace', async () => {
   setCachedUser('2026-09-18T00:00:01Z');

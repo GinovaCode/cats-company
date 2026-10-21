@@ -483,6 +483,7 @@ type Topic struct {
 // Message represents a chat message.
 type Message struct {
 	ID            int64                  `json:"id"`
+	ReplyTo       int64                  `json:"reply_to,omitempty"`
 	TopicID       string                 `json:"topic_id"`
 	FromUID       int64                  `json:"from_uid"`
 	Content       string                 `json:"content,omitempty"`
@@ -929,6 +930,8 @@ type BotDefinition struct {
 	Model  BotDefinitionModel   `json:"model"`
 	Prompt *BotPromptDefinition `json:"prompt,omitempty"`
 	Skills []BotSkillRef        `json:"skills"`
+	// ServiceAgents 是本 Agent 可调用的 CatsCo 定制 Agent（slug）；缺省=nil 表示不过滤。
+	ServiceAgents []string `json:"serviceAgents,omitempty"`
 }
 
 // BotDefinitionRuntime tracks application progress without polluting the

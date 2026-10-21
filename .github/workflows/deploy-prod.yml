@@ -1,27 +1,47 @@
 name: Deploy Docker Prod
+run-name: Deploy production ${{ github.event.workflow_run.head_sha }}
 
 on:
   workflow_run:
-    workflows: ["Deploy Docker Test"]
+    workflows: ["CI", "Deploy Docker Test"]
+    branches: ["main"]
     types:
       - completed
 
 permissions:
   contents: read
-
-concurrency:
-  group: cats-company-deploy-prod
-  cancel-in-progress: true
+  actions: read
 
 jobs:
+  release-gate:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+      revision: ${{ steps.gate.outputs.revision }}
+    steps:
+      - name: Checkout trusted release gate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - name: Require CI and test deployment for the same revision
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/check-prod-release.py
+
   deploy-prod:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') }}
+    needs: release-gate
+    if: ${{ needs.release-gate.outputs.ready == 'true' }}
     runs-on: ubuntu-latest
     environment: prod
+    concurrency:
+      group: cats-company-deploy-prod
+      cancel-in-progress: false
     env:
       PROD_STACK_ROOT: /srv/catscompany-prod
       DEPLOY_CACHE_ROOT: /srv/catscompany-build-cache
-      IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+      IMAGE_TAG: ${{ needs.release-gate.outputs.revision }}
       CATSCO_ARTIFACT_INDEX_URL: https://logs.catsco.fun:9000/artifacts/artifacts-index.json
       CATSCO_ARTIFACT_MANAGEMENT_URL: https://logs.catsco.fun:9000/internal/artifacts
       CATSCO_ARTIFACT_NODES_JSON: ${{ vars.CATSCO_ARTIFACT_NODES_JSON }}
@@ -30,12 +50,25 @@ jobs:
       CATSCO_WORKER_PUBLIC_PROFILE_JSON: ${{ vars.CATSCO_WORKER_PUBLIC_PROFILE_JSON }}
 
     steps:
-      - name: Checkout tested revision
+      - name: Checkout trusted release gate
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
+
+      - name: Recheck release after waiting for production
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/check-prod-release.py
+
+      - name: Checkout tested revision
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-gate.outputs.revision }}
 
       - name: Prepare SSH key
+        if: steps.gate.outputs.ready == 'true'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
@@ -46,6 +79,7 @@ jobs:
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Upload prod stack files
+        if: steps.gate.outputs.ready == 'true'
         timeout-minutes: 8
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
@@ -113,6 +147,8 @@ jobs:
           fi
 
       - name: Deploy prod stack
+        id: deploy
+        if: steps.gate.outputs.ready == 'true'
         timeout-minutes: 45
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
@@ -207,7 +243,7 @@ jobs:
           EOF
 
       - name: Roll back prod stack on failure
-        if: failure()
+        if: ${{ failure() && steps.deploy.outcome == 'failure' }}
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -222,7 +258,7 @@ jobs:
           ssh ${SSH_OPTS} "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} sudo -n -E bash ${PROD_STACK_ROOT}/compose/remote-rollback.sh ${PROD_STACK_ROOT} || true"
 
       - name: Dump prod status on failure
-        if: failure()
+        if: ${{ failure() && steps.gate.outputs.ready == 'true' }}
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |

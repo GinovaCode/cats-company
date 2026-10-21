@@ -4,6 +4,7 @@ import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Loader2, Sett
 import { api } from '../api';
 import {
   formatRelayUsagePill,
+  reasoningEffortLabel,
   relayUsageTone,
   resolveConversationModelDisplay,
 } from '../utils/relay-usage';
@@ -91,26 +92,14 @@ function resolveModelHeaderDisplay(config, fallbackDisplay) {
   }
 
   const modelID = selection.model_id || '';
-  const reasoningEffort = selection.reasoning_effort || '';
+  const model = config?.models?.find((entry) => entry.id === modelID)?.label
+    || modelID || fallbackDisplay?.model || '未知模型';
+  const reasoningEffort = reasoningEffortLabel(selection.reasoning_effort);
   return {
-    model: modelID || fallbackDisplay?.model || '未知模型',
+    model,
     meta: reasoningEffort,
-    title: `${modelID || fallbackDisplay?.model || '未知模型'}${reasoningEffort ? `；推理强度 ${reasoningEffort}` : ''}`,
+    title: `${model}${reasoningEffort ? `；推理强度 ${reasoningEffort}` : ''}`,
   };
-}
-
-function reasoningEffortLabel(effort) {
-  const labels = {
-    none: 'none · 关闭推理',
-    minimal: 'minimal · 极低',
-    low: 'low · 低',
-    medium: 'medium · 中',
-    high: 'high · 高',
-    xhigh: 'xhigh · 极高',
-    max: 'max · 最大',
-    disabled: 'disabled · 关闭推理',
-  };
-  return labels[effort] || effort;
 }
 
 export function formatModelContextWindowTokens(tokens) {
@@ -413,11 +402,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         ? formatModelContextWindowTokens(displayedCatalogModel.context_window_tokens)
         : ''
     : '';
-  const headerReasoning = String(cloudSelectionActive
+  const headerReasoning = reasoningEffortLabel(cloudSelectionActive
     ? displayedSelection.kind === 'custom'
       ? modelConfig?.custom?.reasoning_effort || ''
       : displayedSelection.reasoning_effort || displayedCatalogModel?.default_reasoning_effort || ''
-    : agentModelState?.summary?.reasoning_effort || '').trim();
+    : agentModelState?.summary?.reasoning_effort || '');
   const applyState = runtimeUnavailable
     ? '暂时无法切换'
     : savingKey
@@ -567,7 +556,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const hasVision = available && model.vision === true;
                 const hasOptions = hasReasoning || hasVision;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
-                const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
+                const modelLabel = model.label || model.id;
                 const defaultReasoningEffort = model.default_reasoning_effort || efforts[0] || '';
 
                 return (
@@ -595,8 +584,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                       disabled={transitioning || !available}
                     >
                       <span>
-                        <strong>{model.label}</strong>
-                        <small>{[contextWindow ? `上下文 ${contextWindow}` : '', model.description].filter(Boolean).join(' · ')}</small>
+                        <strong>{modelLabel}</strong>
                         <small className={`v3-model-menu-quota ${available ? modelQuotaTone(model.quota) : 'muted'}`.trim()}>
                           {available
                             ? modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)
@@ -606,7 +594,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                       {hasOptions ? <ChevronRight size={15} /> : selected && <Check size={15} />}
                     </button>
                     {hasOptions && expandedModelID === model.id && (
-                      <div className="v3-model-reasoning-menu" role="menu" aria-label={`${model.label} 模型能力`}>
+                      <div className="v3-model-reasoning-menu" role="menu" aria-label={`${modelLabel} 模型能力`}>
                         {hasReasoning && (
                           <>
                             <div className="v3-model-reasoning-title">推理强度</div>
@@ -634,7 +622,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                             <div
                               className="v3-model-reasoning-item is-readonly"
                               role="note"
-                              aria-label={`${model.label} 视觉理解`}
+                              aria-label={`${modelLabel} 视觉理解`}
                             >
                               <span>视觉理解 · 图片输入自动启用</span>
                               <Check size={14} aria-hidden="true" />

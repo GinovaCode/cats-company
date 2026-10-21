@@ -142,10 +142,18 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
+		migrateServiceAgentsAddOwnership,
+		migrateServiceAgentsAddOwnerUID,
+		migrateServiceAgentsAddVisibility,
+		createServiceAgentsOwnerIndex,
 		migrateServiceRunsClientTokenNullable,
 		migrateServiceRunsClientTokenBackfill,
 		migrateServiceRunReceiptsPendingIndex,
 		migrateServiceRunsCreatedAtIndex,
+		createServiceRunLedgerTable,
+		// 000047：已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列。
+		migrateServiceRunLedgerAddBillingState,
+		migrateServiceRunLedgerBillingStateIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -158,7 +166,7 @@ func (a *Adapter) CreateSchema() error {
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
 	}
-	return nil
+	return a.ensureSessionForkSchema()
 }
 
 func (a *Adapter) ensureChannelAgentBindingUniqueIncludesAgent() error {
@@ -502,6 +510,23 @@ const migrateServiceAgentVersionsAddPackageJson = `
 ALTER TABLE service_agent_versions ADD COLUMN package_json JSON DEFAULT NULL;
 `
 
+// 归属与可见性（设计 §4.3 P2）：internal=平台/运维发布，user=用户自助上架。
+const migrateServiceAgentsAddOwnership = `
+ALTER TABLE service_agents ADD COLUMN owner_kind VARCHAR(16) NOT NULL DEFAULT 'internal';
+`
+
+const migrateServiceAgentsAddOwnerUID = `
+ALTER TABLE service_agents ADD COLUMN owner_uid BIGINT NOT NULL DEFAULT 0;
+`
+
+const migrateServiceAgentsAddVisibility = `
+ALTER TABLE service_agents ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT 'public';
+`
+
+const createServiceAgentsOwnerIndex = `
+CREATE INDEX idx_service_agents_owner ON service_agents (owner_uid);
+`
+
 const createServiceAgentVersionsAssetsHashIndex = `
 CREATE INDEX idx_service_agent_versions_assets_hash ON service_agent_versions (assets_hash);
 `
@@ -619,6 +644,50 @@ CREATE TABLE IF NOT EXISTS service_run_receipts (
 const migrateServiceRunReceiptsPendingIndex = `
 CREATE INDEX idx_service_run_receipts_pending ON service_run_receipts (delivered_at, created_at);
 `
+
+// run 级账本（000046 / 设计 §4.5）：谁调用谁付费、按量计费。
+const createServiceRunLedgerTable = `
+CREATE TABLE IF NOT EXISTS service_run_ledger (
+    run_id VARCHAR(64) NOT NULL,
+    session_id VARCHAR(64) NOT NULL,
+    agent_id BIGINT NOT NULL,
+    agent_slug VARCHAR(64) NOT NULL,
+    owner_kind VARCHAR(16) NOT NULL DEFAULT 'internal',
+    owner_uid BIGINT NOT NULL DEFAULT 0,
+    caller_uid BIGINT NOT NULL,
+    caller_bot_uid BIGINT NOT NULL DEFAULT 0,
+    runner_type VARCHAR(16) NOT NULL DEFAULT 'codex',
+    status VARCHAR(16) NOT NULL,
+    prompt_tokens BIGINT NOT NULL DEFAULT 0,
+    completion_tokens BIGINT NOT NULL DEFAULT 0,
+    duration_ms BIGINT NOT NULL DEFAULT 0,
+    pricing_json JSON NULL DEFAULT NULL,
+    currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    gross_micros BIGINT NOT NULL DEFAULT 0,
+    fee_micros BIGINT NOT NULL DEFAULT 0,
+    net_micros BIGINT NOT NULL DEFAULT 0,
+    payer_uid BIGINT NOT NULL DEFAULT 0,
+    payee_uid BIGINT NOT NULL DEFAULT 0,
+    billing_state VARCHAR(24) NOT NULL DEFAULT 'free',
+    finished_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (run_id),
+    KEY idx_service_run_ledger_payer (payer_uid, finished_at),
+    KEY idx_service_run_ledger_payee (payee_uid, finished_at),
+    KEY idx_service_run_ledger_agent (agent_id, finished_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 结算状态（000047）：free / settled_platform / pending_credit。
+// 历史库的 service_run_ledger 建表时还没有这一列，CREATE TABLE IF NOT EXISTS
+// 不会补列，必须显式 ALTER；重复列错误由 isIgnorableMigrationError 吞掉。
+// 注意：go-sql-driver 不开 multiStatements，每条迁移只能是一句 SQL，
+// 所以 ALTER 与建索引必须拆成两个常量。
+const migrateServiceRunLedgerAddBillingState = `
+ALTER TABLE service_run_ledger ADD COLUMN billing_state VARCHAR(24) NOT NULL DEFAULT 'free';`
+
+const migrateServiceRunLedgerBillingStateIndex = `
+CREATE INDEX idx_service_run_ledger_pending ON service_run_ledger (payer_uid);`
 
 // 应用目录订阅清单（PG 000034 镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
 const createServiceAgentSubscriptionsTable = `

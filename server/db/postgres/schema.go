@@ -44,6 +44,10 @@ func (a *Adapter) CreateSchema() error {
 		createSkillHubPublicationCancellationIntentsTable,
 		createSkillHubPublicationCancellationDeliveriesTable,
 		createSkillHubPublicationCommitTables,
+		createSkillHubPublicationCommitDeliveriesTable,
+		createSkillHubPublicationCapturesTable,
+		createSkillHubPublicationCaptureDeliveriesTable,
+		createSkillHubPublicationUploadDeliveriesTable,
 		createBotInviteCodesTable,
 		createBotSkillMutationsTable,
 		migrateBotSkillMutationsAddActivationFacts,
@@ -144,6 +148,8 @@ func (a *Adapter) CreateSchema() error {
 		createServiceAgentVersionsTable,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
+		migrateServiceAgentsAddOwnership,
+		createServiceAgentsOwnerIndex,
 		createServiceSessionsTable,
 		createServiceRunsTable,
 		migrateServiceRunsClientTokenNullable,
@@ -153,6 +159,12 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunsCreatedAtIndex,
 		createServiceRunReceiptsTable,
 		createServiceRunReceiptsPendingIndex,
+		createServiceRunLedgerTable,
+		// 000047：已存在的 service_run_ledger 不会被 CREATE TABLE IF NOT EXISTS
+		// 补列，必须显式 ALTER，否则下面的部分索引引用 billing_state 会让整个
+		// schema 初始化 fatal（2026-10-21 生产部署因此崩溃回滚）。
+		migrateServiceRunLedgerAddBillingState,
+		createServiceRunLedgerIndexes,
 		createServiceAgentSubscriptionsTable,
 		seedServiceAgentsHello,
 		createUsersIndexes,
@@ -178,6 +190,9 @@ func (a *Adapter) CreateSchema() error {
 	}
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
+	}
+	if _, err := a.db.Exec(migrateSessionForks); err != nil {
+		return fmt.Errorf("session fork schema: %w", err)
 	}
 	return nil
 }
@@ -498,6 +513,17 @@ const createServiceAgentVersionsAssetsHashIndex = `
 CREATE INDEX IF NOT EXISTS idx_service_agent_versions_assets_hash
     ON service_agent_versions (assets_hash);`
 
+// 归属与可见性（设计 §4.3 P2）：internal=平台/运维发布，user=用户自助上架。
+const migrateServiceAgentsAddOwnership = `
+ALTER TABLE service_agents
+    ADD COLUMN IF NOT EXISTS owner_kind VARCHAR(16) NOT NULL DEFAULT 'internal',
+    ADD COLUMN IF NOT EXISTS owner_uid BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
+
+const createServiceAgentsOwnerIndex = `
+CREATE INDEX IF NOT EXISTS idx_service_agents_owner
+    ON service_agents (owner_uid);`
+
 const createServiceSessionsTable = `
 CREATE TABLE IF NOT EXISTS service_sessions (
     session_id VARCHAR(64) PRIMARY KEY,
@@ -593,7 +619,52 @@ const createServiceRunReceiptsPendingIndex = `
 CREATE INDEX IF NOT EXISTS idx_service_run_receipts_pending
     ON service_run_receipts (created_at) WHERE delivered_at IS NULL;`
 
-// 应用目录订阅清单（000034 编号迁移镜像；设计 §3.3-9："模式二：默认开放 + 个人清单"）。
+// run 级账本（000046 / 设计 §4.5）：谁调用谁付费、按量计费。
+const createServiceRunLedgerTable = `
+CREATE TABLE IF NOT EXISTS service_run_ledger (
+    run_id            VARCHAR(64) PRIMARY KEY,
+    session_id        VARCHAR(64) NOT NULL,
+    agent_id          BIGINT NOT NULL,
+    agent_slug        VARCHAR(64) NOT NULL,
+    owner_kind        VARCHAR(16) NOT NULL DEFAULT 'internal',
+    owner_uid         BIGINT NOT NULL DEFAULT 0,
+    caller_uid        BIGINT NOT NULL,
+    caller_bot_uid    BIGINT NOT NULL DEFAULT 0,
+    runner_type       VARCHAR(16) NOT NULL DEFAULT 'codex',
+    status            VARCHAR(16) NOT NULL,
+    prompt_tokens     BIGINT NOT NULL DEFAULT 0,
+    completion_tokens BIGINT NOT NULL DEFAULT 0,
+    duration_ms       BIGINT NOT NULL DEFAULT 0,
+    pricing_json      JSONB,
+    currency          VARCHAR(8) NOT NULL DEFAULT 'CNY',
+    gross_micros      BIGINT NOT NULL DEFAULT 0,
+    fee_micros        BIGINT NOT NULL DEFAULT 0,
+    net_micros        BIGINT NOT NULL DEFAULT 0,
+    payer_uid         BIGINT NOT NULL DEFAULT 0,
+    payee_uid         BIGINT NOT NULL DEFAULT 0,
+    billing_state     VARCHAR(24) NOT NULL DEFAULT 'free',
+    finished_at       TIMESTAMPTZ NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+
+// 结算状态（000047）：free / settled_platform / pending_credit。
+const migrateServiceRunLedgerAddBillingState = `
+ALTER TABLE service_run_ledger
+    ADD COLUMN IF NOT EXISTS billing_state VARCHAR(24) NOT NULL DEFAULT 'free';
+
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_pending
+    ON service_run_ledger (payer_uid) WHERE billing_state = 'pending_credit';`
+
+const createServiceRunLedgerIndexes = `
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_payer
+    ON service_run_ledger (payer_uid, finished_at DESC);
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_payee
+    ON service_run_ledger (payee_uid, finished_at DESC);
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_agent
+    ON service_run_ledger (agent_id, finished_at DESC);
+CREATE INDEX IF NOT EXISTS idx_service_run_ledger_pending
+    ON service_run_ledger (payer_uid) WHERE billing_state = 'pending_credit';`
+
 const createServiceAgentSubscriptionsTable = `
 CREATE TABLE IF NOT EXISTS service_agent_subscriptions (
     uid BIGINT NOT NULL,

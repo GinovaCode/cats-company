@@ -41,16 +41,33 @@ func NewServiceAgentCatalogHandler(st store.ServiceAgentStore) *ServiceAgentCata
 // NewServiceAgentCatalogHandlerFromEnv 按环境白名单构造（生产接线用）。
 func NewServiceAgentCatalogHandlerFromEnv(st store.ServiceAgentStore) *ServiceAgentCatalogHandler {
 	h := NewServiceAgentCatalogHandler(st)
-	for _, raw := range strings.Split(os.Getenv(serviceCatalogWhitelistEnv), ",") {
-		uid, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-		if err == nil && uid > 0 {
-			h.allowedUIDs = append(h.allowedUIDs, uid)
-		}
-	}
+	h.allowedUIDs = serviceCatalogAllowedUIDs()
 	return h
 }
 
 const serviceCatalogWhitelistEnv = "CATSCO_SERVICE_CATALOG_UID_WHITELIST"
+
+// serviceCatalogAllowedUIDs 解析白名单（逗号分隔；未配置/非法项忽略）。
+func serviceCatalogAllowedUIDs() []int64 {
+	var allowed []int64
+	for _, raw := range strings.Split(os.Getenv(serviceCatalogWhitelistEnv), ",") {
+		uid, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err == nil && uid > 0 {
+			allowed = append(allowed, uid)
+		}
+	}
+	return allowed
+}
+
+// serviceCatalogUIDAllowed 当前账号是否在 Agent 工具内测白名单内。
+func serviceCatalogUIDAllowed(uid int64) bool {
+	for _, id := range serviceCatalogAllowedUIDs() {
+		if id == uid {
+			return true
+		}
+	}
+	return false
+}
 
 func (h *ServiceAgentCatalogHandler) allows(uid int64) bool {
 	for _, id := range h.allowedUIDs {
@@ -83,6 +100,10 @@ type serviceCatalogEntry struct {
 	Version               int64  `json:"version"`
 	AsyncThresholdSeconds int    `json:"async_threshold_seconds,omitempty"`
 	Hidden                bool   `json:"hidden"`
+	// 归属与可见性（设计 P2）：mine=true 表示当前账号是发布者。
+	OwnerKind  string `json:"owner_kind,omitempty"`
+	Mine       bool   `json:"mine"`
+	Visibility string `json:"visibility,omitempty"`
 }
 
 // ensureAllowed 内测门：非白名单账号管理 API 一律 403（静默功能不存在）。
@@ -120,6 +141,10 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 	}
 	entries := make([]serviceCatalogEntry, 0, len(agents))
 	for _, agent := range agents {
+		// 可见性（设计 L2）：private 只进 owner 自己的目录。
+		if !store.ServiceAgentVisibleTo(agent, uid) {
+			continue
+		}
 		_, blocked := hidden[agent.ID]
 		entries = append(entries, serviceCatalogEntry{
 			Slug:                  agent.Slug,
@@ -127,6 +152,9 @@ func (h *ServiceAgentCatalogHandler) HandleCatalog(w http.ResponseWriter, r *htt
 			Version:               agent.Version,
 			AsyncThresholdSeconds: agent.AsyncThresholdSeconds,
 			Hidden:                blocked,
+			OwnerKind:             agent.OwnerKind,
+			Mine:                  agent.OwnerUID != 0 && agent.OwnerUID == uid,
+			Visibility:            agent.Visibility,
 		})
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"agents": entries})

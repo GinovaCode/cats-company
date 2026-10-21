@@ -51,7 +51,7 @@ describe('PwaDownloadLink', () => {
       await Promise.resolve();
     });
 
-    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/report.pdf', { credentials: 'include' });
+    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/report.pdf?download=1&name=report.pdf', { credentials: 'include' });
     expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(clickSpy).toHaveBeenCalled();
     expect(onDownloadStart).toHaveBeenCalledTimes(1);

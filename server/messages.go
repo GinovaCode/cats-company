@@ -84,6 +84,10 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req SendMessageRequest, beforeSave func() (func(), bool)) {
 	uid := UIDFromContext(r.Context())
 	req.TopicID = strings.TrimSpace(req.TopicID)
+	if code, text := sessionForkPublishError(h.db, req.TopicID); code != 0 {
+		writeJSON(w, code, map[string]string{"error": text})
+		return
+	}
 	if hasFileAnnotationsMetadata(req.Metadata) && !req.fileAnnotationsTrusted {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file_annotations require the dedicated annotation endpoint"})
 		return
@@ -716,6 +720,7 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
 		SeqID:         int(message.ID),
+		ReplyTo:       int(message.ReplyTo),
 		Content:       displayContent,
 		Type:          envelopeDisplayType,
 		MsgType:       message.MsgType,
@@ -745,6 +750,9 @@ func (h *Hub) historyAPIMessageForRecipient(recipientUID int64, message *types.M
 		"msg_type":   data.MsgType,
 		"metadata":   data.Metadata,
 		"created_at": message.CreatedAt,
+	}
+	if data.ReplyTo != 0 {
+		out["reply_to"] = data.ReplyTo
 	}
 	if len(data.ContentBlocks) > 0 {
 		out["content_blocks"] = data.ContentBlocks
@@ -1341,13 +1349,16 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	durable := isDurableAgentContextMessage(message, displayType)
 	eligible := durable
 	reason := "participant_message"
-	// Whether this is a peer's runtime traffic with nothing worth reading. This
-	// must use the fine-grained predicate, not `durable`: `durable` is false for
-	// any message that merely *contains* an internal block, so a peer's final
-	// answer wrapped as `thinking + assistant_text` counts as not-durable. Using
-	// it here would label that answer `other_agent_working`, and readers drop
-	// working traffic — silently losing the peer's actual reply. Only a message
-	// whose blocks are internal *and* carry no readable block is traffic.
+	// Whether this is a peer's runtime traffic with nothing worth reading. See
+	// isInternalAgentWorkingMessage for the predicate's full semantics — it is
+	// wider than "internal blocks with no readable block", because a working
+	// display type short-circuits the block scan.
+	//
+	// What this must NOT use is `durable`: it is false for any message that
+	// merely *contains* an internal block, so a peer's final answer wrapped as
+	// `thinking + assistant_text` counts as not-durable. Using it here would
+	// label that answer `other_agent_working`, and readers drop working traffic
+	// — silently losing the peer's actual reply.
 	peerWorking := isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks)
 	if message.FromUID == agentUID {
 		role = "assistant"
@@ -1525,7 +1536,14 @@ func (h *MessageHandler) mentionNamesForAgentContext(topicID string, identityUse
 		return nil
 	}
 	members, err := h.db.GetGroupMembers(groupID)
-	if err != nil || len(members) == 0 {
+	if err != nil {
+		// A failed lookup and an empty group are different problems: the first
+		// silently degrades `@usr<id>` back to the raw token this rewrite exists
+		// to remove, and without a line here there is nothing to debug with.
+		log.Printf("[mention_names] group %d member lookup failed, @ tokens stay raw: %v", groupID, err)
+		return nil
+	}
+	if len(members) == 0 {
 		return nil
 	}
 	names := make(map[string]string, len(members)+1)

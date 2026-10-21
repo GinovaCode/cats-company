@@ -377,4 +377,132 @@ describe('AppsView', () => {
     expect(titles()).toEqual([]);
     expect(mocks.listArtifactApps).not.toHaveBeenCalled();
   });
+
+  test('keeps the latest app selection when an older launch finishes later', async () => {
+    const finish = {};
+    mocks.requestArtifactLaunch.mockImplementation(({ app }) => new Promise((resolve) => { finish[app] = resolve; }));
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    await act(async () => { container.querySelector('[aria-label="打开应用 Saturday 演示应用"]').click(); });
+    await act(async () => { container.querySelector('[aria-label="打开应用 好友应用"]').click(); });
+    await act(async () => { finish['friend-demo']({ launch_url: 'https://artifact.catsco.cc/friend-demo/?code=new' }); });
+    expect(container.querySelector('iframe').title).toBe('好友应用');
+    await act(async () => { finish['saturday-demo']({ launch_url: 'https://artifact.catsco.cc/saturday-demo/?code=old' }); });
+    expect(container.querySelector('iframe').title).toBe('好友应用');
+  });
+
+  test('cancels pending launches when returning to the list or leaving the page', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+      await act(async () => { container.querySelector('[aria-label="打开应用 好友应用"]').click(); });
+      let finish;
+      mocks.requestArtifactLaunch.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+      await act(async () => { container.querySelector('.cc-apps-viewer-external').click(); });
+      await act(async () => { container.querySelector('[aria-label="返回应用列表"]').click(); });
+      await act(async () => { finish({ launch_url: 'https://artifact.catsco.cc/friend-demo/?code=late' }); });
+      expect(openWindow).not.toHaveBeenCalled();
+      expect(container.querySelector('iframe')).toBeNull();
+      await act(async () => { container.querySelector('[aria-label="在新页面打开 好友应用"]').click(); });
+      await act(async () => { root.render(null); });
+      await act(async () => { finish({ launch_url: 'https://artifact.catsco.cc/friend-demo/?code=unmounted' }); });
+      expect(openWindow).not.toHaveBeenCalled();
+    } finally {
+      openWindow.mockRestore();
+    }
+  });
+
+  test('restores cached cards, filters and the list scroll while refreshing in the background', async () => {
+    const viewStateRef = { current: null };
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    await selectAgent('中国传统');
+    await act(async () => { [...container.querySelectorAll('.cc-apps-scope button')].find((button) => button.textContent === '我可管理').click(); });
+    await act(async () => { Simulate.change(container.querySelector('[aria-label="搜索应用"]'), { target: { value: 'Saturday' } }); });
+    const list = container.querySelector('[aria-label="共享应用"]');
+    list.scrollTop = 360;
+    await act(async () => { Simulate.scroll(list); });
+    await act(async () => { root.render(null); });
+    let rejectRefresh;
+    mocks.getMyBots.mockImplementationOnce(() => new Promise((_, reject) => { rejectRefresh = reject; }));
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    expect(titles()).toEqual(['Saturday 演示应用']);
+    expect(container.querySelector('[aria-label="搜索应用"]').value).toBe('Saturday');
+    expect(container.querySelector('[aria-label="选择 Agent"]').textContent).toBe('中国传统文化分析顾问');
+    expect(container.querySelector('.cc-apps-scope [aria-pressed="true"]').textContent).toBe('我可管理');
+    expect(container.querySelector('[aria-label="共享应用"]').scrollTop).toBe(360);
+    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[aria-label="共享应用"]').getAttribute('aria-busy')).toBe('true');
+    await act(async () => { rejectRefresh(new Error('offline')); });
+    expect(titles()).toEqual(['Saturday 演示应用']);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  test('returns to the same favorite list without caching viewer credentials or dialogs', async () => {
+    const viewStateRef = { current: null };
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    await act(async () => { container.querySelector('[aria-label="收藏 好友应用"]').click(); });
+    await act(async () => { [...container.querySelectorAll('.cc-apps-scope button')].find((button) => button.textContent === '收藏').click(); });
+    container.querySelector('[aria-label="共享应用"]').scrollTop = 240;
+    await act(async () => { container.querySelector('[aria-label="打开应用 好友应用"]').click(); });
+    expect(container.querySelector('iframe')).not.toBeNull();
+    expect(JSON.stringify(viewStateRef.current)).not.toContain('one-time');
+    expect(viewStateRef.current).not.toHaveProperty('selectedApp');
+    expect(viewStateRef.current).not.toHaveProperty('editingApp');
+    await act(async () => { container.querySelector('[aria-label="返回应用列表"]').click(); });
+    expect(container.querySelector('[aria-label="共享应用"]').scrollTop).toBe(240);
+    await act(async () => { root.render(null); });
+    mocks.getMyBots.mockImplementationOnce(() => new Promise(() => {}));
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(titles()).toEqual(['好友应用']);
+    expect(container.querySelector('.cc-apps-scope [aria-pressed="true"]').textContent).toBe('收藏');
+    expect(container.querySelector('[aria-label="共享应用"]').scrollTop).toBe(240);
+  });
+
+  test('never restores another account cache or a launch pending for that account', async () => {
+    const viewStateRef = { current: null };
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    await act(async () => { Simulate.change(container.querySelector('[aria-label="搜索应用"]'), { target: { value: 'Saturday' } }); });
+    let finishLaunch;
+    mocks.requestArtifactLaunch.mockImplementationOnce(() => new Promise((resolve) => { finishLaunch = resolve; }));
+    await act(async () => { container.querySelector('.cc-app-card-button').click(); });
+    mocks.getMyBots.mockImplementationOnce(() => new Promise(() => {}));
+    await act(async () => { root.render(<AppsView user={{ uid: 8 }} viewStateRef={viewStateRef} />); });
+    expect(titles()).toEqual([]);
+    expect(container.querySelector('[aria-label="搜索应用"]').value).toBe('');
+    expect(viewStateRef.current.uid).toBe('8');
+    await act(async () => { finishLaunch({ launch_url: 'https://artifact.catsco.cc/saturday-demo/?code=old-user' }); });
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  test('retains previously loaded Agent cards on transient refresh failures but removes revoked access', async () => {
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
+    mocks.listArtifactApps.mockImplementation(async (uid) => {
+      if (uid === '43') throw new Error('offline');
+      return { apps: [] };
+    });
+    await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
+    expect(titles()).toEqual(['好友应用']);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    mocks.listArtifactApps.mockRejectedValue(Object.assign(new Error('no access'), { status: 403 }));
+    await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
+    expect(titles()).toEqual([]);
+  });
+
+  test.each([401, 403])('clears cached catalogue data when the Agent roster rejects access (%s)', async (status) => {
+    const viewStateRef = { current: null };
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    expect(titles()).toHaveLength(2);
+    await selectAgent('开发者');
+    mocks.getMyBots.mockRejectedValueOnce(Object.assign(new Error('no access'), { status }));
+    await act(async () => { container.querySelector('.cc-apps-refresh').click(); });
+    expect(titles()).toEqual([]);
+    expect(container.querySelector('[aria-label="选择 Agent"]').textContent).toBe('全部 Agent');
+    expect(viewStateRef.current.apps).toEqual([]);
+    expect(viewStateRef.current.agents).toEqual([]);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    await act(async () => { root.render(null); });
+    mocks.getMyBots.mockImplementationOnce(() => new Promise(() => {}));
+    await act(async () => { root.render(<AppsView user={{ uid: 7 }} viewStateRef={viewStateRef} />); });
+    expect(titles()).toEqual([]);
+  });
 });

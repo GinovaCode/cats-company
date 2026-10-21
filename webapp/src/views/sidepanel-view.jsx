@@ -7,6 +7,7 @@ import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
+import { ConversationForkMenuItem } from '../widgets/conversation-fork';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
@@ -397,6 +398,7 @@ export default function ChatListView({
   const [showContactActions, setShowContactActions] = useState(false);
   const [friendActionId, setFriendActionId] = useState('');
   const [dismissedTaskStatuses, setDismissedTaskStatuses] = useState(() => loadDismissedTaskStatuses(user?.uid));
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== 'hidden');
   const [projectPickerTask, setProjectPickerTask] = useState(null);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -433,6 +435,7 @@ export default function ChatListView({
   const friendSyncPromiseRef = useRef(null);
   const friendSyncQueuedRef = useRef(false);
   const conversationRequestPromiseRef = useRef(null);
+  const taskStatusVersionsRef = useRef(new Map());
   const sidebarListRef = useRef(null);
   const contactsSectionRef = useRef(null);
   const projectsSectionRef = useRef(null);
@@ -509,7 +512,7 @@ export default function ChatListView({
     pendingSidebarRevealRef.current = '';
   }, [compact]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeTopicRef.current = activeTopic;
   }, [activeTopic]);
 
@@ -545,9 +548,9 @@ export default function ChatListView({
 
   useEffect(() => {
     const topicId = String(activeTopic || '').trim();
-    if (!topicId) return;
+    if (!topicId || !pageVisible) return;
     setUnreadFriendTopicIds((previous) => removeSetValue(previous, topicId));
-  }, [activeTopic]);
+  }, [activeTopic, pageVisible]);
 
   const rememberDismissedTaskStatus = (topicId, status) => {
     const normalized = normalizeTaskStatus(status);
@@ -557,17 +560,17 @@ export default function ChatListView({
 
     setDismissedTaskStatuses((previous) => {
       if (previous[topicId] === dismissedKey) return previous;
-      const next = { ...previous, [topicId]: dismissedKey };
+      const next = { ...previous, ...loadDismissedTaskStatuses(userUidRef.current), [topicId]: dismissedKey };
       saveDismissedTaskStatuses(userUidRef.current, next);
       return next;
     });
   };
 
   useEffect(() => {
-    if (!activeTopic) return;
+    if (!activeTopic || !pageVisible || document.visibilityState === 'hidden') return;
     const activeChat = chats.find((chat) => chat.id === activeTopic);
     if (activeChat?.taskStatus) rememberDismissedTaskStatus(activeTopic, activeChat.taskStatus);
-  }, [activeTopic, chats]);
+  }, [activeTopic, chats, pageVisible]);
 
   useEffect(() => {
     if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId && !showContactActions && !showBatchProjectActions && !showBatchNotificationActions) return undefined;
@@ -827,7 +830,10 @@ export default function ChatListView({
     if (conversationRequestPromiseRef.current) return conversationRequestPromiseRef.current;
 
     const requestPromise = Promise.resolve()
-      .then(() => api.getConversations())
+      .then(() => {
+        const taskStatusVersions = new Map(taskStatusVersionsRef.current);
+        return api.getConversations().then(result => ({ ...result, taskStatusVersions }));
+      })
       .finally(() => {
         if (conversationRequestPromiseRef.current === requestPromise) {
           conversationRequestPromiseRef.current = null;
@@ -855,7 +861,9 @@ export default function ChatListView({
       const fallbackConversations = resC.error
         ? [...groups.map(groupToConversation), ...friends.map((friend) => friendToConversation(user.uid, friend))]
         : [];
-      setChats(resC.error ? fallbackConversations : conversations);
+      setChats(previous => resC.error
+        ? (previous.length ? previous : fallbackConversations)
+        : reconcileConversationTaskStatuses(conversations, previous, resC.taskStatusVersions, taskStatusVersionsRef.current));
       setFriends(friends);
       setGroups(groups);
       if (resC.error) {
@@ -877,7 +885,10 @@ export default function ChatListView({
         if (!Array.isArray(result?.conversations)) {
           throw new Error('conversation response is invalid');
         }
-        setChats(result.conversations.map(conversationSummaryToChat));
+        setChats(previous => reconcileConversationTaskStatuses(
+          result.conversations.map(conversationSummaryToChat), previous,
+          result.taskStatusVersions, taskStatusVersionsRef.current,
+        ));
       })
       .catch((error) => {
         console.warn('Failed to refresh conversations after returning online:', error);
@@ -894,6 +905,7 @@ export default function ChatListView({
 
   useEffect(() => {
     const syncWhenVisible = () => {
+      setPageVisible(document.visibilityState !== 'hidden');
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
         syncFriendState();
         refreshConversations();
@@ -902,6 +914,9 @@ export default function ChatListView({
     const syncFromOtherTab = (event) => {
       if (event.key === friendSyncStorageKey(userUidRef.current)) {
         syncFriendState();
+      }
+      if (event.key === taskStatusDismissedStorageKey(userUidRef.current)) {
+        setDismissedTaskStatuses(loadDismissedTaskStatuses(userUidRef.current));
       }
     };
     document.addEventListener('visibilitychange', syncWhenVisible);
@@ -940,7 +955,7 @@ export default function ChatListView({
           && senderUid !== numericUid(userUidRef.current)
           && isKnownFriend
           && !isKnownAgent
-          && activeTopicRef.current !== topicId;
+          && (activeTopicRef.current !== topicId || document.visibilityState === 'hidden');
         if (isUnreadFriendMessage) {
           setUnreadFriendTopicIds((previous) => addSetValue(previous, topicId));
         }
@@ -968,9 +983,6 @@ export default function ChatListView({
       if (taskStatus?.topic_id) {
         const topicId = taskStatus.topic_id;
         const updatedAtMs = taskStatusUpdatedMs(taskStatus) || Date.now();
-        const shouldDismissImmediately = isDismissibleTaskStatus(taskStatus) && activeTopicRef.current === topicId;
-        if (shouldDismissImmediately) rememberDismissedTaskStatus(topicId, taskStatus);
-
         setChats((previous) => {
           const index = previous.findIndex((chat) => chat.id === topicId);
           if (index === -1) {
@@ -979,6 +991,11 @@ export default function ChatListView({
           }
           const currentUpdatedAtMs = taskStatusUpdatedMs(previous[index].taskStatus);
           if (currentUpdatedAtMs && updatedAtMs < currentUpdatedAtMs) return previous;
+          if (isSameTaskRun(previous[index].taskStatus, taskStatus)
+            && isDismissibleTaskStatus(previous[index].taskStatus) && !isDismissibleTaskStatus(taskStatus)) return previous;
+
+          // Rejected/replayed events must not invalidate a newer REST result.
+          taskStatusVersionsRef.current.set(topicId, (taskStatusVersionsRef.current.get(topicId) || 0) + 1);
 
           const updated = {
             ...previous[index],
@@ -2478,6 +2495,20 @@ export default function ChatListView({
     );
   };
 
+  const renderConversationForkMenuItem = (chat) => {
+    // Sidebar summaries determine discoverability; the server verifies exact
+    // membership and existing Agent access again inside the copy transaction.
+    const candidate = chat.isGroup
+      ? chat.memberCount === 2 && (chat.hasBot || chat.isAgentTask)
+      : chat.isBot;
+    if (!candidate) return null;
+    return <ConversationForkMenuItem key={`${user.uid}:${chat.id}`} topic={chat.id}
+      userId={user.uid} name={chat.name} onActivateTopic={value => {
+        setOpenChatMenuKey('');
+        onSelectTopic(value);
+      }} />;
+  };
+
   const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (
@@ -2537,7 +2568,7 @@ export default function ChatListView({
   };
 
   const taskStatusForDisplay = (chat) => (
-    activeTopic === chat.id && normalizeTaskStatus(chat.taskStatus)?.state === 'completed'
+    pageVisible && activeTopic === chat.id && normalizeTaskStatus(chat.taskStatus)?.state === 'completed'
       ? null
       : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)
   );
@@ -2652,6 +2683,7 @@ export default function ChatListView({
               <TextCursorInput size={14} aria-hidden="true" />
               <span>修改任务名称</span>
             </button>
+            {renderConversationForkMenuItem(chat)}
             <button
               type="button"
               role="menuitem"
@@ -2804,6 +2836,7 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
               </button>
+              {renderConversationForkMenuItem(chat)}
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
@@ -2966,6 +2999,7 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群组' : '置顶群组'}</span>
               </button>
+              {renderConversationForkMenuItem(chat)}
               {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
@@ -4287,9 +4321,10 @@ function CompactTaskStatusIndicator({ status, className = '' }) {
     className,
     state,
   ].filter(Boolean).join(' ');
-  if (normalized.state === 'running') {
+  if (normalized.state === 'running' || normalized.state === 'waiting') {
+    const label = normalized.state === 'waiting' ? '任务等待中' : '任务进行中';
     return (
-      <span className={indicatorClassName('running')} title={detail || '任务进行中'} aria-label="任务进行中" role="status">
+      <span className={indicatorClassName('running')} title={detail || label} aria-label={label} role="status">
         <LoaderCircle size={17} strokeWidth={2.4} />
       </span>
     );
@@ -4325,9 +4360,10 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   }
 
   const detail = normalized.summary || normalized.error;
-  if (normalized.state === 'running') {
+  if (normalized.state === 'running' || normalized.state === 'waiting') {
+    const label = normalized.state === 'waiting' ? '任务等待中' : '任务进行中';
     return (
-      <span className="cc-task-row-status running" title={detail || '任务进行中'} aria-label="任务进行中" role="status">
+      <span className="cc-task-row-status running" title={detail || label} aria-label={label} role="status">
         <LoaderCircle size={15} strokeWidth={2.2} />
       </span>
     );
@@ -4381,19 +4417,60 @@ function isDismissibleTaskStatus(status) {
 function taskStatusDismissKey(status) {
   const normalized = normalizeTaskStatus(status);
   if (!normalized) return '';
+  const runId = normalized.run_id || normalized.runId;
+  if (runId) {
+    return JSON.stringify([normalized.state, String(normalized.source_uid || normalized.sourceUid || ''), String(runId)]);
+  }
+  // Legacy publishers without run IDs still need distinct completion events.
   return [
     normalized.state,
-    normalized.run_id || normalized.runId || '',
-    normalized.updated_at || normalized.updatedAt || '',
-    normalized.summary || '',
-    normalized.error || '',
+    '',
+    taskStatusUpdatedMs(normalized),
   ].map((value) => String(value)).join('|');
 }
 
 function visibleTaskStatus(status, dismissedTaskStatuses, topicId) {
   const normalized = normalizeTaskStatus(status);
-  if (!normalized || dismissedTaskStatuses?.[topicId] === taskStatusDismissKey(normalized)) return null;
+  if (!normalized) return null;
+  const dismissed = dismissedTaskStatuses?.[topicId];
+  if (isDismissibleTaskStatus(normalized) && dismissed) {
+    if (dismissed === taskStatusDismissKey(normalized)) return null;
+    // Preserve existing read receipts written before stable run identities.
+    // Those receipts included timestamps and summaries which differ on reload.
+    const [state, runId, updatedAt] = typeof dismissed === 'string' ? dismissed.split('|') : [];
+    const currentRunId = String(normalized.run_id || normalized.runId || '');
+    if (state === normalized.state && (currentRunId
+      ? runId === currentRunId
+      : runId === '' && toTimeMs(updatedAt) === taskStatusUpdatedMs(normalized))) return null;
+  }
   return normalized;
+}
+
+function isSameTaskRun(left, right) {
+  const leftRun = left?.run_id || left?.runId;
+  const rightRun = right?.run_id || right?.runId;
+  return Boolean(leftRun && rightRun && leftRun === rightRun
+    && String(left.source_uid || left.sourceUid || '') === String(right.source_uid || right.sourceUid || ''));
+}
+
+function reconcileConversationTaskStatuses(incoming, previous, requestedVersions, currentVersions) {
+  const previousById = new Map(previous.map(chat => [chat.id, chat]));
+  return incoming.map(chat => {
+    const current = previousById.get(chat.id);
+    if (!current) return chat;
+    // A response requested before a live event must not roll that event back,
+    // including when the response contains no task status at all.
+    const receivedLiveUpdate = (currentVersions.get(chat.id) || 0) !== (requestedVersions?.get(chat.id) || 0);
+    const sameRun = isSameTaskRun(current.taskStatus, chat.taskStatus);
+    const olderStatus = sameRun && taskStatusUpdatedMs(chat.taskStatus) < taskStatusUpdatedMs(current.taskStatus);
+    const reopensFinishedRun = sameRun && isDismissibleTaskStatus(current.taskStatus) && !isDismissibleTaskStatus(chat.taskStatus);
+    if (!receivedLiveUpdate && !olderStatus && !reopensFinishedRun) return chat;
+    return {
+      ...chat,
+      taskStatus: current.taskStatus,
+      lastTimeMs: Math.max(chat.lastTimeMs || 0, current.lastTimeMs || 0),
+    };
+  });
 }
 
 function taskStatusUpdatedMs(status) {

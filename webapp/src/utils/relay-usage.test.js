@@ -99,8 +99,8 @@ describe('relay usage labels', () => {
       },
     })).toEqual({
       model: 'gpt-5.6-sol',
-      meta: 'xhigh · 剩余 68%',
-      title: 'gpt-5.6-sol；推理强度 xhigh；使用该虚拟员工所属账号的共享额度，剩余 68%',
+      meta: '极高 · 剩余 68%',
+      title: 'gpt-5.6-sol；推理强度 极高；使用该虚拟员工所属账号的共享额度，剩余 68%',
     });
   });
 

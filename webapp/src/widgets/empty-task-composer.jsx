@@ -410,6 +410,7 @@ export default function EmptyTaskComposer({
           if (appended && mountedRef.current) {
             setAttachmentStatus({
               tone: 'success',
+              source: 'attachment',
               message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新任务。`,
             });
           }
@@ -533,6 +534,7 @@ export default function EmptyTaskComposer({
       } else if (uploadedCount > 0) {
         setAttachmentStatus({
           tone: 'success',
+          source: 'attachment',
           message: `本次已添加 ${uploadedCount} 个附件，发送后会加入新任务。`,
         });
       }
@@ -837,7 +839,10 @@ export default function EmptyTaskComposer({
       )}
       {!uploadAuthenticationFailed && (attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
         <div
-          className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+          className={!isUploadingAttachment && pendingAttachments.length > 0
+            && (!attachmentStatus?.message || (attachmentStatus.tone === 'success' && attachmentStatus.source === 'attachment'))
+            ? 'oc-visually-hidden'
+            : `v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
           role="status"
         >
           <span>
@@ -952,8 +957,8 @@ export default function EmptyTaskComposer({
         overlay={phoneUploadOverlay}
         boxOverlay={isDragActive ? (
           <div className="v3-drop-overlay" aria-hidden="true">
-            <div className="v3-drop-title">拖放文件以上传</div>
-            <div className="v3-drop-subtitle">支持图片、文件和文件夹，附件会先放在这里等待发送。</div>
+            <div className="v3-drop-title">拖放图片或文件到这里</div>
+            <div className="v3-drop-subtitle">松开后添加到输入栏，确认后再发送。</div>
           </div>
         ) : null}
         rootProps={{

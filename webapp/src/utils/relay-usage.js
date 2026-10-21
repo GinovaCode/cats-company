@@ -1,3 +1,19 @@
+export function reasoningEffortLabel(effort) {
+  const value = String(effort || '').trim();
+  const labels = {
+    default: '默认',
+    none: '关闭推理',
+    minimal: '极低',
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '极高',
+    max: '最大',
+    disabled: '关闭推理',
+  };
+  return Object.hasOwn(labels, value) ? labels[value] : value;
+}
+
 export function formatRelayUsagePill(summary, { customLabel = '自定义模型', showModel = true } = {}) {
   if (summary?.source === 'custom' || summary?.status === 'custom') {
     if (!showModel) return customLabel;
@@ -58,7 +74,7 @@ export function resolveConversationModelDisplay(currentModelName, agentModelStat
 
   const model = resolveCurrentModelName(summary, '模型未知');
   const custom = summary.source === 'custom' || summary.status === 'custom';
-  const reasoningEffort = String(summary.reasoning_effort || '').trim();
+  const reasoningEffort = reasoningEffortLabel(summary.reasoning_effort);
   const quota = formatRelayUsagePill(summary, {
     customLabel: '自备模型',
     showModel: false,

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CircleAlert, Download, LoaderCircle, X } from 'lucide-react';
 import { isStandaloneWebApp } from '../utils/standalone-web-app';
+import { downloadableMediaURL } from '../utils/media-download';
 
 const DOWNLOAD_NOTICE_HOST_ID = 'catsco-pwa-download-notices';
 
@@ -72,7 +73,8 @@ export default function PwaDownloadLink({
   const dismissedRef = useRef(false);
   const noticeTimerRef = useRef(null);
   const standalone = isStandaloneWebApp();
-  const useBlobDownload = standalone && isSameOriginURL(href);
+  const downloadHref = typeof download === 'string' ? downloadableMediaURL(href, download) : href;
+  const useBlobDownload = standalone && isSameOriginURL(downloadHref);
   const fileName = typeof download === 'string' ? download : fileNameFromURL(href);
 
   useEffect(() => {
@@ -115,7 +117,7 @@ export default function PwaDownloadLink({
     setDownloading(true);
     showNotice('downloading');
     try {
-      await downloadPwaFile(href, fileName);
+      await downloadPwaFile(downloadHref, fileName);
     } catch {
       showNotice('failed');
       return;
@@ -131,7 +133,7 @@ export default function PwaDownloadLink({
     <>
       <a
         {...props}
-        href={href}
+        href={downloadHref}
         download={download}
         target={useBlobDownload ? undefined : target}
         rel={useBlobDownload ? undefined : rel}
@@ -153,7 +155,7 @@ export default function PwaDownloadLink({
           </div>
           {state === 'failed' && (
             <div className="cc-download-notice-actions">
-              <a href={href} target="_blank" rel="noopener noreferrer">在新窗口尝试</a>
+              <a href={downloadHref} target="_blank" rel="noopener noreferrer">在新窗口尝试</a>
               <a href="/">返回 CatsCo</a>
             </div>
           )}

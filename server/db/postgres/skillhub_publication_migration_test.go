@@ -27,6 +27,7 @@ func TestSkillHubPublicationMigrationMatchesStartup(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationMigration(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"empty_sql", "historical_sql_first", "historical_startup_first"} {
 		t.Run(order, func(t *testing.T) {
 			db, _ := publicationEmptyDatabase(t)
@@ -64,11 +65,15 @@ func TestPostgresSkillHubPublicationMigration(t *testing.T) {
 			// Empty rollback is atomic and does not touch historical user/Bot data.
 			// Later FK-dependent tables must roll back first, just as migrate down
 			// would do. The applied 000028 migration remains unchanged.
+			exec(captureDeliveryMigration(t, "down"))
+			exec(captureMigration(t, "down"))
+			exec(commitDeliveryMigration(t, "down"))
 			exec(publicationCommitMigration(t, "down"))
 			exec(publicationCancelDeliveryMigration(t, "down"))
 			exec(publicationCancelIntentMigration(t, "down"))
 			exec(publicationReceiptMigration(t, "down"))
 			exec(publicationUploadMigration(t, "down"))
+			exec(uploadDeliveryMigration(t, "down"))
 			exec(down)
 			var tables int
 			if err := db.db.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema()

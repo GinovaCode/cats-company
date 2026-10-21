@@ -95,6 +95,8 @@ vi.mock('../widgets/mobile-channel-bind-modal', () => ({
 vi.mock('../api', () => ({
   api: {
     getConversations: vi.fn(),
+    forkConversation: vi.fn(),
+    getConversationFork: vi.fn(),
     getFriends: vi.fn(),
     getGroups: vi.fn(),
     getPendingRequests: vi.fn(),
@@ -143,6 +145,7 @@ describe('ChatListView sidebar sections', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
     api.getConversations.mockResolvedValue({ conversations: [] });
+    api.getConversationFork.mockRejectedValue(Object.assign(new Error('session_fork_not_found'), { status: 404 }));
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getGroups.mockResolvedValue({ groups: [] });
     api.getPendingRequests.mockResolvedValue({ requests: [] });
@@ -1166,6 +1169,35 @@ describe('ChatListView sidebar sections', () => {
     expect(api.disbandGroup).toHaveBeenCalledWith(88);
   });
 
+  it('copies a friend Agent task from the sidebar and opens its independent history', async () => {
+    api.getConversations.mockResolvedValue({ conversations: [{
+      id: 'grp_88', group_id: 88, name: 'Shared Cloud Task', is_group: true,
+      is_agent_task: true, has_bot: true, member_count: 2, agent_ids: [42],
+    }] });
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 42, relation: 'friend', is_online: true }] });
+    api.forkConversation.mockImplementation(async payload => ({ ...payload, target_topic_id: 'grp_99', state: 'ready' }));
+    await mount();
+    await act(async () => Simulate.click(document.querySelector('[aria-label="Shared Cloud Task 更多操作"]')));
+    const action = document.querySelector('[aria-label="复制为新会话 Shared Cloud Task"]');
+    expect(action).toBeTruthy();
+    expect(action.disabled).toBe(false);
+    await act(async () => Simulate.click(action));
+    expect(api.forkConversation).toHaveBeenCalledWith(expect.objectContaining({ source_topic_id: 'grp_88' }), expect.anything());
+    expect(api.createGroup).not.toHaveBeenCalled();
+    await act(async () => Array.from(document.querySelectorAll('button')).find(button => button.textContent.includes('打开新会话')).click());
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'grp_99', isAgentTask: true }));
+  });
+
+  it('does not offer sidebar copying for a multi-participant task', async () => {
+    api.getConversations.mockResolvedValue({ conversations: [{
+      id: 'grp_88', group_id: 88, name: 'Team Task', is_group: true,
+      is_agent_task: true, has_bot: true, member_count: 3, agent_ids: [42],
+    }] });
+    await mount();
+    await act(async () => Simulate.click(document.querySelector('[aria-label="Team Task 更多操作"]')));
+    expect(document.querySelector('[aria-label="复制为新会话 Team Task"]')).toBeNull();
+  });
+
   it('keeps history tasks compact and exposes pin beside the three-dot menu', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
@@ -1942,6 +1974,145 @@ describe('ChatListView sidebar sections', () => {
     expect(task.querySelector('.cc-chat-row-time')).toBeTruthy();
   });
 
+  it('keeps a viewed completion read after login and REST/WebSocket metadata changes', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Read completion', is_bot: true,
+      last_time: '2026-07-20T04:00:00Z',
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'read-run', state: 'running', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    await act(async () => wsHandler({ task_status: {
+      ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:01:00.123456Z', summary: 'Done',
+    } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await act(async () => Simulate.click(container.querySelector('.cc-history-item')));
+    task.task_status = { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:01:00.123Z', summary: '任务已完成' };
+    await remount();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    // A genuinely new run must still notify, as must a different Agent's run.
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'next-run', updated_at: '2026-07-20T04:02:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await act(async () => Simulate.click(container.querySelector('.cc-history-item')));
+    await act(async () => wsHandler({ task_status: { ...task.task_status, source_uid: 43, run_id: 'next-run', updated_at: '2026-07-20T04:03:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await remount({ user: { ...user, uid: 8 } });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
+  it('keeps completion unread while another workspace tool is visible', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Background completion', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'background-run', state: 'running', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount({ activeTopic: task.id });
+    // The shell passes no visible topic while the user browses another tool.
+    await mount({ activeTopic: null });
+    await act(async () => wsHandler({ task_status: { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:01:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7') || '{}')[task.id]).toBeUndefined();
+    await mount({ activeTopic: task.id });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7'))[task.id]).toBeTruthy();
+  });
+
+  it.each(['initial', 'realtime'])('does not mark a selected task read in a hidden tab (%s)', async (arrival) => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      const status = { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'hidden-run', state: 'completed', updated_at: '2026-07-20T04:01:00Z' };
+      const task = { id: status.topic_id, friend_id: 42, name: 'Hidden task', is_bot: true, task_status: arrival === 'initial' ? status : null };
+      api.getConversations.mockResolvedValue({ conversations: [task] });
+      await mount({ activeTopic: task.id });
+      if (arrival === 'realtime') await act(async () => wsHandler({ task_status: status }));
+      expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+      expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7') || '{}')[task.id]).toBeUndefined();
+      api.getConversations.mockResolvedValue({ conversations: [{ ...task, task_status: status }] });
+      visibility.mockReturnValue('visible');
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+      expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+      expect(JSON.parse(localStorage.getItem('cc_task_status_dismissed_v1:7'))[task.id]).toBeTruthy();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it('honours existing read receipts and synchronizes dismissals from another tab', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Legacy read task', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'legacy-run', state: 'completed', updated_at: '2026-07-20T04:01:00Z' },
+    };
+    localStorage.setItem('cc_task_status_dismissed_v1:7', JSON.stringify({
+      p2p_7_42: 'completed|legacy-run|2026-07-20T04:01:00.123456Z|Done|',
+    }));
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'new-run', updated_at: '2026-07-20T04:02:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    await act(async () => {
+      localStorage.setItem('cc_task_status_dismissed_v1:7', JSON.stringify({ p2p_7_42: JSON.stringify(['completed', '42', 'new-run']) }));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'cc_task_status_dismissed_v1:7' }));
+    });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+  });
+
+  it.each([false, true])('keeps the spinner through running/waiting transitions (compact=%s)', async (compact) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Waiting Task', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'waiting-run', state: 'running', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValue({ conversations: [task] });
+    await mount({ compact });
+    if (compact) await act(async () => Simulate.click(container.querySelector('[aria-label="历史任务"]')));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, state: 'waiting', updated_at: '2026-07-20T04:01:00Z' } }));
+    expect(document.querySelector('[aria-label="任务等待中"] svg')).toBeTruthy();
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:02:00Z' } }));
+    expect(document.querySelector('[aria-label="任务进行中"] svg')).toBeTruthy();
+  });
+
+  it.each(['completed', null])('does not let an in-flight refresh replace a live spinner with %s', async (state) => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Refresh race', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'previous-run', state: 'completed', updated_at: '2026-07-20T04:00:00Z' },
+    };
+    api.getConversations.mockResolvedValueOnce({ conversations: [task] });
+    await mount();
+    let finishRefresh;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'current-run', state: 'running', updated_at: '2026-07-20T04:02:00Z' } }));
+    await act(async () => finishRefresh({ conversations: [{ ...task, task_status: state ? task.task_status : null }] }));
+    expect(container.querySelector('.cc-task-row-status.running svg')).toBeTruthy();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeNull();
+    // A later authoritative terminal result should still replace the spinner.
+    api.getConversations.mockResolvedValueOnce({ conversations: [{ ...task, task_status: {
+      ...task.task_status, run_id: 'current-run', updated_at: '2026-07-20T04:03:00Z',
+    } }] });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+    // Replayed active updates for the same finished run must not resurrect it.
+    await act(async () => wsHandler({ task_status: { ...task.task_status, run_id: 'current-run', state: 'running', updated_at: '2026-07-20T04:04:00Z' } }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+  });
+
+  it('allows a fresh REST completion after rejecting an older realtime event', async () => {
+    const task = {
+      id: 'p2p_7_42', friend_id: 42, name: 'Old realtime event', is_bot: true,
+      task_status: { topic_id: 'p2p_7_42', source_uid: 42, run_id: 'ordered-run', state: 'running', updated_at: '2026-07-20T04:02:00Z' },
+    };
+    api.getConversations.mockResolvedValueOnce({ conversations: [task] });
+    await mount();
+    let finishRefresh;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await act(async () => wsHandler({ task_status: { ...task.task_status, updated_at: '2026-07-20T04:01:00Z' } }));
+    await act(async () => finishRefresh({ conversations: [{ ...task, task_status: { ...task.task_status, state: 'completed', updated_at: '2026-07-20T04:03:00Z' } }] }));
+    expect(container.querySelector('.cc-task-row-status.running')).toBeNull();
+    expect(container.querySelector('.cc-task-row-status.completed')).toBeTruthy();
+  });
+
   it('restores time without a completion dot when the completed task is already active', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
@@ -2472,7 +2643,7 @@ describe('ChatListView sidebar sections', () => {
     expect(document.querySelector('.cc-chat-action-menu')).toBeFalsy();
   });
 
-  it.each([620, 480])('keeps all seven project task actions reachable in a %ipx-high viewport', async (height) => {
+  it.each([620, 480])('keeps all eight project task actions reachable in a %ipx-high viewport', async (height) => {
     const viewportHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
     api.getConversations.mockResolvedValue({ conversations: [{
@@ -2483,7 +2654,7 @@ describe('ChatListView sidebar sections', () => {
     const originalRect = HTMLElement.prototype.getBoundingClientRect;
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function rect() {
       if (this.classList.contains('cc-chat-action-menu')) {
-        return { top: 0, bottom: 296, height: 296, left: 0, right: 184, width: 184 };
+        return { top: 0, bottom: 332, height: 332, left: 0, right: 184, width: 184 };
       }
       return originalRect.call(this);
     });
@@ -2495,18 +2666,18 @@ describe('ChatListView sidebar sections', () => {
       await act(async () => Simulate.click(trigger));
       const menu = document.querySelector('.cc-sidebar-floating-menu');
       const items = menu.querySelectorAll('[role="menuitem"]');
-      expect(items).toHaveLength(7);
+      expect(items).toHaveLength(8);
       expect(menu.parentElement).toBe(document.body);
       expect(container.querySelector('.cc-chat-action-menu')).toBeNull();
       expect(menu.style.position).toBe('fixed');
       expect(menu.style.overflowY).toBe('auto');
       expect(menu.dataset.placement).toBe(height === 620 ? 'bottom' : 'top');
-      const renderedHeight = Math.min(296, parseFloat(menu.style.maxHeight));
+      const renderedHeight = Math.min(332, parseFloat(menu.style.maxHeight));
       expect(parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
       expect(parseFloat(menu.style.top) + renderedHeight).toBeLessThanOrEqual(height - 8);
       await act(async () => Simulate.keyDown(items[0], { key: 'End' }));
-      expect(document.activeElement).toBe(items[6]);
-      await act(async () => Simulate.keyDown(items[6], { key: 'Escape' }));
+      expect(document.activeElement).toBe(items[7]);
+      await act(async () => Simulate.keyDown(items[7], { key: 'Escape' }));
       expect(document.querySelector('.cc-sidebar-floating-menu')).toBeNull();
       expect(document.activeElement).toBe(trigger);
     } finally {

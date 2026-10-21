@@ -122,10 +122,14 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	capabilities := path == skillHubPublicationPrefix+"/capabilities"
 	id := strings.TrimPrefix(path, skillHubPublicationPrefix+"/entries/")
 	sourceStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/source-status")
+	captureStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/capture-status")
 	cloudStatus := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/cloud-status")
 	cancelEntry := strings.HasPrefix(path, skillHubPublicationPrefix+"/entries/") && strings.HasSuffix(id, "/cancel")
 	if sourceStatus {
 		id = strings.TrimSuffix(id, "/source-status")
+	}
+	if captureStatus {
+		id = strings.TrimSuffix(id, "/capture-status")
 	}
 	if cloudStatus {
 		id = strings.TrimSuffix(id, "/cloud-status")
@@ -168,13 +172,15 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if capabilities {
 		_, sourceStatusSupported := h.db.(store.SkillHubPublicationSourceStatusReader)
+		_, captureStatusSupported := h.db.(store.SkillHubPublicationCaptureStatusReader)
 		_, cloudStatusSupported := h.db.(store.SkillHubPublicationCloudStatusReader)
 		_, cancelSupported := h.db.(store.SkillHubPublicationCancellationStore)
 		writeSkillHubPublicationJSON(w, http.StatusOK, map[string]any{
 			"schemaVersion": 1, "entryReadsEnabled": h.enabled && h.entries != nil,
-			"sourceStatusReadsEnabled": h.enabled && h.entries != nil && sourceStatusSupported,
-			"cloudStatusReadsEnabled":  h.enabled && h.entries != nil && cloudStatusSupported,
-			"workspaceCreateEnabled":   h.workspaceEntriesEnabled, "chatCreateEnabled": false,
+			"sourceStatusReadsEnabled":  h.enabled && h.entries != nil && sourceStatusSupported,
+			"captureStatusReadsEnabled": h.enabled && h.entries != nil && captureStatusSupported,
+			"cloudStatusReadsEnabled":   h.enabled && h.entries != nil && cloudStatusSupported,
+			"workspaceCreateEnabled":    h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"workspaceDurableCreateEnabled": h.workspaceDurableEntriesEnabled,
 			"entryCancellationEnabled":      h.enabled && h.entries != nil && h.cancellationEnabled && cancelSupported,
 			"minPollIntervalMs":             5000,
@@ -190,7 +196,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 		return
 	}
 	pollKey := path
-	if sourceStatus || cloudStatus {
+	if sourceStatus || cloudStatus || captureStatus {
 		pollKey = skillHubPublicationPrefix + "/entries/" + id
 	}
 	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_reads_entry", Limit: 12, Window: time.Minute, Burst: 3}, actor+":"+pollKey) {
@@ -241,6 +247,10 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 	}
 	if sourceStatus {
 		h.readSourceStatus(w, ctx, claims.UID, entry.ID)
+		return
+	}
+	if captureStatus {
+		h.readCaptureStatus(w, ctx, claims.UID, entry.ID)
 		return
 	}
 	if cloudStatus {

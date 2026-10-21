@@ -89,3 +89,142 @@ relay 据此将用量归因到**调用方**额度（见 relay `service_tokens.py
 | `CATS_SERVICE_INSTANCE_TOKEN` | 实例访问编排内部 API 的 Bearer token（未配置 → 全部 401） |
 | `CATS_SERVICE_TOKEN_SECRET` | 服务 token HMAC 密钥（与 relay 同源） |
 | `CATS_RELAY_ADMIN_URL` / `CATS_RELAY_ADMIN_TOKEN` | 计费预检（relay admin；未配置 → 跳过预检） |
+
+## 用户自助上架（`POST /api/service-agents/publish`）
+
+设计 §4.3 P2。内部发布通道（`/internal/service-agents/{slug}/publish`，实例令牌）之外，
+真人账号可通过本条上架自己的 agent。
+
+- 鉴权：JWT + 内测白名单（与 `GET /api/service-agents/catalog` 同一套
+  `CATSCO_SERVICE_CATALOG_UID_WHITELIST`）。未在白名单 → 403。
+- 归属：首次发布即写入 `owner_uid`；之后只有本人能继续发版；
+  平台内部 slug（`owner_kind=internal`）不可抢占（409 `slug_reserved`），
+  他人已占（409 `slug_taken`）。
+- 版本：`package_hash = sha256(bundle)` 内容寻址，与内部通道共用版本/会话钉快照；
+  同内容重发幂等返回既有版本，`force=true` 可强制建新版本（回滚通道）。
+
+请求：
+
+```jsonc
+{
+  "slug": "my-helper",            // ^[a-z0-9][a-z0-9-]{1,63}$
+  "name": "我的助手",              // 可选，默认=slug，≤64 字
+  "visibility": "public",          // public（默认）| private（仅自己可见可调）
+  "definition": { "async_threshold_seconds": 30 },   // 可选，平台派生字段
+  "bundle_base64": "…",            // 必填，agent 包原文（≤20 MiB，可用 CATSCO_SERVICE_AGENT_MAX_BUNDLE_BYTES 调整）
+  "force": false
+}
+```
+
+响应：`{ "slug", "version", "package_hash", "visibility", "owner_uid" }`。
+
+可见性语义：`public` 进所有人目录并可被调用；`private` 只进 owner 自己的
+`tools/list` 与目录，别人即使知道 slug 也拿不到工具、硬调返回 `agent_not_found`。
+
+目录接口 `GET /api/service-agents/catalog` 的条目新增 `mine` / `owner_kind` /
+`visibility` 三个字段，便于前端区分「平台应用」与「我上架的」。
+
+## 外部执行后端（`runner.type=http`）
+
+设计 §4.4 / P3-a。用户在 agent definition 里声明 runner，run 由**用户自己的服务**执行，平台只负责转发、签名与结果回填：
+
+```jsonc
+{
+  "slug": "my-helper",
+  "definition": {
+    "async_threshold_seconds": 30,
+    "runner": { "type": "http", "url": "https://user.example/catsco/run", "timeout_seconds": 60 }
+  }
+  // 外部 runner 不需要代码包：bundle_base64 可省略（平台生成占位包占住内容寻址）
+}
+```
+
+### 转发契约 `catsco.service-run-request.v1`
+
+```http
+POST <runner.url>
+Content-Type: application/json
+X-Catsco-Run-Id: run_xxx
+X-Catsco-Signature: sha256=<hex(hmac_sha256(SECRET, body))>
+
+{"contract_version":"catsco.service-run-request.v1","run_id":"run_xxx","session_id":"sess_xxx",
+ "agent":"my-helper","caller_uid":441,"bot_uid":0,"input":{…},"deadline_ms":60000}
+```
+
+`SECRET` = 平台 env `CATS_SERVICE_EXTERNAL_RUNNER_SECRET`（**未配置时不转发**，避免无签名裸奔）。
+对端必须校验签名；`run_id` 可作为幂等键。
+
+### 对端应答（同一次 HTTP 响应）
+
+| `status` | 平台行为 |
+|---|---|
+| `completed` | 写 `result` 事件 + run → `completed`（附 `output` / `files` / `usage`） |
+| `awaiting_input` | run → `awaiting_input`（`output.question` 进入回执） |
+| `failed` | run → `failed`（`error` 文本落库） |
+| `running` | 保持 running，调用方用 `catsco_run_status` 轮询 |
+
+失败一律按**终态**处理：外部执行没有 worker 会接管重跑，标记可重试只会让 run 卡在 `orphaned`。对端可在自己内部重试，或让调用方重新发起 run。
+
+### 准入限制
+
+- 默认只接受 **https**；`CATS_SERVICE_EXTERNAL_ALLOW_HTTP=1` 放开（本地联调）
+- 默认拒绝 loopback / 私网 / 链路本地 / 组播地址（DNS 解析后逐 IP 校验）；`CATS_SERVICE_EXTERNAL_ALLOW_PRIVATE=1` 放开
+- 超时：`timeout_seconds`（默认 60s，封顶 10 分钟）
+- 已知残余风险：DNS rebinding（MVP 接受，后续可加固定解析/IP 白名单）
+
+### 已知限制
+
+- 进程重启会丢失「已创建但未转发」的 run（需等 reaper 收尾）；后续可加启动扫描补齐
+- 只实现 `http`；`mcp`（对端 MCP server）留待 P3-b
+
+## 计费：谁调用谁付费、按量给
+
+设计 §4.5。agent 在 definition 里声明单价；未声明 = 免费（金额记 0，但调用关系与用量照记，便于后续定价回溯重算）。
+
+```jsonc
+"definition": {
+  "pricing": { "unit": "token",  "per_1k_tokens": 0.02, "currency": "CNY" }
+  // 也支持 {"unit":"run","per_run":0.05} / {"unit":"second","per_second":0.001}
+}
+```
+
+### 账本表 `service_run_ledger`
+
+每个终态 run 一行（`run_id` 主键 → 重扫幂等）：
+
+| 列 | 含义 |
+|---|---|
+| `payer_uid` | **调用者**（谁调用谁给钱） |
+| `payee_uid` | agent owner（`owner_kind=internal` → 0 = 平台自营） |
+| `gross_micros` / `fee_micros` / `net_micros` | 应付 / 平台抽成 / owner 应得，单位**微元**（1e-6 货币单位，整数避免浮点误差） |
+| `pricing_json` | 计价快照（与当时 definition 绑定，后续改价不影响历史账） |
+| `prompt_tokens` / `completion_tokens` / `duration_ms` | 实际用量（来自 run 的 `usage_json` 与 `started_at→finished_at`） |
+| `runner_type` | `codex` / `http`（外部执行后端） |
+
+### 怎么记
+
+**补账扫描**（`ServiceRunLedgerWriter`，30s 一轮），不埋点：扫「已终态 + 48h 内 + 无账本行」的 run，按会话钉定版本的 `pricing` 算钱后落行。原因：run 有 4 条终态路径（worker complete / awaiting_input / fail / 外部 runner），逐条埋点容易漏。
+
+### 平台抽成
+
+`CATS_SERVICE_PLATFORM_FEE_BPS`（万分比，默认 **0** = 全额归 agent owner）。
+`fee_micros = round(gross * bps / 10000)`，`net_micros = gross - fee`。
+
+### 边界
+
+- **只记账不动钱**：本表是结算的输入，真正扣费/入账读它另做
+- 未定价 agent：`gross=0`，但 `payer/payee/用量` 仍记录 → 后续定价可回溯重算
+- 扫描窗口 48h：更早的历史 run 不会自动补账（需要时用同一条 SQL 手工回填）
+
+### 结算状态 `billing_state`（按会话请求实时结算）
+
+| 状态 | 含义 | 预检是否计入 |
+|---|---|---|
+| `free` | 未定价（默认免费分享） | 否（金额 0） |
+| `settled_platform` | 平台自带执行（codex）：调用方额度已由 **relay 在模型调用时实时扣除** | relay 已算，不重复计 |
+| `pending_credit` | 外部执行后端（`runner.type=http`）：对端自报用量，平台侧暂无扣费通道 | **是** —— 金额并入调用方已用额度 |
+
+`pending_credit` 的设计意图：外部 agent 的模型调用不经过我们的 relay，平台扣不到；
+但这笔账不能白算 —— 预检（`ServiceBalanceChecker`）会把这部分「待扣」加到
+relay 的 `current_usage` 上再比 `max_limit`，所以**碰额度上限一样会被拒单**，
+不会出现"免费无限调外部 agent"。

@@ -11,6 +11,9 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import { ConversationForkAction, ConversationForkNotice } from '../widgets/conversation-fork';
+import { canForkConversation } from '../utils/conversation-fork';
+import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
 import ImageViewport from '../widgets/image-viewport';
@@ -755,6 +758,7 @@ export default function MessagesView({
   modelInfo = null,
 }) {
   const feedback = useFeedback();
+  const conversationFork = useConversationFork({ topic, userId: user.uid, onActivateTopic });
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [pendingAttachments, setPendingAttachments] = useState([]);
@@ -1065,6 +1069,7 @@ export default function MessagesView({
   // that conversation (for a group, that it is a current member). The annotation
   // channel sends through the same binding, so both channels agree on the target.
   artifactComposeInjectRef.current = async (text, binding) => {
+    if (conversationFork.blocked) return { ok: false, reason: 'send_failed' };
     const ownerAgentUid = Number(binding?.agentUid || 0);
     const appId = String(binding?.appId || '');
     if (!ownerAgentUid) return { ok: false, reason: 'open_failed' };
@@ -1738,6 +1743,7 @@ export default function MessagesView({
   }, [assertInlineAnnotationCurrent]);
 
   const sendInlineAnnotation = useCallback(async (capture, comment, screenshotResult) => {
+    if (conversationFork.blocked) throw new Error('新会话尚未就绪');
     if (inlineAnnotationInFlightRef.current) throw new Error('上一条批注正在发送，请稍候');
     const open = assertInlineAnnotationCurrent(capture);
     const metadata = normalizeGatewayAnnotations({
@@ -1789,7 +1795,7 @@ export default function MessagesView({
     } finally {
       inlineAnnotationInFlightRef.current = null;
     }
-  }, [assertInlineAnnotationCurrent, cancelInlineAnnotation, feedback]);
+  }, [conversationFork.blocked, assertInlineAnnotationCurrent, cancelInlineAnnotation, feedback]);
 
   const gatewayAnnotationPanelStateSetter = useCallback((state) => {
     if (!state || typeof state !== 'object') return;
@@ -3586,7 +3592,7 @@ export default function MessagesView({
             draftRevision,
           );
           if (updated && activeTopicRef.current === sessionTopic) {
-            setAttachmentStatus({ tone: 'success', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
+            setAttachmentStatus({ tone: 'success', source: 'attachment', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
           }
           if (!updated) return [];
           nextAttachmentKeys.forEach((fileKey) => phoneUploadFileKeysRef.current.add(fileKey));
@@ -3649,6 +3655,7 @@ export default function MessagesView({
   }, []);
 
   const handleSend = useCallback(async () => {
+    if (conversationFork.blocked) return;
     const isConversationFollowup = liquidConversation && activeBotWorking;
     const originalInput = input;
     const initialText = originalInput.trim();
@@ -4211,7 +4218,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [activeBotWorking, liquidConversation, markConversationActivity, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [conversationFork.blocked, activeBotWorking, liquidConversation, markConversationActivity, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, persistComposerDraftStore, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -4241,6 +4248,7 @@ export default function MessagesView({
   }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, liquidConversation, messages, topic, workingState.key, workingState.responderUid]);
 
   const handleRegenerateMessage = useCallback(async (message) => {
+    if (conversationFork.blocked) throw new Error('新会话尚未就绪');
     if (sendInFlightRef.current) {
       throw new Error('当前有消息正在发送');
     }
@@ -4290,7 +4298,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
+  }, [conversationFork.blocked, captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
 
   const selectCommand = (command) => {
     if (!command?.name) return;
@@ -4549,7 +4557,7 @@ export default function MessagesView({
       );
       if (!updated) return null;
       if (activeTopicRef.current === uploadTopic) {
-        setAttachmentStatus({ tone: 'success', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
+        setAttachmentStatus({ tone: 'success', source: 'attachment', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return attachment;
@@ -4610,7 +4618,7 @@ export default function MessagesView({
           : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
       });
     } else if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
-      setAttachmentStatus({ tone: 'success', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
+      setAttachmentStatus({ tone: 'success', source: 'attachment', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
     }
   };
 
@@ -4724,6 +4732,7 @@ export default function MessagesView({
   };
 
   const handleDrop = async (e) => {
+    if (conversationFork.blocked) { e.preventDefault(); return; }
     if (!hasSupportedAttachmentDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -4745,7 +4754,7 @@ export default function MessagesView({
         return alreadyAdded ? current : [...current, chatAttachment];
       });
       setAttachmentStatus(added
-        ? { tone: 'success', message: `已添加${chatAttachment.type === 'image' ? '图片' : '文件'}：${chatAttachment.name}` }
+        ? { tone: 'success', source: 'attachment', message: `已添加${chatAttachment.type === 'image' ? '图片' : '文件'}：${chatAttachment.name}` }
         : { tone: 'info', message: `${chatAttachment.name} 已在待发送附件中。` });
       return;
     }
@@ -4770,6 +4779,7 @@ export default function MessagesView({
   };
 
   const handlePaste = async (e) => {
+    if (conversationFork.blocked) { e.preventDefault(); return; }
     const files = collectClipboardFiles(e.clipboardData);
     if (files.length > 0) {
       e.preventDefault();
@@ -5023,6 +5033,10 @@ export default function MessagesView({
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
+  const forkEligible = !conversationFork.blocked && canForkConversation({
+    topic, userId: user.uid, agents: availableAgents,
+    group: String(groupInfo?.id) === String(groupId) ? groupInfo : null, members,
+  });
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
     && ((isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID)
@@ -6632,7 +6646,12 @@ export default function MessagesView({
           left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
           transform: 'none',
         } : undefined}>
-          {topBar}
+          {React.isValidElement(topBar) ? React.cloneElement(topBar, {
+            conversationActions: <ConversationForkAction key={topic} eligible={forkEligible}
+              busy={conversationFork.busy} pending={conversationFork.operation?.state === 'pending'} onCreate={conversationFork.create} />,
+          }) : <>{topBar}<ConversationForkAction key={topic} eligible={forkEligible}
+            busy={conversationFork.busy} pending={conversationFork.operation?.state === 'pending'} onCreate={conversationFork.create} /></>}
+          <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} />
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
               <span>
@@ -6870,7 +6889,7 @@ export default function MessagesView({
                   : undefined}
                 onReply={() => setReplyTo(group.message)}
                 onEdit={sameUID(group.message.from_uid, user.uid) ? handleEditMessage : undefined}
-                onRegenerate={canRegenerateAssistantMessages
+                onRegenerate={!conversationFork.blocked && canRegenerateAssistantMessages
                   && !sameUID(group.message.from_uid, user.uid)
                   && isAssistantAuthoredMessage(group.message, group.sender.isBot)
                   ? handleRegenerateMessage
@@ -7014,7 +7033,7 @@ export default function MessagesView({
         textareaRef={textareaRef}
         value={input}
         placeholder={composerPlaceholder}
-        disabled={isSendingMessage}
+        disabled={conversationFork.blocked || isSendingMessage}
         onChange={handleInputChange}
         onKeyDown={event => {
           if (previewExpanded && event.altKey && event.key === 'ArrowUp') {
@@ -7024,7 +7043,7 @@ export default function MessagesView({
         }}
         onPaste={handlePaste}
         onVoiceFinal={handleVoiceFinal}
-        voiceInputDisabled={isSendingMessage || isUploadingAttachment}
+        voiceInputDisabled={conversationFork.blocked || isSendingMessage || isUploadingAttachment}
         voiceSessionKey={topic}
         textareaProps={{
           title: previewExpanded ? '双击查看上下文 · Alt+↑ 打开上下文' : undefined,
@@ -7043,7 +7062,7 @@ export default function MessagesView({
               : undefined,
         }}
         attachmentOpen={attachmentMenuOpen}
-        attachmentDisabled={isUploadingAttachment || isSendingMessage}
+        attachmentDisabled={conversationFork.blocked || isUploadingAttachment || isSendingMessage}
         onAttachmentToggle={() => {
           setAttachmentMenuOpen((open) => !open);
         }}
@@ -7059,7 +7078,7 @@ export default function MessagesView({
         agentReplyActive={Boolean(selectedAgent) && (
           isSendingMessage || awaitingAgentReply || peerTyping || activeBotWorking
         )}
-        sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
+        sendDisabled={conversationFork.blocked || isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
         stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         separateStop={canStopActiveBotWorking && Boolean(input.trim() || pendingAttachments.length)}
         stopDisabled={isStopRequested}
@@ -7201,7 +7220,7 @@ export default function MessagesView({
         boxOverlay={isDragActive && (
           <div className="v3-drop-overlay" aria-hidden="true">
             <div className="v3-drop-title">拖放图片或文件到这里</div>
-            <div className="v3-drop-subtitle">支持聊天中的图片、本地图片、文件和文件夹，附件会先放在这里等待发送。</div>
+            <div className="v3-drop-subtitle">松开后添加到输入栏，确认后再发送。</div>
           </div>
         )}
         notices={(
@@ -7215,7 +7234,10 @@ export default function MessagesView({
             )}
             {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
               <div
-                className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+                className={!isUploadingAttachment && pendingAttachments.length > 0
+                  && (!attachmentStatus?.message || (attachmentStatus.tone === 'success' && attachmentStatus.source === 'attachment'))
+                  ? 'oc-visually-hidden'
+                  : `v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
                 role="status"
               >
                 <span>

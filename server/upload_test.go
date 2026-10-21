@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -679,8 +680,8 @@ func TestHandleServeFileKeepsDownloadSemanticsWhenPreviewIsRequested(t *testing.
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}
-	if got := recorder.Header().Get("Content-Disposition"); got != "attachment" {
-		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	if got := recorder.Header().Get("Content-Disposition"); got != `attachment; filename="`+fileName+`"` {
+		t.Fatalf("Content-Disposition = %q, want attachment with the upload filename", got)
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "application/pdf" {
 		t.Fatalf("Content-Type = %q, want application/pdf", got)
@@ -815,11 +816,53 @@ func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got != "attachment" {
-		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="`+fileName+`"` {
+		t.Fatalf("Content-Disposition = %q, want attachment with the upload filename", got)
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); got != "" {
 		t.Fatalf("Content-Security-Policy = %q, want empty for downloads", got)
+	}
+}
+
+func TestHandleServeFileDownloadUsesMessageFilename(t *testing.T) {
+	dir := t.TempDir()
+	storedName := "20261019_53e19c75a1ab6e11905e9f3ec9a8457d.html"
+	if err := os.MkdirAll(filepath.Join(dir, "files"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "<!doctype html><h1>Report</h1>"
+	if err := os.WriteFile(filepath.Join(dir, "files", storedName), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewUploadHandler(dir, "/uploads")
+	for _, tc := range []struct{ name, want string }{
+		{"下载文件名问题-报障说明.html", "下载文件名问题-报障说明.html"},
+		{"report & notes.html", "report & notes.html"},
+		{"../../资料.html", "资料.html"},
+		{`C:\files\资料.html`, "资料.html"},
+		{"report.exe", "report.exe.html"},
+		{"report", "report.html"},
+		{"report\r\nInjected: value.html", "reportInjected: value.html"},
+		{"..", storedName},
+		{"", storedName},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				rec := httptest.NewRecorder()
+				query := url.Values{"download": {"1"}, "name": {tc.name}}.Encode()
+				handler.HandleServeFile(rec, httptest.NewRequest(method, "/uploads/files/"+storedName+"?"+query, nil))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d", rec.Code)
+				}
+				disposition, params, err := mime.ParseMediaType(rec.Header().Get("Content-Disposition"))
+				if err != nil || disposition != "attachment" || params["filename"] != tc.want {
+					t.Fatalf("download header = %q, want filename %q (err=%v)", rec.Header().Get("Content-Disposition"), tc.want, err)
+				}
+				if method == http.MethodGet && rec.Body.String() != content {
+					t.Fatal("download name changed the stored resource")
+				}
+			}
+		})
 	}
 }
 
@@ -842,8 +885,106 @@ func TestHandleServeFileForcesDownloadWithoutFilenameInURL(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got != "attachment" {
-		t.Fatalf("Content-Disposition = %q, want attachment without a server-side filename", got)
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="`+fileName+`"` {
+		t.Fatalf("Content-Disposition = %q, want attachment naming the stored file", got)
+	}
+}
+
+// Regression guard for the reported bug: a Markdown upload downloaded as .txt.
+// Two defects combined, and each needs its own guard.
+//
+//  1. ?download=1 answered with a bare "attachment" and no filename. A query
+//     string makes Chrome stop trusting the path suffix and fall back to the
+//     type-derived one, so a text/plain response landed as .txt. The stored
+//     name is now always sent, which is what the assertions here cover.
+//
+//  2. The serve path never pinned .md's Content-Type. Go's builtin MIME table
+//     has no .md entry and the runtime image ships no mailcap package, so
+//     http.ServeFile sniffed the body and reported text/plain.
+//
+// Defect 2 cannot be guarded from the HTTP layer: a developer machine and the
+// CI runner both read /etc/mime.types, which already maps .md to text/markdown,
+// so the header looks correct there even with the fix reverted. That guard
+// lives in TestHandleServeFilePinsMarkdownTypeWithoutMimeDatabase instead.
+func TestHandleServeFileDownloadsMarkdownWithStoredName(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.md"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("# 学情总结\n\n| 指标 | 结果 |\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	for _, requestPath := range []string{
+		"/uploads/files/" + fileName,
+		"/uploads/files/" + fileName + "?download=1",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, requestPath, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="`+fileName+`"` {
+				t.Fatalf("Content-Disposition = %q, want attachment naming %q", got, fileName)
+			}
+			// End state the browser sees; see the doc comment for why this
+			// assertion alone would not catch a regression.
+			if got := rec.Header().Get("Content-Type"); got != "text/markdown; charset=utf-8" {
+				t.Fatalf("Content-Type = %q, want text/markdown; charset=utf-8", got)
+			}
+		})
+	}
+}
+
+// TestHandleServeFilePinsMarkdownTypeWithoutMimeDatabase guards defect 2: the
+// serve path never pinned .md's Content-Type, so http.ServeFile fell back to
+// content sniffing and reported text/plain — the type that made Chrome save the
+// file as .txt.
+//
+// The guard has to override the extension entry to be meaningful. The deployed
+// image installs no mailcap package and therefore has no /etc/mime.types, but a
+// developer machine and the CI runner both do, and that database already maps
+// .md to text/markdown. Asserting the header alone would therefore pass even
+// with the pin removed. Overriding the entry reproduces the deployed lookup.
+func TestHandleServeFilePinsMarkdownTypeWithoutMimeDatabase(t *testing.T) {
+	previous := mime.TypeByExtension(".md")
+	if err := mime.AddExtensionType(".md", "text/plain; charset=utf-8"); err != nil {
+		t.Fatalf("override .md type: %v", err)
+	}
+	t.Cleanup(func() {
+		restore := previous
+		if restore == "" {
+			restore = "text/markdown; charset=utf-8"
+		}
+		if err := mime.AddExtensionType(".md", restore); err != nil {
+			t.Errorf("restore .md type: %v", err)
+		}
+	})
+
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.md"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("# 学情总结\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	rec := httptest.NewRecorder()
+	handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/markdown; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want the pinned text/markdown; charset=utf-8", got)
 	}
 }
 
@@ -866,8 +1007,8 @@ func TestHandleServeFileForcesImageDownload(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if got := rec.Header().Get("Content-Disposition"); got != "attachment" {
-		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="`+fileName+`"` {
+		t.Fatalf("Content-Disposition = %q, want attachment with the upload filename", got)
 	}
 }
 
@@ -948,7 +1089,7 @@ func TestHandleServeFileServesMP4FilesInlineWithRangeSupport(t *testing.T) {
 
 	downloadRec := httptest.NewRecorder()
 	handler.HandleServeFile(downloadRec, httptest.NewRequest(http.MethodGet, url+"?download=1", nil))
-	if got := downloadRec.Header().Get("Content-Disposition"); got != "attachment" {
+	if got := downloadRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
 		t.Fatalf("download Content-Disposition = %q, want attachment", got)
 	}
 }
@@ -1031,7 +1172,7 @@ func TestHandleServeFileServesBrowserAudioFormatsInline(t *testing.T) {
 
 			downloadRec := httptest.NewRecorder()
 			handler.HandleServeFile(downloadRec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil))
-			if got := downloadRec.Header().Get("Content-Disposition"); got != "attachment" {
+			if got := downloadRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
 				t.Fatalf("download Content-Disposition = %q, want attachment", got)
 			}
 		})

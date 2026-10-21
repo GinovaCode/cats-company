@@ -267,6 +267,8 @@ vi.mock('../api', () => ({
   api: {
     getMessages: vi.fn(),
     getConversations: vi.fn(async () => ({ conversations: [] })),
+    getConversationFork: vi.fn(async () => { throw Object.assign(new Error('session_fork_not_found'), { status: 404 }); }),
+    forkConversation: vi.fn(),
     getFriends: vi.fn(),
     getAgents: vi.fn(),
     getAgentQuota: vi.fn(),
@@ -695,7 +697,7 @@ describe('ImageGalleryPreview', () => {
     expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
     const download = document.querySelector('a.oc-rich-media-preview-download');
     expect(download?.getAttribute('aria-label')).toBe('下载图片 one.png');
-    expect(download?.getAttribute('href')).toBe('/uploads/images/one.png?download=1');
+    expect(download?.getAttribute('href')).toBe('/uploads/images/one.png?download=1&name=one.png');
     expect(download?.getAttribute('download')).toBe('one.png');
 
     await act(async () => {
@@ -703,7 +705,7 @@ describe('ImageGalleryPreview', () => {
     });
     expect(document.querySelector('.oc-rich-image-preview-media')?.getAttribute('src')).toBe('/uploads/images/two.png');
     expect(document.querySelector('a.oc-rich-media-preview-download')?.getAttribute('href'))
-      .toBe('/uploads/images/two.png?download=1');
+      .toBe('/uploads/images/two.png?download=1&name=two.png');
     expect(document.querySelector('[aria-label="上一张图片"]')).not.toBeNull();
     expect(document.querySelector('[aria-label="上一张图片"]')?.disabled).toBe(false);
     expect(document.querySelector('[aria-label="下一张图片"]')?.disabled).toBe(false);
@@ -975,6 +977,47 @@ describe('MessagesView composer draft isolation', () => {
     } finally {
       Object.defineProperty(globalThis, 'localStorage', originalStorageDescriptor);
     }
+  });
+
+  it.each(['owner', 'friend'])('copies a %s agent conversation and opens the normal target without sending a message', async (relation) => {
+    const onActivateTopic = vi.fn();
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, topic_id: 'p2p_1_2', relation, display_name: 'Agent' }] });
+    api.forkConversation.mockImplementation(async payload => ({
+      ...payload, target_topic_id: 'grp_99', state: 'ready',
+    }));
+    await mountTopic(root, 'p2p_1_2', { onActivateTopic });
+    await act(async () => container.querySelector('[aria-label="会话操作"]').click());
+    const action = container.querySelector('[role="menuitem"]');
+    expect(action.textContent).toContain('复制为新会话');
+    await act(async () => action.click());
+    expect(container.textContent).toContain('新会话已就绪');
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent.includes('打开新会话')).click());
+    expect(onActivateTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'grp_99', isGroup: true, isAgentTask: true }));
+  });
+
+  it('does not offer a fork for a multi-human agent task or a human p2p', async () => {
+    api.getAgents.mockResolvedValue({ agents: [{ uid: 2, is_owner: true }] });
+    api.getGroupInfo.mockResolvedValue({ group: { id: 10, kind: 'agent_task' }, members: [
+      { user_id: 1, role: 'owner' }, { user_id: 2, is_bot: true }, { user_id: 3 },
+    ] });
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+  });
+
+  it('disables the pending target composer and renders provenance outside message history', async () => {
+    api.getConversationFork.mockResolvedValueOnce({
+      request_id: 'pending-copy', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_99', state: 'pending',
+    });
+    await mountTopic(root, 'grp_99', { isGroup: true, groupId: 99 });
+    expect(container.querySelector('textarea').disabled).toBe(true);
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    expect(container.querySelector('[role="note"]').textContent).toContain('复制自 p2p_1_2');
+    expect(container.querySelector('.v3-timeline').textContent).not.toContain('复制自');
+    expect(container.textContent).toContain('暂不能发送消息');
+    expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
   it('loads around a search result, highlights its anchor, and returns to search', async () => {
@@ -2147,6 +2190,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.querySelector('[aria-label="预览图片：cat.png"]')).not.toBeNull();
     expect(container.textContent).toContain('原文字和 1 个附件');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('修改后可重新发送');
   });
 
   it('restores attachments from serialized content blocks', async () => {
@@ -2269,6 +2313,9 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.querySelector('[aria-label="预览图片：cat.png"]')).not.toBeNull();
     expect(container.textContent).toContain('已添加图片：cat.png');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('已添加图片：cat.png');
 
     writeChatAttachmentDrag(dataTransfer, { type: attachment.type, payload: attachment.content.payload });
     await act(async () => {
@@ -2278,6 +2325,7 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.textContent).toContain('cat.png 已在待发送附件中');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('cat.png 已在待发送附件中');
   });
 
   it('accepts a chat file drag without uploading the file again', async () => {
@@ -6976,6 +7024,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-composer-attachment-chip.is-file')?.textContent)
       .toContain(uploadedFile.name);
     expect(container.textContent).toContain('长文本已整理为文档');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('长文本已整理为文档');
 
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="发送"]'));
@@ -7058,14 +7107,16 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.textContent).toContain('当前仅支持 JPG、PNG、GIF、WebP 图片。');
   });
 
-  it('shows upload success inline after adding an image attachment', async () => {
-    api.uploadFile.mockResolvedValueOnce({
+  it('shows upload progress then uses the attachment preview with an accessible success announcement', async () => {
+    let finishUpload;
+    api.uploadFile.mockReturnValueOnce(new Promise(resolve => { finishUpload = resolve; }));
+    const uploadedImage = {
       file_key: '20260610_abc.jpg',
       url: '/uploads/images/20260610_abc.jpg',
       name: 'cat.jpg',
       size: 12,
       mime_type: 'image/jpeg',
-    });
+    };
 
     await mountTopic(root, 'p2p_1_2');
 
@@ -7084,8 +7135,16 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.uploadFile).toHaveBeenCalledTimes(1);
     expect(api.uploadFile).toHaveBeenCalledWith(image, 'image');
+    expect(container.querySelector('.v3-attachment-notice').textContent).toContain('正在上传 cat.jpg');
+    await act(async () => {
+      finishUpload(uploadedImage);
+      await flushPromises();
+    });
     expect(container.textContent).toContain('已添加图片：cat.jpg');
-    expect(container.textContent).toContain('cat.jpg');
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('已添加图片：cat.jpg');
+    expect(container.querySelector('[aria-label="预览图片：cat.jpg"]')).not.toBeNull();
     expect(container.querySelectorAll('.v3-composer-box .v3-composer-attachment-chip')).toHaveLength(1);
   });
 
@@ -7118,6 +7177,8 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.uploadFile).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('已添加 1 个附件，另有 1 个上传失败');
+    expect(container.querySelector('.v3-attachment-notice.v3-live-input-status-error').textContent)
+      .toContain('已添加 1 个附件，另有 1 个上传失败');
     expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
     expect(container.querySelector('.v3-composer-attachment-chip img')?.getAttribute('src'))
       .toBe('/uploads/images/20260610_dog.jpg');
@@ -7214,7 +7275,9 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.textContent).toContain('手机已上传 8 个附件');
-    expect(container.querySelectorAll('.v3-attachment-notice')).toHaveLength(1);
+    expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+    expect(container.querySelector('.v3-composer-notices .oc-visually-hidden[role="status"]').textContent)
+      .toContain('手机已上传 8 个附件');
     expect(container.querySelector('.v3-composer-attachments')).toBeNull();
 
     await act(async () => {

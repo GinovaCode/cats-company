@@ -25,6 +25,7 @@ func TestSkillHubPublicationUploadMigrationMatchesStartup(t *testing.T) {
 }
 
 func TestPostgresSkillHubPublicationUploadMigration(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"empty_sql", "historical_sql_first", "historical_startup_first"} {
 		t.Run(order, func(t *testing.T) {
 			db, _ := publicationEmptyDatabase(t)
@@ -83,6 +84,7 @@ func TestPostgresSkillHubPublicationUploadMigration(t *testing.T) {
 			}
 			upload := store.SkillHubPublicationUploadInput{EntryID: old.ID, Binding: b, Issuer: "https://cats.example", Audience: "https://hub.example",
 				Action: store.SkillHubPublicationUploadAction, Revision: 1, RequestHash: strings.Repeat("a", 64), SourceSnapshotHash: strings.Repeat("b", 64), RequestBytes: 100}
+			recordCaptureForTest(t, db, captureForUpload(upload))
 			g, token := issueUpload(t, db, upload)
 			if _, err := db.db.Exec(down); err == nil || !strings.Contains(err.Error(), "retained publication upload authority") {
 				t.Fatalf("unsafe down: %v", err)
