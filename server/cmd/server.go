@@ -312,6 +312,8 @@ func main() {
 	go hub.RunPublicationDeliveries(publicationCtx)
 	stopCaptureDispatch := server.StartSkillHubPublicationCaptureDispatch(publicationCtx, hub)
 	defer stopCaptureDispatch()
+	stopUploadDispatch := server.StartSkillHubPublicationUploadDispatch(publicationCtx, hub)
+	defer stopUploadDispatch()
 	stopCommitDispatch := server.StartSkillHubPublicationCommitDispatch(publicationCtx, db)
 	defer stopCommitDispatch()
 
