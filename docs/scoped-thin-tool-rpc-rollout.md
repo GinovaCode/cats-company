@@ -4,9 +4,12 @@ Status: local changes with separately authorized isolated acceptance deployments
 NOT deployed to production or approved for release. This is the authorization
 prerequisite for multi-device target stability, not completed rollout acceptance.
 
-Directory/selection follow-up: local code now emits `xiaoba.runtime.v2` with
-all known desktop devices for the canonical speaking account, including
-unavailable devices. v1 consumers must not treat these entries as ready.
+Directory/selection follow-up: the server supports two rollout states. By
+default it emits the legacy `xiaoba.runtime.v1` envelope with only routable
+devices, so older XiaoBa clients keep working. Set
+`CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` only after the upgraded CLI/Bot pair is
+available; v2 then includes all known desktop devices, including unavailable
+ones, with explicit status. v1 consumers must not be sent the v2 envelope.
 Username aliases use the scoped selected device; ordinary text never commits a
 multi-device switch. A local WebApp confirmation UI and human-JWT-only
 `GET/POST /api/conversations/device-selection` endpoint now implement the
@@ -217,10 +220,14 @@ unverified. Keep it separate from the multi-device protocol rollout. The existin
 
 ## Contract
 
-Ordinary Bot requests must include `grant_id`, `session_key`, and `actor_user_id`
-alongside the existing target owner/device and tool name. The grant is issued by
-CatsCompany in the current trusted message identity; it is not a model argument
-and must not be printed in prompts or logs.
+In strict rollout mode, enabled with
+`CATSCO_DEVICE_GRANT_ENFORCEMENT=required`, ordinary Bot requests must include
+`grant_id`, `session_key`, and `actor_user_id` alongside the existing target
+owner/device and tool name. The grant is issued by CatsCompany in the current
+trusted message identity; it is not a model argument and must not be printed in
+prompts or logs. With the setting unset, the compatibility path still checks
+owner, runtime role, liveness and capabilities but accepts an entirely legacy
+unscoped request while the cloud Bot fleet is being upgraded.
 
 The server checks the stored, active grant against the authenticated Bot/body,
 actor, session, target owner/device, operation, device identity and current
@@ -239,7 +246,8 @@ cross-account targeting. SkillHub/publication requests retain their own checks.
 |---|---|---|
 | Old | Old | Existing behavior; the ordinary Thin RPC authorization gap remains |
 | Old | New | Client validates and sends grants; this alone does not secure the old server |
-| New | Old | Ordinary unscoped device requests are explicitly refused; no target execution |
+| New + compatibility defaults | Old | v1 metadata and legacy target checks keep existing clients functional |
+| New + strict settings | Old | Ordinary unscoped device requests are explicitly refused; no target execution |
 | New | New | Scoped requests work, invalid or expired requests are refused |
 
 These are protocol expectations, not production or paired end-to-end acceptance
@@ -356,12 +364,13 @@ storage/queues. This is not a supported-release binary or full-model matrix.
 | Baseline | Baseline | Both read the test marker |
 | Baseline | New | Both read the test marker |
 | New | New | Both read the test marker |
-| New | Baseline | Old parser rejects v2 metadata before RPC; separately serialized legacy unscoped requests are denied with device_authorization_required, without receiver execution |
+| New compatibility defaults | Baseline | v1 metadata and legacy target checks preserve the old client path |
+| New strict settings | Baseline | v2 metadata requires the new parser; legacy unscoped requests are denied with device_authorization_required |
 
 Agent-host (agent_self) execution stayed local for both Bot versions with either
-server. Fail-closed legacy behavior is NOT functional compatibility: upgrade
-cloud Bots before enabling strict service enforcement. Updating only desktop
-Connectors cannot fix the old Bot parser/grant limitation.
+server. Strict enforcement is intentionally opt-in: upgrade cloud Bots and
+desktop Connectors first, validate a canary, then enable both settings together.
+Updating only desktop Connectors cannot fix an old Bot parser/grant limitation.
 
 ### Regression qualification (2026-10-20)
 
@@ -410,10 +419,12 @@ deployment were performed by this audit.
    Broader Skill and expiry workflows are not implied by narrow tool probes.
 3. Confirm cloud chat and agent-host tools still work independently of desktop
    access. Test desktop/local-Bot compatibility and Connector login/logout.
-4. Inventory affected cloud Bots and explicitly coordinate their upgrades and
-   strict server enforcement. Start with one approved canary; do not silently
-   cut off all older clients.
-5. Missing grants require upgrading the Bot and a new live user turn. Do not
+4. Inventory affected cloud Bots and explicitly coordinate their upgrades. Start
+   with one approved canary; enable `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` and
+   `CATSCO_DEVICE_GRANT_ENFORCEMENT=required` together only after that canary
+   passes.
+5. Once strict mode is enabled, missing grants require upgrading the Bot and a
+   new live user turn. Do not
    reconstruct authorization from chat history or retry without the grant.
 6. Rollback must not silently restore the authorization bypass. If a canary
    fails, contain or suspend affected desktop access while investigating; any

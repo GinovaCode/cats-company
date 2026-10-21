@@ -515,12 +515,12 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if h == nil || h.userDevices == nil || client == nil || client.accountType != types.AccountBot || client.wikiAgentUID > 0 {
 		return fmt.Errorf("ordinary device tools require an authenticated bot connection")
 	}
-	if strings.TrimSpace(msg.GrantID) == "" || strings.TrimSpace(msg.SessionKey) == "" || strings.TrimSpace(msg.ActorUserID) == "" {
+	hasGrantFields := strings.TrimSpace(msg.GrantID) != "" || strings.TrimSpace(msg.SessionKey) != "" || strings.TrimSpace(msg.ActorUserID) != ""
+	if !hasGrantFields && deviceGrantEnforcementRequired() {
 		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is required; upgrade the cloud Bot and start a new user turn"}
 	}
-	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
-	if !ok {
-		return fmt.Errorf("device grant is not active")
+	if hasGrantFields && (strings.TrimSpace(msg.GrantID) == "" || strings.TrimSpace(msg.SessionKey) == "" || strings.TrimSpace(msg.ActorUserID) == "") {
+		return &thinToolRPCAuthorizationError{code: "device_authorization_required", message: "device tool authorization is incomplete; start a new user turn"}
 	}
 	operation := DeviceGrantOperation(toolName)
 	if toolName == "import_file" {
@@ -528,6 +528,39 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	}
 	if !isAllowedDeviceRPCOperation(operation) && operation != DeviceGrantSendFile {
 		return fmt.Errorf("tool is not supported by ordinary device rpc")
+	}
+	if !hasGrantFields {
+		// Compatibility mode still validates owner, runtime role, liveness and
+		// capabilities. It only omits the new per-turn grant until the Bot has
+		// been upgraded and strict enforcement is enabled.
+		if err := h.authorizeOrdinaryThinToolRPCTarget(ownerUID, deviceID); err != nil {
+			return err
+		}
+		device, ok := h.userDevices.activeDevice(ownerUID, deviceID)
+		if !ok {
+			return fmt.Errorf("target device is not active")
+		}
+		allowed := false
+		for _, capability := range device.Capabilities {
+			if capability == operation {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("target device does not support the requested operation")
+		}
+		if msg.ExpiresAt <= 0 {
+			msg.ExpiresAt = unixMillis(h.userDevices.now().Add(defaultThinToolRPCTTL))
+		}
+		if msg.ExpiresAt <= unixMillis(h.userDevices.now()) {
+			return fmt.Errorf("device request has expired")
+		}
+		return nil
+	}
+	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
+	if !ok {
+		return fmt.Errorf("device grant is not active")
 	}
 	if grant.Source != "catscompany" || parseFormattedUID(grant.ActorUserID) <= 0 ||
 		grant.AgentID != formatUID(client.uid) || grant.OwnerUserID != formatUID(ownerUID) ||

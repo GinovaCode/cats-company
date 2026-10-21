@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	defaultUserDeviceTTL          = 5 * time.Minute
-	defaultDeviceGrantTTL         = 10 * time.Minute
-	defaultDevicePreferenceTTL    = 30 * time.Minute
-	maxUserDeviceIDLength         = 128
-	deviceGrantIDRandomLength     = 12
-	userDeviceGrantIdentitySrc    = "metadata.catsco_identity"
-	channelDeviceGrantIdentitySrc = "channel_identity_link"
+	defaultUserDeviceTTL             = 5 * time.Minute
+	defaultDeviceGrantTTL            = 10 * time.Minute
+	defaultDevicePreferenceTTL       = 30 * time.Minute
+	maxUserDeviceIDLength            = 128
+	maxDeviceSelectionRevisionLength = 64
+	deviceGrantIDRandomLength        = 12
+	userDeviceGrantIdentitySrc       = "metadata.catsco_identity"
+	channelDeviceGrantIdentitySrc    = "channel_identity_link"
 )
 
 var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -528,37 +529,6 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	return DeviceTurnContext{
 		Grants:    grants,
 		Selection: selection,
-	}
-}
-
-func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
-	return r.unavailableDeviceSelectionForOwner(actorUID, actorUID, topicID, topicType, agentUID, reason, candidates)
-}
-
-func (r *userDeviceRegistry) unavailableDeviceSelectionForOwner(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
-	createdAt := unixMillis(r.now())
-	actorUserID := formatUID(actorUID)
-	ownerUserID := formatUID(ownerUID)
-	agentID := ""
-	if agentUID > 0 {
-		agentID = formatUID(agentUID)
-	}
-	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID, actorUID)
-	return &DeviceSelection{
-		Kind:            "user_device_selection",
-		Source:          "catscompany",
-		SchemaVersion:   1,
-		Status:          DeviceSelectionUnavailable,
-		SelectionSource: reason,
-		SessionKey:      sessionKey,
-		TopicID:         topicID,
-		TopicType:       topicType,
-		ActorUserID:     actorUserID,
-		OwnerUserID:     ownerUserID,
-		AgentID:         agentID,
-		Candidates:      deviceSelectionCandidates(candidates),
-		CandidateCount:  len(candidates),
-		CreatedAt:       createdAt,
 	}
 }
 

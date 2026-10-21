@@ -148,6 +148,7 @@ func selectionSnapshot(t *testing.T, handler *DeviceHandler, actor int64, topic,
 }
 
 func TestConversationDeviceSelectionAPI(t *testing.T) {
+	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "required")
 	hub, handler := deviceSelectionFixture(t)
 	requester := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud-body", send: make(chan []byte, 8)}
 	hub.addClient(requester)

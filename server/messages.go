@@ -842,9 +842,21 @@ func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, top
 			"status":   status,
 		})
 	}
+	if !xiaobaRuntimeV2Enabled() {
+		// v1 consumers assume every entry is ready. During the compatibility
+		// phase, only advertise routable devices and keep the v1 wire shape.
+		ready := make([]map[string]interface{}, 0, len(devices))
+		for _, device := range devices {
+			if device["status"] == "ready" {
+				ready = append(ready, device)
+			}
+		}
+		return map[string]interface{}{
+			"schema":  "xiaoba.runtime.v1",
+			"devices": ready,
+		}
+	}
 	return map[string]interface{}{
-		// v1 consumers assume every entry is ready; do not present offline
-		// computers under that schema during coordinated upgrades.
 		"schema":      "xiaoba.runtime.v2",
 		"ownerUserId": formatUID(ownerUID),
 		"devices":     devices,

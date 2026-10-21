@@ -15,7 +15,10 @@ import (
 func TestDeviceSelectionDatabaseContract(t *testing.T) {
 	dsn := os.Getenv("CATS_DEVICE_SELECTION_TEST_MYSQL_DSN")
 	if dsn == "" {
-		t.Skip("set isolated device-selection database DSN for real-engine acceptance")
+		dsn = os.Getenv("CATS_MYSQL_TEST_DSN")
+	}
+	if dsn == "" {
+		t.Skip("set CATS_MYSQL_TEST_DSN (or the isolated override) for real-engine acceptance")
 	}
 	first := &Adapter{}
 	if err := first.Open(dsn); err != nil {

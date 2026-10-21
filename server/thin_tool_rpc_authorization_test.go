@@ -8,6 +8,7 @@ import (
 )
 
 func TestThinToolRPCScopedAuthorization(t *testing.T) {
+	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "required")
 	for _, name := range []string{
 		"valid shared bot", "missing grant", "unknown grant", "missing session", "wrong session",
 		"wrong actor", "wrong owner", "wrong device", "wrong bot", "wrong body", "missing body",
@@ -107,5 +108,23 @@ func TestThinToolRPCScopedAuthorization(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestThinToolRPCLegacyCompatibilityChecksTarget(t *testing.T) {
+	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "")
+	hub := NewHub(&agentTestStore{owners: map[int64]int64{42: 8}}, nil)
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID: "legacy-a", RuntimeRole: "desktop", Status: "online", Capabilities: []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud-body", send: make(chan []byte, 1)}
+	if err := hub.authorizeOrdinaryThinToolRPC(client, &MsgThinToolRPC{ToolName: "read_file"}, 7, device.DeviceID, "read_file"); err != nil {
+		t.Fatalf("legacy target should remain compatible: %v", err)
+	}
+	if err := hub.authorizeOrdinaryThinToolRPC(client, &MsgThinToolRPC{ToolName: "read_file"}, 7, "missing", "read_file"); err == nil {
+		t.Fatal("legacy target validation accepted an unknown device")
 	}
 }

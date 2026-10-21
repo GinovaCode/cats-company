@@ -621,6 +621,7 @@ func TestBotRecipientIdentityExcludesServerRuntimeFromHumanDeviceRouting(t *test
 }
 
 func TestXiaobaRuntimeMetadataOnlyIncludesCurrentAccountDevices(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
 			42: {ID: 42, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot},

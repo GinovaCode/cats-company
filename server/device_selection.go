@@ -98,7 +98,7 @@ func (h *DeviceHandler) HandleConversationSelection(w http.ResponseWriter, r *ht
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil || req.ExpectedRevision == nil || *req.ExpectedRevision == "" || len(*req.ExpectedRevision) > 128 || decoder.Decode(&struct{}{}) != io.EOF {
+		if err := decoder.Decode(&req); err != nil || req.ExpectedRevision == nil || *req.ExpectedRevision == "" || len(*req.ExpectedRevision) > maxDeviceSelectionRevisionLength || decoder.Decode(&struct{}{}) != io.EOF {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id and expected_revision required"})
 			return
 		}

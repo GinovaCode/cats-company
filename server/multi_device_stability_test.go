@@ -10,6 +10,7 @@ import (
 // These are isolated regression specifications: no production account,
 // socket or filesystem tool is used. They intentionally fail on the baseline.
 func TestMultiDeviceRegressionDirectoryContainsBothComputers(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
 	hub := NewHub(&identityMessageStore{users: map[int64]*types.User{
 		7:  {ID: 7, Username: "audit-alice", AccountType: types.AccountHuman},
 		42: {ID: 42, Username: "audit-bot", AccountType: types.AccountBot},
@@ -46,6 +47,31 @@ func TestMultiDeviceRegressionDirectoryContainsBothComputers(t *testing.T) {
 	devices = metadata["devices"].([]map[string]interface{})
 	if len(devices) != 2 || devices[0]["deviceId"] != "audit-device-a" || devices[0]["status"] != "unavailable" || devices[1]["status"] != "ready" {
 		t.Fatalf("offline A must remain visible without changing stable ordering: %#v", devices)
+	}
+}
+
+func TestXiaobaRuntimeMetadataDefaultsToLegacyV1(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "")
+	hub := NewHub(&identityMessageStore{users: map[int64]*types.User{
+		7:  {ID: 7, Username: "audit-alice", AccountType: types.AccountHuman},
+		42: {ID: 42, Username: "audit-bot", AccountType: types.AccountBot},
+	}}, nil)
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID: "audit-device-a", DisplayName: "Audit A", RuntimeRole: "desktop", Status: "online",
+		Capabilities: []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	hub.addClient(client)
+	hub.bindDeviceClient(7, device, client)
+	metadata := hub.buildXiaobaRuntimeMetadata(7, 42, "p2p_7_42")
+	if metadata["schema"] != "xiaoba.runtime.v1" {
+		t.Fatalf("compatibility default schema = %#v", metadata["schema"])
+	}
+	if _, ok := metadata["ownerUserId"]; ok {
+		t.Fatal("legacy metadata must not expose v2-only owner field")
 	}
 }
 
@@ -127,6 +153,7 @@ func TestMultiDeviceRegressionAmbiguousFirstTurnMustAsk(t *testing.T) {
 }
 
 func TestMultiDeviceRegressionUnscopedBotRequestMustNotReachOtherAccount(t *testing.T) {
+	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "required")
 	// The authenticated requester belongs to account 8, while the mock device
 	// belongs to account 7. There is no user turn, grant, friendship or session.
 	hub := NewHub(&agentTestStore{owners: map[int64]int64{42: 8}}, nil)

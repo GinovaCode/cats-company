@@ -16,7 +16,10 @@ import (
 func TestDeviceSelectionDatabaseContract(t *testing.T) {
 	dsn := os.Getenv("CATS_DEVICE_SELECTION_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("set isolated device-selection database DSN for real-engine acceptance")
+		dsn = os.Getenv("CATS_PG_TEST_DSN")
+	}
+	if dsn == "" {
+		t.Skip("set CATS_PG_TEST_DSN (or the isolated override) for real-engine acceptance")
 	}
 	first := &Adapter{}
 	if err := first.Open(dsn); err != nil {
@@ -53,7 +56,7 @@ func TestDeviceSelectionDatabaseContract(t *testing.T) {
 	if err != nil || read == nil || read.DeviceID != "device-a" {
 		t.Fatal("reopen", read, err)
 	}
-	// Session and revision comparisons must be case-sensitive on MySQL too.
+	// Session and revision comparisons must remain case-sensitive on PostgreSQL.
 	if read, err := second.GetConversationDeviceSelection(ctx, actor, "session:v2:catscompany:group:grp_1:actor:user-a:agent:usr42"); err != nil || read != nil {
 		t.Fatal("case folded scope", read, err)
 	}
@@ -104,7 +107,10 @@ func TestDeviceSelectionDatabaseContract(t *testing.T) {
 func TestDeviceSelectionNumberedMigrationRealDatabase(t *testing.T) {
 	dsn := os.Getenv("CATS_DEVICE_SELECTION_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("set isolated device-selection database DSN for real-engine acceptance")
+		dsn = os.Getenv("CATS_PG_TEST_DSN")
+	}
+	if dsn == "" {
+		t.Skip("set CATS_PG_TEST_DSN (or the isolated override) for real-engine acceptance")
 	}
 	adapter := &Adapter{}
 	if err := adapter.Open(dsn); err != nil {
