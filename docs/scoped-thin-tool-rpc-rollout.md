@@ -15,6 +15,39 @@ devices, so older XiaoBa clients keep working. Set
 `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` only after the upgraded CLI/Bot pair is
 available; v2 then includes all known desktop devices, including unavailable
 ones, with explicit status. v1 consumers must not be sent the v2 envelope.
+
+For a canary rollout, leave `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=0` and set
+`CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS` to the comma-separated numeric UIDs of
+upgraded cloud Bots. Entries must be positive decimal UIDs (for example,
+`42,43`), not names, `usr`-prefixed IDs or wildcards. The global flag, when
+enabled, opts in all Bots regardless of the canary list. Both production and
+test Compose stacks pass these runtime flags through with disabled defaults.
+Keep the server-side environment values out of source control.
+
+The canary gate uses the recipient Bot UID when building the directory and
+explicit-device capabilities, and the grant's bound AgentID at consumption.
+Unlisted Bots retain v1 metadata and default-only legacy grants. Removing a Bot
+from the list rejects its outstanding explicit capabilities after the new
+configuration is applied; default grants keep their existing selection checks.
+This setting does not enable global strict grant enforcement or broaden
+delegated/cross-account access. It affects all conversations served by that Bot,
+so every live body of a listed Bot must run the paired client version. Keep
+configuration consistent on all server instances and restart/recreate the server
+container to apply environment changes. Already dispatched work is not cancelled.
+
+Canary acceptance sequence:
+
+1. Deploy the upgraded cloud Bot with a known rollback release and verify its
+   connection while the canary list is empty.
+2. Deploy the service changes, then opt in only that Bot UID in server-side env.
+   Recreate the server container and verify the effective flags and health.
+3. Check one opted-in and one unlisted Bot: the former receives v2 and separate
+   explicit grants; the latter stays on v1 with default-only grants.
+4. Verify default A, explicit B, both devices, unchanged default and offline
+   behavior using harmless files. Confirm no cross-account target is routable.
+5. On rollback, remove the UID and recreate the server before restoring an old
+   Bot version. Keep global v2 disabled throughout the canary period.
+
 Username aliases use the scoped selected device; ordinary text never commits a
 multi-device switch. A local WebApp confirmation UI and human-JWT-only
 `GET/POST /api/conversations/device-selection` endpoint now implement the

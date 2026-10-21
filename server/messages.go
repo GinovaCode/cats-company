@@ -842,7 +842,7 @@ func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, top
 			"status":   status,
 		})
 	}
-	if !xiaobaRuntimeV2Enabled() {
+	if !xiaobaRuntimeV2EnabledForBot(recipientUID) {
 		// v1 consumers assume every entry is ready. During the compatibility
 		// phase, only advertise routable devices and keep the v1 wire shape.
 		ready := make([]map[string]interface{}, 0, len(devices))

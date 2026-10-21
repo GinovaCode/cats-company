@@ -143,7 +143,7 @@ func (r *userDeviceRegistry) grantSelectionCurrent(grant ScopedDeviceGrant) bool
 		// A default's lease controls aliases, not explicit task targets. The
 		// grant's own short expiry is checked by lookupGrant; a default switch
 		// still invalidates every grant through the revision comparison above.
-		return xiaobaRuntimeV2Enabled() && grant.OwnerUserID == grant.ActorUserID
+		return xiaobaRuntimeV2EnabledForBot(parseFormattedUID(grant.AgentID)) && grant.OwnerUserID == grant.ActorUserID
 	}
 	if current.DeviceID == "" {
 		return grant.SelectionRevision == ""
