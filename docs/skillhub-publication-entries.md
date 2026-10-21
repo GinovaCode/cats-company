@@ -230,12 +230,18 @@ observation; final publication confirmation and Agent binding are not implemente
 on this branch. Do not enable it in production yet. With the flag off, the existing
 publish-and-add flow remains in use. The observer polls at 20-second intervals,
 leaving headroom below the shared 12/minute source/capture/Cloud read budget.
-Recovery hints are scoped to the account, device, Bot, Skill and workspace revision;
+Recovery hints are scoped to the account, device, Bot, Skill and source generation;
 terminal failures/cancellation clear them, while a passed validation report is
 still in-flight and retains its hint. v2 requires all three existing
 read/workspace/delivery flags, all default off, and a supported durable adapter.
 Capabilities describe configuration/support, not worker or runtime health; the
 RPC also refuses admission when the local delivery worker is not running.
+
+The workspace UI uses each Skill's optional `publication_source.local_skill_id`
+and `publication_source.workspace_generation` from XiaoBa. These are a dedicated
+`pubsrc-` selector and per-source fingerprint, not the legacy list's
+`local_skill_id` or `workspace_revision`. Missing/invalid descriptors stop the
+staged operation without falling back to legacy sharing.
 
 The v2 request uses the same exact three-field payload, request ID and owner/device
 headers as v1. It first authenticates the current human/Owner and verifies the

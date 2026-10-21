@@ -116,12 +116,12 @@ function readStoredPublicationRequest(key) {
     const value = JSON.parse(raw);
     if (!value || typeof value !== 'object'
       || !/^pubreq_[A-Za-z0-9_-]{1,120}$/.test(String(value.requestId || ''))
-      || !/^[0-9a-f]{64}$/.test(String(value.workspaceRevision || ''))) {
+      || !/^[0-9a-f]{64}$/.test(String(value.sourceGeneration || ''))) {
       return null;
     }
     return {
       requestId: String(value.requestId),
-      workspaceRevision: String(value.workspaceRevision).toLowerCase(),
+      sourceGeneration: String(value.sourceGeneration).toLowerCase(),
     };
   } catch {
     return null;
@@ -130,10 +130,10 @@ function readStoredPublicationRequest(key) {
 
 function writeStoredPublicationRequest(key, value) {
   try {
-    if (value?.requestId && value?.workspaceRevision) {
+    if (value?.requestId && value?.sourceGeneration) {
       window.sessionStorage?.setItem(key, JSON.stringify({
         requestId: String(value.requestId),
-        workspaceRevision: String(value.workspaceRevision).toLowerCase(),
+        sourceGeneration: String(value.sourceGeneration).toLowerCase(),
       }));
     }
     else window.sessionStorage?.removeItem(key);
@@ -913,13 +913,16 @@ export async function waitForSkillHubPublicationSource({
   waitFor = wait,
   maxAttempts = 12,
   retryDelayMs = 20_000,
+  isCurrent = () => true,
 }) {
   const id = String(entryRequestId || '').trim();
   if (!id) throw new Error('SkillHub 没有返回持久发布请求标识。');
   let last;
   for (let attempt = 0; attempt < Math.max(1, Number(maxAttempts) || 1); attempt += 1) {
+    if (!isCurrent()) return null;
     try {
       const response = await getSourceStatus(id);
+      if (!isCurrent()) return null;
       const sourceStatus = response?.sourceStatus || response?.source_status;
       const stage = String(sourceStatus?.stage || '').trim();
       if (stage === 'cancelled') return { entryRequestId: id, stage, sourceStatus };
@@ -941,6 +944,7 @@ export async function waitForSkillHubPublicationSource({
           // Capture status is an optional deployment capability. Keep polling
           // the source record when an older server does not expose it.
         }
+        if (!isCurrent()) return null;
         const capture = captureStatus?.captureStatus || captureStatus?.capture_status;
         if (capture?.stage === 'cancelled') {
           return { entryRequestId: id, stage: 'cancelled', sourceStatus, captureStatus };
@@ -967,6 +971,7 @@ export async function waitForSkillHubPublicationSource({
           // Cloud status is an optional observation and must not turn a valid
           // source verification into a false failure.
         }
+        if (!isCurrent()) return null;
         const cloud = cloudStatus?.cloudStatus || cloudStatus?.cloud_status;
         if (cloud?.localIntentState === 'cancelled') {
           return { entryRequestId: id, stage: 'cancelled', sourceStatus, captureStatus, cloudStatus };
@@ -1205,9 +1210,14 @@ export default function SkillHubView({
   const catalogueRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
+  const publicationObservationRef = useRef(0);
   const skillMutationRef = useRef('');
   const requestedBotSwitchRef = useRef('');
   const previousBotUIDRef = useRef(restoredView.selectedBotUID || '');
+
+  useEffect(() => () => {
+    publicationObservationRef.current += 1;
+  }, [user?.uid]);
 
   useEffect(() => {
     if (viewStateRef) viewStateRef.current = browseStateRef.current;
@@ -2243,6 +2253,8 @@ export default function SkillHubView({
     const requestedBotUID = selectedBotUIDRef.current;
     const requestedDeviceID = selectedDeviceID;
     if (!requestedBotUID || selectedAgentIsFriend || !requestedDeviceID || !definitionReady || saving || sharingSkill) return;
+    const observationGeneration = ++publicationObservationRef.current;
+    const isCurrentObservation = () => publicationObservationRef.current === observationGeneration;
     const requestedRevision = definition.revision;
     const requestedSkills = definition.skills;
     setSharingSkill(localSkill.name);
@@ -2267,15 +2279,21 @@ export default function SkillHubView({
         // server advertises it, a timeout/rejection must remain visible to the
         // user; silently switching to the legacy one-shot publisher could
         // create a second task and lose the original audit trail.
-        if (!localWorkspaceRevision) {
-          throw new Error('当前运行工作区没有可验证版本，请刷新工作区后重试发布。');
+        // New publication selectors intentionally differ from the legacy
+        // local_skill_id and the whole-list workspace_revision. Only the
+        // Runtime's per-Skill descriptor can be resolved by sourceProbe.v1.
+        const publicationSource = localSkill.publication_source;
+        const sourceGeneration = String(publicationSource?.workspace_generation || '');
+        const sourceID = String(publicationSource?.local_skill_id || '');
+        if (!/^pubsrc-[a-f0-9]{48}$/.test(sourceID) || !/^[a-f0-9]{64}$/.test(sourceGeneration)) {
+          throw new Error('当前 Skill 没有可核验的发布来源，请确认 XiaoBa 支持发布来源核验并刷新工作区后重试。');
         }
         const requestStorageKey = publicationRequestStorageKey(user?.uid, requestedDeviceID, requestedBotUID, localSkill.localSkillId);
         let admitted;
         const savedRequest = readStoredPublicationRequest(requestStorageKey);
-        const sameWorkspaceRequest = savedRequest?.workspaceRevision === localWorkspaceRevision;
+        const sameWorkspaceRequest = savedRequest?.sourceGeneration === sourceGeneration;
         if (savedRequest && !sameWorkspaceRequest) {
-          // A changed workspace is a new candidate. Never replay an older
+          // A changed source is a new candidate. Never replay an older
           // idempotency key against the new bytes.
           writeStoredPublicationRequest(requestStorageKey, null);
         }
@@ -2302,7 +2320,7 @@ export default function SkillHubView({
         if (!admitted) {
           writeStoredPublicationRequest(requestStorageKey, {
             requestId: requestID,
-            workspaceRevision: localWorkspaceRevision,
+            sourceGeneration,
           });
           admitted = assertSkillHubPublicationAdmission(await requestSkillHubDeviceTool({
             deviceId: requestedDeviceID,
@@ -2311,8 +2329,8 @@ export default function SkillHubView({
             requestId: requestID,
             payload: {
               bot_uid: requestedBotUID,
-              local_skill_id: localSkill.localSkillId,
-              workspace_generation: localWorkspaceRevision,
+              local_skill_id: sourceID,
+              workspace_generation: sourceGeneration,
             },
             timeoutMs: 30_000,
           }), requestedBotUID);
@@ -2323,14 +2341,15 @@ export default function SkillHubView({
         if (!entryRequestId) throw new Error('SkillHub 没有返回持久发布请求标识。');
         writeStoredPublicationRequest(requestStorageKey, {
           requestId: requestID,
-          workspaceRevision: localWorkspaceRevision,
+          sourceGeneration,
         });
         if (requestedBotUID !== selectedBotUIDRef.current) return;
         setLocalNotice(`“${localSkill.name}”已持久受理，正在等待运行环境检查；完成后仍需继续确认发布与添加到 Agent。`);
         // The admission response is the only synchronous result. Continue
         // observing in the background so leaving the page cannot create a
         // duplicate publication or make the request appear to have failed.
-        void waitForSkillHubPublicationSource({ entryRequestId }).then((observation) => {
+        void waitForSkillHubPublicationSource({ entryRequestId, isCurrent: isCurrentObservation }).then((observation) => {
+          if (!observation || !isCurrentObservation()) return;
           const rejected = observation.report?.validation?.outcome === 'rejected';
           if (['needs_user_action', 'cancelled'].includes(observation.stage) || rejected) {
             clearStoredPublicationRequest(requestStorageKey, requestID);

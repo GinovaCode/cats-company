@@ -1527,6 +1527,8 @@ describe('SkillHubView', () => {
   describe('durable workspace publication UI', () => {
     const entryID = `pubentry_${'a'.repeat(32)}`;
     const revision = 'a'.repeat(64);
+    const sourceID = `pubsrc-${'b'.repeat(48)}`;
+    const sourceGeneration = 'c'.repeat(64);
     const storageKey = 'catsco.skillhub.publication.request.7.alice-device.42.local-1';
     const oldRequestID = 'pubreq_lost-reply';
     let workspace;
@@ -1548,6 +1550,7 @@ describe('SkillHubView', () => {
         skills_path: 'C:\\xiaoba\\skills', workspace_revision: revision,
         total_skills: 1, page_offset: 0, next_offset: null,
         skills: [{ local_skill_id: 'local-1', name: 'local-demo', description: 'Local demo',
+          publication_source: { local_skill_id: sourceID, workspace_generation: sourceGeneration },
           relative_path: 'local-demo', source: 'user', can_share: true }],
       };
       requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
@@ -1566,7 +1569,7 @@ describe('SkillHubView', () => {
 
     function saveRecoveryHint(overrides = {}) {
       sessionStorage.setItem(storageKey, JSON.stringify({
-        requestId: oldRequestID, workspaceRevision: revision, ...overrides,
+        requestId: oldRequestID, sourceGeneration, ...overrides,
       }));
     }
 
@@ -1611,7 +1614,7 @@ describe('SkillHubView', () => {
       await publish();
       expect(admissions()).toEqual([expect.objectContaining({
         deviceId: 'alice-device', ownerUserId: 7, requestId: expect.stringMatching(/^pubreq_/),
-        payload: { bot_uid: '42', local_skill_id: 'local-1', workspace_generation: revision },
+        payload: { bot_uid: '42', local_skill_id: sourceID, workspace_generation: sourceGeneration },
       })]);
       expect(container.textContent).toContain('已通过 SkillHub 发布校验，等待最终发布结果');
       expect(container.textContent).not.toContain('已发布到团队，并添加到当前 Agent');
@@ -1640,8 +1643,8 @@ describe('SkillHubView', () => {
       expectNoLegacyMutations();
     });
 
-    it.each(['cancelled', 'missing', 'changed workspace'])('starts a new admission after %s recovery', async (kind) => {
-      saveRecoveryHint(kind === 'changed workspace' ? { workspaceRevision: 'b'.repeat(64) } : {});
+    it.each(['cancelled', 'missing', 'changed source'])('starts a new admission after %s recovery', async (kind) => {
+      saveRecoveryHint(kind === 'changed source' ? { sourceGeneration: 'b'.repeat(64) } : {});
       if (kind === 'missing') {
         api.getSkillHubPublicationEntryByRequest.mockRejectedValue({ status: 404 });
       } else {
@@ -1651,7 +1654,7 @@ describe('SkillHubView', () => {
       await publish();
       expect(admissions()).toHaveLength(1);
       expect(admissions()[0].requestId).not.toBe(oldRequestID);
-      if (kind === 'changed workspace') expect(api.getSkillHubPublicationEntryByRequest).not.toHaveBeenCalled();
+      if (kind === 'changed source') expect(api.getSkillHubPublicationEntryByRequest).not.toHaveBeenCalled();
       expectNoLegacyMutations();
     });
 
@@ -1704,7 +1707,7 @@ describe('SkillHubView', () => {
     );
 
     it('does not recover another account or device request', async () => {
-      const hint = JSON.stringify({ requestId: oldRequestID, workspaceRevision: revision });
+      const hint = JSON.stringify({ requestId: oldRequestID, sourceGeneration });
       sessionStorage.setItem(storageKey.replace('.7.', '.8.'), hint);
       sessionStorage.setItem(storageKey.replace('alice-device', 'old-device'), hint);
       await openWorkspace();
@@ -1719,6 +1722,46 @@ describe('SkillHubView', () => {
       await publish();
       expect(container.textContent).toContain('云端状态：unknown');
       expectNoLegacyMutations();
+    });
+
+    it.each(['missing', 'legacy selector', 'invalid generation'])('rejects %s source descriptors without legacy fallback', async (kind) => {
+      if (kind === 'missing') delete workspace.skills[0].publication_source;
+      if (kind === 'legacy selector') workspace.skills[0].publication_source.local_skill_id = 'local-1';
+      if (kind === 'invalid generation') workspace.skills[0].publication_source.workspace_generation = 'invalid';
+      await openWorkspace();
+      await publish();
+      expect(container.textContent).toContain('没有可核验的发布来源');
+      expect(admissions()).toHaveLength(0);
+      expect(sessionStorage.getItem(storageKey)).toBeNull();
+      expectNoLegacyMutations();
+    });
+
+    it('stops an obsolete observer when the same request is recovered again', async () => {
+      const oldRead = deferred();
+      api.getSkillHubPublicationSourceStatus.mockImplementationOnce(() => oldRead.promise);
+      await openWorkspace();
+      await publish();
+      api.getSkillHubPublicationEntryByRequest.mockResolvedValue(recoveredEntry());
+      await publish();
+      expect(container.textContent).toContain('来源已核验');
+      await act(async () => {
+        oldRead.resolve({ sourceStatus: { stage: 'cancelled' } });
+      });
+      expect(container.textContent).not.toContain('发布请求已取消');
+      expect(sessionStorage.getItem(storageKey)).not.toBeNull();
+      expect(api.getSkillHubPublicationSourceStatus).toHaveBeenCalledTimes(2);
+      expect(admissions()).toHaveLength(1);
+    });
+
+    it('does not continue polling after the view is unmounted', async () => {
+      const source = deferred();
+      api.getSkillHubPublicationSourceStatus.mockImplementationOnce(() => source.promise);
+      await openWorkspace();
+      await publish();
+      await act(async () => { root.render(null); });
+      await act(async () => { source.resolve({ sourceStatus: { stage: 'verified' } }); });
+      expect(api.getSkillHubPublicationCaptureStatus).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem(storageKey)).not.toBeNull();
     });
 
     it('reports exhausted polling and retains the in-flight request without fallback', async () => {
