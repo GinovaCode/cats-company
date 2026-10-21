@@ -31,6 +31,9 @@ import SkillHubView, {
   collectSkillHubWorkspacePages,
   waitForSkillHubWorkspaceAfterSwitch,
   waitForPublishedSkillHubEntry,
+  waitForSkillHubPublicationSource,
+  assertSkillHubPublicationAdmission,
+  shouldUseDurablePublicationUI,
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
@@ -59,6 +62,11 @@ vi.mock('../api', () => ({
     getLocalSkills: vi.fn(),
     getLocalStatusDetails: vi.fn(),
     shareLocalSkill: vi.fn(),
+    getSkillHubPublicationCapabilities: vi.fn(),
+    getSkillHubPublicationSourceStatus: vi.fn(),
+    getSkillHubPublicationCaptureStatus: vi.fn(),
+    getSkillHubPublicationCloudStatus: vi.fn(),
+    getSkillHubPublicationValidationReport: vi.fn(),
   },
   requestSkillHubDeviceTool: vi.fn(),
 }));
@@ -87,6 +95,7 @@ describe('SkillHubView', () => {
     vi.clearAllMocks();
     globalThis.localStorage?.clear();
     api.syncSkillHubPublisherProfile.mockResolvedValue({ synced: true });
+    api.getSkillHubPublicationCapabilities.mockResolvedValue({ workspaceDurableCreateEnabled: false });
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
@@ -1407,6 +1416,89 @@ describe('SkillHubView', () => {
     expect(getSkill).toHaveBeenCalledTimes(2);
     expect(getVersion).toHaveBeenCalledTimes(2);
     expect(waitFor).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts only a durable publication admission response', () => {
+    expect(assertSkillHubPublicationAdmission({
+      schema_version: 2,
+      entry_request_id: `pubentry_${'a'.repeat(32)}`,
+      state: 'waiting_runtime',
+      replay: false,
+    }, '42')).toMatchObject({ state: 'waiting_runtime' });
+    expect(() => assertSkillHubPublicationAdmission({
+      schema_version: 2,
+      entry_request_id: `pubentry_${'a'.repeat(32)}`,
+      state: 'published',
+      replay: false,
+    }, '42')).toThrow(/有效的持久发布受理结果/);
+  });
+
+  it('requires an explicit UI rollout before changing the publish button contract', () => {
+    expect(shouldUseDurablePublicationUI({ workspaceDurableCreateEnabled: true })).toBe(false);
+    expect(shouldUseDurablePublicationUI({
+      workspaceDurableCreateEnabled: true,
+      workspaceDurablePublishUiEnabled: true,
+    })).toBe(true);
+  });
+
+  it('reads a durable source failure report without retrying or mutating the task', async () => {
+    const getSourceStatus = vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      entryRequestId: `pubentry_${'a'.repeat(32)}`,
+      sourceStatus: { stage: 'needs_user_action', code: 'publication.source_changed' },
+    });
+    const getReport = vi.fn().mockResolvedValue({
+      validation: { issues: [{ code: 'metadata.description_missing' }] },
+    });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: `pubentry_${'a'.repeat(32)}`,
+      getSourceStatus,
+      getReport,
+      waitFor: vi.fn(),
+    })).resolves.toMatchObject({
+      stage: 'needs_user_action',
+      report: { validation: { issues: [{ code: 'metadata.description_missing' }] } },
+    });
+    expect(getSourceStatus).toHaveBeenCalledTimes(1);
+    expect(getReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits through capture and Cloud acceptance before reading the validation report', async () => {
+    const id = `pubentry_${'b'.repeat(32)}`;
+    const getSourceStatus = vi.fn().mockResolvedValue({ sourceStatus: { stage: 'verified' } });
+    const getCaptureStatus = vi.fn().mockResolvedValue({ captureStatus: { stage: 'captured' } });
+    const getCloudStatus = vi.fn().mockResolvedValue({ cloudStatus: { stage: 'acceptance_recorded' } });
+    const getReport = vi.fn().mockResolvedValue({ validation: { outcome: 'rejected', issues: [] } });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: id,
+      getSourceStatus,
+      getCaptureStatus,
+      getCloudStatus,
+      getReport,
+      waitFor: vi.fn(),
+    })).resolves.toMatchObject({ stage: 'report', report: { validation: { outcome: 'rejected' } } });
+    expect(getSourceStatus).toHaveBeenCalledTimes(1);
+    expect(getCaptureStatus).toHaveBeenCalledTimes(1);
+    expect(getCloudStatus).toHaveBeenCalledTimes(1);
+    expect(getReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a terminal capture failure instead of converting it to a timeout', async () => {
+    const id = `pubentry_${'c'.repeat(32)}`;
+    const getSourceStatus = vi.fn().mockResolvedValue({ sourceStatus: { stage: 'verified' } });
+    const getCaptureStatus = vi.fn().mockResolvedValue({ captureStatus: {
+      stage: 'needs_user_action', code: 'publication.capture_rejected',
+    } });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: id,
+      getSourceStatus,
+      getCaptureStatus,
+      getReport: vi.fn().mockRejectedValue(new Error('not ready')),
+      waitFor: vi.fn(),
+    })).resolves.toMatchObject({
+      stage: 'needs_user_action',
+      captureStatus: { captureStatus: { stage: 'needs_user_action' } },
+    });
   });
 
   it('opens with the simplified Agent capability workspace', async () => {
