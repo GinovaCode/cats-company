@@ -13,6 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  xiaoba-client-compatibility:
+    name: XiaoBa client compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CatsCompany
+        uses: actions/checkout@v6
+      - name: Check paired XiaoBa mainline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/check-xiaoba-client-compat.py --mode main
+      - name: Test compatibility gate
+        run: python3 -m unittest deploy/xiaoba-client-compatibility_test.py
+
   backend:
     name: Backend tests
     runs-on: ubuntu-latest
