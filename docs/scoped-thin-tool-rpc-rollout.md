@@ -24,6 +24,19 @@ enabled, opts in all Bots regardless of the canary list. Both production and
 test Compose stacks pass these runtime flags through with disabled defaults.
 Keep the server-side environment values out of source control.
 
+Release gating uses the same flag: `docs/xiaoba-cli-compatibility.json` declares
+`enabledByEnv: CATSCO_XIAOBA_RUNTIME_V2_ENABLED` with
+`assumeEnabledWhenUnset: false`, and `.github/workflows/deploy-prod.yml` wires it
+from the repository variable of the same name. While the variable is unset or
+`0`, the protocol is treated as switched off and the production gate does not
+require a released client (unrelated deployments stay unblocked). **Turning the
+protocol on therefore takes two steps:** set `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1`
+for the deployment and set the repository variable `CATSCO_XIAOBA_RUNTIME_V2_ENABLED`
+to `1`, which re-arms the requirement that the latest XiaoBa stable release
+contains the paired client commit. Setting the repository variable to an
+unrecognised value also counts as enabled, so a typo cannot silently disable the
+gate.
+
 The canary gate uses the recipient Bot UID when building the directory and
 explicit-device capabilities, and the grant's bound AgentID at consumption.
 Unlisted Bots retain v1 metadata and default-only legacy grants. Removing a Bot
