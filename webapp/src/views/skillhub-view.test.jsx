@@ -1972,7 +1972,7 @@ describe('SkillHubView', () => {
       expectNoLegacyMutations();
     });
 
-    it('invalidates a pending repair handoff when the workspace is refreshed', async () => {
+    it.each(['resolved', 'rejected'])('restores repair and reread buttons after a refreshed handoff is %s', async (settlement) => {
       sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
         JSON.stringify({ entryRequestId: entryID }));
       api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID,
@@ -1988,7 +1988,90 @@ describe('SkillHubView', () => {
       await act(async () => Simulate.click([...container.querySelectorAll('.cc-skillhub-local-actions button')]
         .find(button => button.textContent.includes('刷新'))));
       expect(args.isCurrent()).toBe(false);
-      await act(async () => pending.resolve());
+      await act(async () => settlement === 'resolved' ? pending.resolve() : pending.reject(new Error('private stale error')));
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const reopened = document.querySelector('.cc-skillhub-publication-report-dialog');
+      const repair = [...reopened.querySelectorAll('button')].find(button => button.textContent.includes('新建修复对话'));
+      const reread = [...reopened.querySelectorAll('button')].find(button => button.textContent === '重新读取');
+      expect(repair.disabled).toBe(false);
+      expect(reread.disabled).toBe(false);
+      expect(reopened.textContent).not.toContain('正在创建');
+      expect(reopened.textContent).not.toContain('private stale error');
+      const retry = deferred();
+      onStartPublicationRepair.mockReturnValueOnce(retry.promise);
+      await act(async () => Simulate.click(repair));
+      expect(onStartPublicationRepair).toHaveBeenCalledTimes(2);
+      expect(onStartPublicationRepair.mock.calls[1][0].isCurrent()).toBe(true);
+      expect(repair.disabled).toBe(true);
+      await act(async () => retry.resolve());
+      expect(repair.disabled).toBe(false);
+      expectNoLegacyMutations();
+    });
+
+    it.each(['resolved', 'rejected'])('rereading recovers a still-pending handoff and its late %s result cannot clear the retry', async (settlement) => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID,
+        validation: { schemaVersion: '1', outcome: 'rejected', issues: [] } });
+      const pending = deferred();
+      const retry = deferred();
+      const onStartPublicationRepair = vi.fn().mockReturnValueOnce(pending.promise).mockReturnValueOnce(retry.promise);
+      await openWorkspace({ onStartPublicationRepair });
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const dialog = document.querySelector('.cc-skillhub-publication-report-dialog');
+      await act(async () => Simulate.click([...dialog.querySelectorAll('button')].find(button => button.textContent === '新建修复对话')));
+      const oldRequest = onStartPublicationRepair.mock.calls[0][0];
+      await act(async () => Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')));
+      await act(async () => Simulate.click([...container.querySelectorAll('.cc-skillhub-local-actions button')]
+        .find(button => button.textContent.includes('刷新'))));
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const reopened = document.querySelector('.cc-skillhub-publication-report-dialog');
+      const repair = [...reopened.querySelectorAll('button')].find(button => button.textContent === '新建修复对话');
+      const reread = [...reopened.querySelectorAll('button')].find(button => button.textContent === '重新读取');
+      expect(repair.disabled).toBe(false);
+      expect(reread.disabled).toBe(false);
+      await act(async () => Simulate.click(repair));
+      expect(onStartPublicationRepair).toHaveBeenCalledTimes(2);
+      const newRequest = onStartPublicationRepair.mock.calls[1][0];
+      expect(newRequest.isCurrent()).toBe(true);
+      await act(async () => settlement === 'resolved' ? pending.resolve() : pending.reject(new Error('private stale error')));
+      expect(oldRequest.isCurrent()).toBe(false);
+      expect(newRequest.isCurrent()).toBe(true);
+      expect(repair.disabled).toBe(true);
+      expect(reread.disabled).toBe(true);
+      expect(reopened.textContent).not.toContain('private stale error');
+      await act(async () => retry.resolve());
+      expect(repair.disabled).toBe(false);
+      expect(reread.disabled).toBe(false);
+      expectNoLegacyMutations();
+    });
+
+    it.each(['resolved', 'rejected'])('does not let an invalidated report read that is %s clear a newer read', async (settlement) => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      const pending = deferred();
+      api.getSkillHubPublicationValidationReport.mockReturnValueOnce(pending.promise);
+      await openWorkspace();
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const dialog = document.querySelector('.cc-skillhub-publication-report-dialog');
+      expect(dialog.textContent).toContain('正在读取发布报告');
+      await act(async () => Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')));
+      await act(async () => Simulate.click([...container.querySelectorAll('.cc-skillhub-local-actions button')]
+        .find(button => button.textContent.includes('刷新'))));
+      const retry = deferred();
+      api.getSkillHubPublicationValidationReport.mockReturnValueOnce(retry.promise);
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const reopened = document.querySelector('.cc-skillhub-publication-report-dialog');
+      const reread = [...reopened.querySelectorAll('button')].find(button => button.textContent === '重新读取');
+      await act(async () => settlement === 'resolved' ? pending.resolve({ schemaVersion: 1, entryRequestId: entryID,
+        validation: { schemaVersion: '1', outcome: 'rejected', issues: [] } }) : pending.reject(new Error('private stale error')));
+      expect(reread.disabled).toBe(true);
+      expect(reopened.textContent).toContain('正在读取发布报告');
+      await act(async () => retry.resolve({ schemaVersion: 1, entryRequestId: entryID,
+        validation: { schemaVersion: '1', outcome: 'rejected', issues: [] } }));
+      expect(reread.disabled).toBe(false);
+      expect(reopened.textContent).not.toContain('正在读取发布报告');
+      expect(reopened.textContent).not.toContain('private stale error');
       expectNoLegacyMutations();
     });
 

@@ -28,7 +28,7 @@ beforeEach(() => {
   isCurrentAuthSession.mockReturnValue(true);
   sessionStorage.clear();
   sessionStorage.setItem('catsco.skillhub.publication.repair.7.grp_77', JSON.stringify(reference));
-  api.getGroupInfo.mockResolvedValue({ group: { id: 77, kind: 'agent_task' }, members: [
+  api.getGroupInfo.mockResolvedValue({ group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [
     { user_id: 7 }, { user_id: 42, is_bot: true },
   ] });
   api.getSkillHubPublicationRepairContext.mockImplementation(async () => context());
@@ -61,11 +61,14 @@ it('restores the reference, revalidates membership and safely displays the repor
 });
 
 it.each([
-  { group: { id: 77, kind: 'standard' }, members: [{ user_id: 42, is_bot: true }] },
-  { group: { id: 78, kind: 'agent_task' }, members: [{ user_id: 42, is_bot: true }] },
-  { group: { id: 77, kind: 'agent_task' }, members: [{ user_id: 43, is_bot: true }] },
-  { group: { id: 77, kind: 'agent_task' }, members: [{ user_id: 42, is_bot: true }, { user_id: 43, is_bot: true }] },
-  { group: { id: 77, kind: 'agent_task' }, members: [] },
+  { group: { id: 77, kind: 'standard', owner_id: 7 }, members: [{ user_id: 42, is_bot: true }] },
+  { group: { id: 78, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 42, is_bot: true }] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 43, is_bot: true }] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 42, is_bot: true }, { user_id: 43, is_bot: true }] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 8 }, members: [{ user_id: 7 }, { user_id: 42, is_bot: true }] },
+  { group: { id: 77, kind: 'agent_task' }, members: [{ user_id: 42, is_bot: true }] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 42, account_type: 'bot' }] },
 ])('refuses a forged or mismatched conversation hint: %j', async (response) => {
   api.getGroupInfo.mockResolvedValue(response);
   await render();

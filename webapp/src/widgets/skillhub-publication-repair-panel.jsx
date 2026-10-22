@@ -32,8 +32,9 @@ export default function PublicationRepairPanel({ userUid, topic, isGroup, groupI
       if (!current()) return;
       const group = response?.group;
       const bots = (Array.isArray(response?.members) ? response.members : [])
-        .filter(member => member.is_bot === true || member.account_type === 'bot');
+        .filter(member => member.is_bot === true);
       if (String(group?.id) !== String(groupId) || group.kind !== 'agent_task'
+        || String(group.owner_id) !== String(userUid)
         || bots.length !== 1 || String(bots[0].user_id) !== hint.botUid) {
         throw new Error('task mismatch');
       }

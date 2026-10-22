@@ -1253,6 +1253,7 @@ export default function SkillHubView({
   const saveRequestRef = useRef(0);
   const publicationObservationRef = useRef(0);
   const publicationRepairRef = useRef(null);
+  const publicationReportRequestsRef = useRef(new Map());
   const skillMutationRef = useRef('');
   const requestedBotSwitchRef = useRef('');
   const previousBotUIDRef = useRef(restoredView.selectedBotUID || '');
@@ -1282,6 +1283,8 @@ export default function SkillHubView({
     definitionRequestRef.current += 1;
     localRequestRef.current += 1;
     saveRequestRef.current += 1;
+    publicationRepairRef.current = null;
+    publicationReportRequestsRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -2319,15 +2322,22 @@ export default function SkillHubView({
     if (!saved?.entryRequestId || saved.loading) return;
     const observationGeneration = publicationObservationRef.current;
     const workspaceRequest = localRequestRef.current;
-    const isCurrent = () => observationGeneration === publicationObservationRef.current
+    const request = {};
+    publicationReportRequestsRef.current.set(key, request);
+    // Rereading is also a recovery path for an invalidated handoff. A late
+    // handoff must neither hold the buttons busy nor overwrite this new read.
+    if (publicationRepairRef.current?.key === key) publicationRepairRef.current = null;
+    const isCurrent = () => publicationReportRequestsRef.current.get(key) === request
+      && observationGeneration === publicationObservationRef.current
       && workspaceRequest === localRequestRef.current
       && botUID === selectedBotUIDRef.current && deviceID === selectedDeviceIDRef.current;
-    setPublicationReports(current => ({ ...current, [key]: { ...saved, loading: true, error: '' } }));
+    const reading = { ...saved, repairing: false, repairError: '' };
+    setPublicationReports(current => ({ ...current, [key]: { ...reading, loading: true, error: '' } }));
     try {
       const response = await api.getSkillHubPublicationValidationReport(saved.entryRequestId);
       const report = normalizePublicationReport(response, saved.entryRequestId);
       if (!isCurrent()) return;
-      setPublicationReports(current => ({ ...current, [key]: { ...saved, ...report, loading: false, error: '' } }));
+      setPublicationReports(current => ({ ...current, [key]: { ...reading, ...report, loading: false, error: '' } }));
     } catch (error) {
       if (!isCurrent()) return;
       // A transport or authority failure is not a new validation rejection.
@@ -2339,6 +2349,14 @@ export default function SkillHubView({
         error: error?.status === 404 ? '尚无可读取的云端校验报告，或当前账号无法读取。'
           : '暂时无法读取发布报告，请稍后重试。',
       } }));
+    } finally {
+      if (publicationReportRequestsRef.current.get(key) === request) {
+        const invalidated = !isCurrent();
+        setPublicationReports(current => current[key]?.entryRequestId === saved.entryRequestId && current[key].loading
+          ? { ...current, [key]: { ...current[key], loading: false,
+            ...(invalidated ? { error: '工作区已变化，请重新读取发布报告。' } : {}) } } : current);
+        publicationReportRequestsRef.current.delete(key);
+      }
     }
   };
 
@@ -2354,7 +2372,7 @@ export default function SkillHubView({
     const authRevision = getAuthRevision();
     const observation = publicationObservationRef.current;
     const workspaceRequest = localRequestRef.current;
-    const request = {};
+    const request = { key };
     const isCurrent = () => publicationRepairRef.current === request
       && isCurrentAuthSession(token, authRevision)
       && observation === publicationObservationRef.current && workspaceRequest === localRequestRef.current
@@ -2368,8 +2386,13 @@ export default function SkillHubView({
         ...saved, repairing: false, repairError: '无法创建修复对话，请重新读取报告并确认当前仍拥有该 Bot。',
       } }));
     } finally {
-      if (isCurrent()) setPublicationReports(current => ({ ...current, [key]: { ...current[key], repairing: false } }));
-      if (publicationRepairRef.current === request) publicationRepairRef.current = null;
+      if (publicationRepairRef.current === request) {
+        const invalidated = !isCurrent();
+        setPublicationReports(current => current[key]?.entryRequestId === saved.entryRequestId && current[key].repairing
+          ? { ...current, [key]: { ...current[key], repairing: false,
+            ...(invalidated ? { repairError: '工作区或会话已变化，创建修复对话已中止，请重试。' } : {}) } } : current);
+        publicationRepairRef.current = null;
+      }
     }
   };
 
