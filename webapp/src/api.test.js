@@ -993,6 +993,29 @@ describe('local XiaoBa SkillHub bridge', () => {
     });
   });
 
+  test('uses the exact human publication plan, confirm, and status routes', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ state: 'commit_accepted' }),
+    });
+    const entry = `pubentry_${'a'.repeat(32)}`;
+    await apiModule.api.planSkillHubPublicationCommit(entry, true);
+    await apiModule.api.confirmSkillHubPublicationCommit(entry, 'b'.repeat(64));
+    await apiModule.api.getSkillHubPublicationCommitStatus(entry);
+    expect(global.fetch.mock.calls.map(([url, options]) => [url, options.method])).toEqual([
+      [`/api/skillhub/publications/commit/entries/${entry}/plan`, 'POST'],
+      [`/api/skillhub/publications/commit/entries/${entry}/confirm`, 'POST'],
+      [`/api/skillhub/publications/commit/entries/${entry}/status`, 'GET'],
+    ]);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+      schemaVersion: 1, confirmVersionPublish: true,
+    });
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
+      schemaVersion: 1, confirmationKey: 'b'.repeat(64),
+    });
+  });
+
   test('falls back to the compatible local Skill list when Dashboard 1.4.6 returns empty objects', async () => {
     const skills = [{ name: 'deep-research', source: 'user' }];
     global.fetch = vi.fn()

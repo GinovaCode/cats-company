@@ -34,6 +34,8 @@ import SkillHubView, {
   waitForSkillHubPublicationSource,
   assertSkillHubPublicationAdmission,
   shouldUseDurablePublicationUI,
+  shouldUseDurablePublicationCommitUI,
+  waitForSkillHubPublicationCommitStatus,
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
@@ -68,6 +70,9 @@ vi.mock('../api', () => ({
     getSkillHubPublicationCaptureStatus: vi.fn(),
     getSkillHubPublicationCloudStatus: vi.fn(),
     getSkillHubPublicationValidationReport: vi.fn(),
+    planSkillHubPublicationCommit: vi.fn(),
+    confirmSkillHubPublicationCommit: vi.fn(),
+    getSkillHubPublicationCommitStatus: vi.fn(),
   },
   requestSkillHubDeviceTool: vi.fn(),
 }));
@@ -101,6 +106,9 @@ describe('SkillHubView', () => {
     api.getSkillHubPublicationCaptureStatus.mockReset();
     api.getSkillHubPublicationCloudStatus.mockReset();
     api.getSkillHubPublicationValidationReport.mockReset();
+    api.planSkillHubPublicationCommit.mockReset();
+    api.confirmSkillHubPublicationCommit.mockReset();
+    api.getSkillHubPublicationCommitStatus.mockReset();
     api.syncSkillHubPublisherProfile.mockResolvedValue({ synced: true });
     api.getSkillHubPublicationCapabilities.mockResolvedValue({ workspaceDurableCreateEnabled: false });
     api.getMyBots.mockResolvedValue({
@@ -1446,6 +1454,36 @@ describe('SkillHubView', () => {
       workspaceDurableCreateEnabled: true,
       workspaceDurablePublishUiEnabled: true,
     })).toBe(true);
+    expect(shouldUseDurablePublicationCommitUI({
+      workspaceDurableCreateEnabled: true,
+      workspaceDurablePublishUiEnabled: true,
+    })).toBe(false);
+    expect(shouldUseDurablePublicationCommitUI({
+      workspaceDurableCreateEnabled: true,
+      workspaceDurablePublishUiEnabled: true,
+      workspaceDurableHumanCommitEnabled: true,
+    })).toBe(true);
+  });
+
+  it('observes only verified terminal human publication states', async () => {
+    const getStatus = vi.fn()
+      .mockResolvedValueOnce({ executionState: 'commit_accepted' })
+      .mockResolvedValueOnce({ executionState: 'published', result: {
+        skillId: 'alice/demo', version: '1.0.0',
+      } });
+    const waitFor = vi.fn();
+    await expect(waitForSkillHubPublicationCommitStatus({
+      entryRequestId: `pubentry_${'e'.repeat(32)}`, getStatus, waitFor,
+    })).resolves.toMatchObject({ state: 'published' });
+    expect(waitFor).toHaveBeenCalledExactlyOnceWith(20_000);
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a commit task recoverable when final status polling expires', async () => {
+    const getStatus = vi.fn().mockResolvedValue({ executionState: 'commit_accepted' });
+    await expect(waitForSkillHubPublicationCommitStatus({
+      entryRequestId: `pubentry_${'f'.repeat(32)}`, getStatus, maxAttempts: 2, waitFor: vi.fn(),
+    })).resolves.toMatchObject({ state: 'waiting' });
   });
 
   it('reads a durable source failure report without retrying or mutating the task', async () => {
@@ -1598,6 +1636,15 @@ describe('SkillHubView', () => {
       expect(container.querySelector('.cc-skillhub-local-card')).toBeTruthy();
     }
 
+    async function openWorkspaceWithFeedback() {
+      await act(async () => {
+        root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+        await Promise.resolve();
+      });
+      await openCustomSkills();
+      expect(container.querySelector('.cc-skillhub-local-card')).toBeTruthy();
+    }
+
     async function publish() {
       await act(async () => {
         Simulate.click(container.querySelector('.cc-skillhub-local-card button'));
@@ -1623,6 +1670,68 @@ describe('SkillHubView', () => {
       await publish();
       expect(admissions()).toHaveLength(1);
       expectNoLegacyMutations();
+    });
+
+    it('requires human confirmation and binds only after verified published status', async () => {
+      api.getSkillHubPublicationCapabilities.mockResolvedValue({
+        workspaceDurableCreateEnabled: true,
+        workspaceDurablePublishUiEnabled: true,
+        workspaceDurableHumanCommitEnabled: true,
+      });
+      api.getSkillHubPublicationCloudStatus.mockResolvedValue({ cloudStatus: {
+        stage: 'acceptance_recorded', executionState: 'unknown',
+      } });
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ validation: { outcome: 'passed' } });
+      api.planSkillHubPublicationCommit.mockResolvedValue({ plan: {
+        skillId: 'alice/local-demo', version: '1.0.0', confirmationKey: 'd'.repeat(64),
+      } });
+      api.confirmSkillHubPublicationCommit.mockResolvedValue({ state: 'commit_accepted' });
+      api.getSkillHubPublicationCommitStatus.mockResolvedValue({
+        executionState: 'published', result: {
+          skillId: 'alice/local-demo', version: '1.0.0',
+          packageId: 'pkg_12345678-1234-4123-8123-123456789abc',
+          checksumSha256: 'e'.repeat(64), publishedAt: '2026-10-22T01:00:00Z',
+        },
+      });
+      api.getSkillHubVersion.mockResolvedValue({ version: {
+        id: 'alice/local-demo', version: '1.0.0', contentHash: 'f'.repeat(64),
+      } });
+      requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+        if (toolName === 'skillhub.localWorkspace.get') return workspace;
+        if (toolName === 'skillhub.publication.createEntry.v2') {
+          return { schema_version: 2, entry_request_id: entryID, state: 'waiting_runtime', replay: false };
+        }
+        if (toolName === 'skillhub.localSkill.finalize') return {
+          schema: 'xiaoba.skillhub.local_finalize.v1', bot_uid: '42',
+          skill_id: 'alice/local-demo', version: '1.0.0', content_hash: 'f'.repeat(64),
+        };
+        throw new Error(`Unexpected mutation: ${toolName}`);
+      });
+      await openWorkspaceWithFeedback();
+      await publish();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const dialog = document.body.querySelector('.cc-confirm-overlay');
+      expect(dialog?.textContent).toContain('确认发布');
+      await act(async () => {
+        Simulate.click(dialog.querySelector('.cc-confirm-submit'));
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(api.planSkillHubPublicationCommit).toHaveBeenCalledWith(entryID, false);
+      expect(api.confirmSkillHubPublicationCommit).toHaveBeenCalledWith(entryID, 'd'.repeat(64));
+      expect(api.getSkillHubPublicationCommitStatus).toHaveBeenCalledWith(entryID);
+      expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, expect.arrayContaining([expect.objectContaining({
+        skillId: 'alice/local-demo', version: '1.0.0', contentHash: 'f'.repeat(64),
+      })]));
+      expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+        toolName: 'skillhub.localSkill.finalize',
+        payload: expect.objectContaining({ skill_id: 'alice/local-demo', version: '1.0.0' }),
+      }));
+      expect(container.textContent).toContain('已发布到团队，并添加到当前 Agent');
     });
 
     it('recovers a lost admission reply on the next click instead of creating another entry', async () => {

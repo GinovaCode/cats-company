@@ -167,6 +167,11 @@ export function shouldUseDurablePublicationUI(capabilities) {
     && capabilities?.workspaceDurablePublishUiEnabled === true;
 }
 
+export function shouldUseDurablePublicationCommitUI(capabilities) {
+  return shouldUseDurablePublicationUI(capabilities)
+    && capabilities?.workspaceDurableHumanCommitEnabled === true;
+}
+
 function runWithTimeout(operation, timeoutMs, createTimeoutError) {
   let result;
   try {
@@ -1001,6 +1006,35 @@ export async function waitForSkillHubPublicationSource({
     if (attempt < maxAttempts - 1) await waitFor(retryDelayMs);
   }
   return { entryRequestId: id, stage: 'waiting', observation: last };
+}
+
+export async function waitForSkillHubPublicationCommitStatus({
+  entryRequestId,
+  getStatus = api.getSkillHubPublicationCommitStatus,
+  waitFor = wait,
+  maxAttempts = 12,
+  retryDelayMs = 20_000,
+  isCurrent = () => true,
+}) {
+  const id = String(entryRequestId || '').trim();
+  if (!id) throw new Error('SkillHub 没有返回持久发布请求标识。');
+  let last;
+  for (let attempt = 0; attempt < Math.max(1, Number(maxAttempts) || 1); attempt += 1) {
+    if (!isCurrent()) return null;
+    try {
+      const response = await getStatus(id);
+      if (!isCurrent()) return null;
+      const state = String(response?.executionState || response?.execution_state || '').trim();
+      if (['published', 'failed', 'cancelled', 'rejected'].includes(state)) {
+        return { entryRequestId: id, state, response };
+      }
+      last = { entryRequestId: id, state, response };
+    } catch (error) {
+      last = error;
+    }
+    if (attempt < maxAttempts - 1) await waitFor(retryDelayMs);
+  }
+  return { entryRequestId: id, state: 'waiting', observation: last };
 }
 
 export function resolveSharedSkillHubMetadata(shared, publishedVersion) {
@@ -2345,6 +2379,97 @@ export default function SkillHubView({
         });
         if (requestedBotUID !== selectedBotUIDRef.current) return;
         setLocalNotice(`“${localSkill.name}”已持久受理，正在等待运行环境检查；完成后仍需继续确认发布与添加到 Agent。`);
+        const useHumanCommit = shouldUseDurablePublicationCommitUI(publicationCapabilities);
+        const finishHumanCommit = async () => {
+          const planRequest = async (confirmVersionPublish) => api.planSkillHubPublicationCommit(
+            entryRequestId, confirmVersionPublish,
+          );
+          let plan;
+          try {
+            plan = await planRequest(false);
+          } catch (error) {
+            if (String(error?.code || '') !== 'publication.version_confirmation_required') throw error;
+            const confirmedVersion = await feedback.confirm({
+              title: `确认发布“${localSkill.name}”的新版本？`,
+              message: 'SkillHub 检测到这会创建或覆盖一个新版本。确认后才会继续最终发布。',
+              confirmLabel: '确认新版本',
+              cancelLabel: '稍后处理',
+            });
+            if (!confirmedVersion) {
+              setLocalNotice(`“${localSkill.name}”已通过校验，发布受理仍保留；你可以稍后继续确认。`);
+              return false;
+            }
+            plan = await planRequest(true);
+          }
+          const planData = plan?.plan || {};
+          const planSkillID = String(planData.skillId || planData.skill_id || '').trim();
+          const planVersion = String(planData.version || '').trim();
+          const confirmationKey = String(planData.confirmationKey || '').trim();
+          if (!planSkillID || !planVersion || !/^[a-f0-9]{64}$/.test(confirmationKey)) {
+            throw new Error('SkillHub 没有返回可确认的最终发布计划。');
+          }
+          const confirmed = await feedback.confirm({
+            title: `确认发布“${localSkill.name}”？`,
+            message: `将发布 ${planSkillID} ${planVersion}，并在成功后添加到当前 Agent。`,
+            confirmLabel: '确认发布并添加',
+            cancelLabel: '稍后处理',
+          });
+          if (!confirmed) {
+            setLocalNotice(`“${localSkill.name}”已通过校验，发布受理仍保留；你可以稍后继续确认。`);
+            return false;
+          }
+          const accepted = await api.confirmSkillHubPublicationCommit(entryRequestId, confirmationKey);
+          if (String(accepted?.state || '') !== 'commit_accepted') {
+            throw new Error('SkillHub 没有确认最终发布请求。');
+          }
+          setLocalNotice(`“${localSkill.name}”已确认发布，正在等待云端完成…`);
+          const status = await waitForSkillHubPublicationCommitStatus({
+            entryRequestId,
+            isCurrent: isCurrentObservation,
+          });
+          if (!status || status.state === 'waiting') {
+            setLocalSkillsError('最终发布仍在处理中，受理记录已保留；请刷新后继续查看。');
+            return false;
+          }
+          if (status.state !== 'published') {
+            throw new Error(`最终发布未完成（${status.response?.errorCode || status.state}）。`);
+          }
+          const result = status.response?.result;
+          const resultSkillID = String(result?.skillId || '').trim();
+          const resultVersion = String(result?.version || '').trim();
+          if (resultSkillID !== planSkillID || resultVersion !== planVersion
+            || !/^pkg_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(String(result?.packageId || ''))
+            || !/^[a-f0-9]{64}$/.test(String(result?.checksumSha256 || ''))
+            || !String(result?.publishedAt || '').trim()) {
+            throw new Error('SkillHub 返回的最终发布结果不完整，已停止自动绑定。');
+          }
+          const published = await api.getSkillHubVersion(resultSkillID, resultVersion);
+          const version = published?.version || published;
+          const contentHash = String(version?.contentHash || version?.content_hash || '').trim().toLowerCase();
+          if (!contentHash) throw new Error('SkillHub 没有返回已发布版本的内容指纹，已停止自动绑定。');
+          const saved = await saveSkills(upsertSkillRef(requestedSkills, {
+            source: 'skillhub', skillId: resultSkillID, version: resultVersion, contentHash,
+          }, localSkill.skillHub?.reference?.skillId), { botUID: requestedBotUID, revision: requestedRevision });
+          if (!saved?.ok) throw new Error('Skill 已发布，但添加到当前 Agent 失败，请刷新后重试。');
+          bound = true;
+          const finalized = await requestSkillHubDeviceTool({
+            deviceId: requestedDeviceID, ownerUserId: user?.uid,
+            toolName: SKILLHUB_DEVICE_TOOLS.finalize,
+            payload: {
+              bot_uid: requestedBotUID, local_skill_id: localSkill.localSkillId,
+              skill_name: localSkill.name, skill_id: resultSkillID, version: resultVersion,
+              content_hash: contentHash, uploaded_at: result.publishedAt,
+            }, timeoutMs: 120_000,
+          });
+          assertSkillHubDeviceResult(finalized, {
+            toolName: SKILLHUB_DEVICE_TOOLS.finalize, botUID: requestedBotUID,
+            reference: { skillId: resultSkillID, version: resultVersion, contentHash },
+          });
+          clearStoredPublicationRequest(requestStorageKey, requestID);
+          await Promise.all([searchCatalogue(query), loadLocalWorkspace(requestedBotUID, requestedDeviceID)]);
+          setLocalNotice(`“${localSkill.name}”已发布到团队，并添加到当前 Agent。`);
+          return true;
+        };
         // The admission response is the only synchronous result. Continue
         // observing in the background so leaving the page cannot create a
         // duplicate publication or make the request appear to have failed.
@@ -2373,7 +2498,15 @@ export default function SkillHubView({
               const code = validation.issues?.[0]?.code || 'publication.validation_rejected';
               setLocalSkillsError(`发布校验未通过（${code}）。请打开发布详情查看报告。`);
             } else if (validation?.outcome === 'passed') {
-              setLocalNotice(`“${localSkill.name}”已通过 SkillHub 发布校验，等待最终发布结果。`);
+              if (useHumanCommit) {
+                void finishHumanCommit().catch((error) => {
+                  if (!isCurrentObservation()) return;
+                  setLocalNotice('');
+                  setLocalSkillsError(error?.message || '最终发布失败，受理记录仍可恢复。');
+                });
+              } else {
+                setLocalNotice(`“${localSkill.name}”已通过 SkillHub 发布校验，等待最终发布结果。`);
+              }
             }
           } else if (observation.stage === 'verified') {
             const cloudState = observation.cloudStatus?.cloudStatus?.executionState

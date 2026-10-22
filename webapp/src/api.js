@@ -979,6 +979,24 @@ export const api = {
     undefined,
     options,
   ),
+  planSkillHubPublicationCommit: (entryRequestId, confirmVersionPublish, options = {}) => request(
+    'POST',
+    `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/plan`,
+    { schemaVersion: 1, confirmVersionPublish: confirmVersionPublish === true },
+    options,
+  ),
+  confirmSkillHubPublicationCommit: (entryRequestId, confirmationKey, options = {}) => request(
+    'POST',
+    `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/confirm`,
+    { schemaVersion: 1, confirmationKey: String(confirmationKey || '') },
+    options,
+  ),
+  getSkillHubPublicationCommitStatus: (entryRequestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/status`,
+    undefined,
+    options,
+  ),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {

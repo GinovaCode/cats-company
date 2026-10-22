@@ -87,7 +87,7 @@ request body or arbitrary source path. A display name is never an identity key.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `sourceStatusReadsEnabled`, `cloudStatusReadsEnabled`, effective `workspaceCreateEnabled`, `workspaceDurableCreateEnabled`, `workspaceDurablePublishUiEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. `workspaceDurablePublishUiEnabled` is a separate default-off rollout flag; it is true only when `CATSCO_SKILLHUB_PUBLICATION_DURABLE_PUBLISH_UI_ENABLED` is enabled in addition to durable admission support. Adapter support is not a database or target-runtime health check. |
+| `GET /api/skillhub/publications/capabilities` | Available to authenticated humans even with reads off. Returns `schemaVersion: 1`, effective `entryReadsEnabled`, `sourceStatusReadsEnabled`, `cloudStatusReadsEnabled`, effective `workspaceCreateEnabled`, `workspaceDurableCreateEnabled`, `workspaceDurablePublishUiEnabled`, `workspaceDurableHumanCommitEnabled`, `chatCreateEnabled: false`, and `minPollIntervalMs: 5000`. The two durable UI fields are separate default-off rollout flags; they are true only when their corresponding environment switches (`CATSCO_SKILLHUB_PUBLICATION_DURABLE_PUBLISH_UI_ENABLED` and `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`) are enabled in addition to durable admission support. Adapter support is not a database or target-runtime health check. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}` | When enabled on a supported store, reads the original publisher's record. Missing, wrong-publisher and disabled reads return the same 404. Bot ownership transfer does not grant historical record access to the new owner. |
 | `GET /api/skillhub/publications/requests/{requestId}` | Same private projection, using the original account-scoped request ID to recover a lost creation response. This does not reauthorize, create, replay or mutate an entry. |
 | `GET /api/skillhub/publications/entries/{entryRequestId}/source-status` | Original publisher's historical source-probe progress, using the same read flag and private transport guards. Requires the optional PostgreSQL source-status reader. Never claims, settles or resumes a task. |
@@ -225,9 +225,10 @@ New orchestration clients should use `skillhub.publication.createEntry.v2` when
 `workspaceDurableCreateEnabled` is true in the capabilities response. The original
 `createEntry.v1` below keeps its probe-before-admission contract. The workspace UI
 uses v2 only when the separate `workspaceDurablePublishUiEnabled` capability is
-also true. This rollout is for isolated staging of admission and read-only
-observation; final publication confirmation and Agent binding are not implemented
-on this branch. Do not enable it in production yet. With the flag off, the existing
+also true. Final publication confirmation and Agent binding are additionally gated
+by `workspaceDurableHumanCommitEnabled`, which requires the independent
+`CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED` switch. Do not enable either
+rollout in production yet. With the durable UI flag off, the existing
 publish-and-add flow remains in use. The observer polls at 20-second intervals,
 leaving headroom below the shared 12/minute source/capture/Cloud read budget.
 Recovery hints are scoped to the account, device, Bot, Skill and source generation;
@@ -1124,10 +1125,15 @@ ignored. Duplicate/unknown/null fields and malformed paths fail closed.
 This slice handles publication of an already accepted immutable candidate; it
 does not approve semantic repairs or synthesize description text. Future repair
 revisions require their own exact draft confirmation before being eligible for
-this publication step. No UI, Runtime capture/upload or automatic CatsCo intent
-dispatch is enabled. Cloud's separately gated delegated scheduler can execute
-only commits for which authorization already completed. Keep all new production
-switches off until isolated end-to-end acceptance.
+this publication step. The durable workspace UI now plans and confirms through
+the human-only routes, polls the read-only commit status, and binds the Agent
+only after a verified `published` result whose Skill/version, package ID,
+checksum and timestamp all match the plan. `commit_accepted`, `verified`, and
+validation `passed` are never treated as publication success. Runtime capture,
+upload dispatch and automatic CatsCo intent dispatch remain separately gated.
+Cloud's delegated scheduler can execute only commits for which authorization
+already completed. Keep all new production switches off until isolated
+end-to-end acceptance.
 
 Tests cover signed human JWTs, exact plan binding, privacy, authority changes,
 cancel/deny/write failure, lost-reply replay, result consistency and concurrency.
