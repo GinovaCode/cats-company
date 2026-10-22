@@ -669,6 +669,12 @@ export const api = {
     undefined,
     options,
   ),
+  cancelConversationFork: ({ requestId }, options = {}) => request(
+    'DELETE',
+    `/api/conversations/fork?request_id=${encodeURIComponent(requestId)}`,
+    undefined,
+    options,
+  ),
   setConversationNotificationsMuted: (topicId, muted) => request(
     'PUT',
     '/api/conversations/notification-preferences',

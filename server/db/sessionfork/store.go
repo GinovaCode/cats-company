@@ -383,3 +383,113 @@ func (s SQLStore) insertID(ctx context.Context, tx *sql.Tx, q string, args ...in
 	}
 	return result.LastInsertId()
 }
+
+// sessionForkExpiryBatch bounds one reaper pass so a large backlog is drained
+// over several ticks instead of holding one long transaction.
+const sessionForkExpiryBatch = 100
+
+// CancelSessionFork closes a pending copy on the user's behalf.
+//
+// Cancelling is idempotent and terminal-wins, mirroring CompleteSessionFork: a
+// copy that already reached ready or failed is returned unchanged, so a lost
+// response cannot turn a finished copy into a failure, and a late runtime
+// acknowledgement cannot reopen one the user abandoned.
+func (s SQLStore) CancelSessionFork(ctx context.Context, uid int64, request string) (*types.SessionFork, error) {
+	if uid <= 0 || request == "" {
+		return nil, store.ErrSessionForkNotFound
+	}
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	f, err := scanFork(tx.QueryRowContext(ctx, s.query("SELECT "+forkColumns+" FROM session_forks WHERE actor_user_id = ? AND request_id = ? FOR UPDATE"), uid, request))
+	if err != nil {
+		return nil, err
+	}
+	if f.State != "pending" {
+		return f, tx.Commit()
+	}
+	f.State, f.Error = "failed", types.SessionForkErrorCancelled
+	if _, err = tx.ExecContext(ctx, s.query("UPDATE session_forks SET state = ?, error = ? WHERE actor_user_id = ? AND request_id = ?"), f.State, f.Error, f.ActorUserID, f.RequestID); err != nil {
+		return nil, err
+	}
+	// Only a topic still fenced as pending may be released; anything else was
+	// already decided by a completion, so leave it alone.
+	if _, err = tx.ExecContext(ctx, s.query("UPDATE topics SET fork_state = ? WHERE id = ? AND fork_state = 'pending'"), f.State, f.TargetTopicID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// ExpireSessionForks fails pending copies whose runtime never acknowledged them
+// before the cutoff.
+//
+// A runtime built before session forks existed ignores the control frame
+// without reporting an error, so without this bound such a copy stays pending
+// forever and the client waits on it indefinitely. The transition is
+// conditional on the row still being pending, so a concurrent completion,
+// cancel or a second reaper wins instead of being overwritten, and only rows
+// this call actually moved are counted.
+func (s SQLStore) ExpireSessionForks(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		limit = sessionForkExpiryBatch
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	// SKIP LOCKED keeps the reaper from blocking on a row a concurrent
+	// completion or cancel is already deciding: that row will be terminal on the
+	// next tick, so skipping it loses no work and avoids a lock cycle between
+	// the two paths.
+	rows, err := tx.QueryContext(ctx, s.query("SELECT actor_user_id, request_id, target_topic_id FROM session_forks WHERE state = 'pending' AND created_at <= ? ORDER BY created_at, request_id LIMIT ? FOR UPDATE SKIP LOCKED"), cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	type candidate struct {
+		actor   int64
+		request string
+		target  string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err = rows.Scan(&c.actor, &c.request, &c.target); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		candidates = append(candidates, c)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	expired := 0
+	for _, c := range candidates {
+		result, err := tx.ExecContext(ctx, s.query("UPDATE session_forks SET state = 'failed', error = ? WHERE actor_user_id = ? AND request_id = ? AND state = 'pending'"), types.SessionForkErrorAckTimeout, c.actor, c.request)
+		if err != nil {
+			return 0, err
+		}
+		moved, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if moved != 1 {
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, s.query("UPDATE topics SET fork_state = 'failed' WHERE id = ? AND fork_state = 'pending'"), c.target); err != nil {
+			return 0, err
+		}
+		expired++
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return expired, nil
+}

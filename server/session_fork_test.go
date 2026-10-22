@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -53,6 +54,19 @@ func (s *forkTestStore) CompleteSessionFork(_ context.Context, uid int64, req ty
 	return s.GetBotSessionFork(context.Background(), uid, req.TargetTopicID)
 }
 func (s *forkTestStore) SessionForkWritable(context.Context, string) (bool, error) { return false, nil }
+
+func (s *forkTestStore) CancelSessionFork(_ context.Context, uid int64, request string) (*types.SessionFork, error) {
+	if s.record == nil || s.record.ActorUserID != uid || s.record.RequestID != request {
+		return nil, store.ErrSessionForkNotFound
+	}
+	if s.record.State != "pending" {
+		return s.record, nil
+	}
+	s.record.State, s.record.Error = "failed", types.SessionForkErrorCancelled
+	return s.record, nil
+}
+
+func (s *forkTestStore) ExpireSessionForks(context.Context, time.Time, int) (int, error) { return 0, nil }
 
 type forkCreationTestStore struct {
 	*forkTestStore
@@ -198,6 +212,66 @@ func TestSessionForkGetIsUserScoped(t *testing.T) {
 		if w.Code != tc.code {
 			t.Fatalf("uid %d: %d %s", tc.uid, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestSessionForkCancelClosesOnlyAPendingCopyOfTheCaller(t *testing.T) {
+	for _, tc := range []struct {
+		name, request, state, initialError, wantState, wantError string
+		uid                                                     int64
+		wantCode                                                int
+	}{
+		{"owner cancels pending", "one", "pending", "", "failed", types.SessionForkErrorCancelled, 7, 200},
+		{"another user cannot cancel", "one", "pending", "", "pending", "", 8, 404},
+		{"unknown request", "missing", "pending", "", "pending", "", 7, 404},
+		{"ready is terminal", "one", "ready", "", "ready", "", 7, 200},
+		{"failed keeps its reason", "one", "failed", "already_failed", "failed", "already_failed", 7, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &forkTestStore{record: &types.SessionFork{ActorUserID: 7, AgentUID: 9, RequestID: "one",
+				SourceTopicID: "p2p_7_9", TargetTopicID: "grp_20", State: tc.state, Error: tc.initialError}}
+			r := httptest.NewRequest(http.MethodDelete, "/api/conversations/fork?request_id="+tc.request, nil)
+			r = r.WithContext(context.WithValue(r.Context(), uidKey, tc.uid))
+			w := httptest.NewRecorder()
+			NewConversationHandler(db, nil).HandleFork(w, r)
+			if w.Code != tc.wantCode {
+				t.Fatalf("HTTP %d %s", w.Code, w.Body.String())
+			}
+			if db.record.State != tc.wantState || db.record.Error != tc.wantError {
+				t.Fatalf("record %q/%q want %q/%q", db.record.State, db.record.Error, tc.wantState, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestSessionForkCancelRequiresRequestID(t *testing.T) {
+	db := &forkTestStore{record: &types.SessionFork{ActorUserID: 7, RequestID: "one", TargetTopicID: "grp_20", State: "pending"}}
+	r := httptest.NewRequest(http.MethodDelete, "/api/conversations/fork", nil)
+	r = r.WithContext(context.WithValue(r.Context(), uidKey, int64(7)))
+	w := httptest.NewRecorder()
+	NewConversationHandler(db, nil).HandleFork(w, r)
+	if w.Code != http.StatusBadRequest || db.record.State != "pending" {
+		t.Fatalf("HTTP %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSessionForkAckTimeoutConfig(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", sessionForkAckTimeoutDefault},
+		{"90", 90 * time.Second},
+		{"0", sessionForkAckTimeoutDefault},
+		{"-5", sessionForkAckTimeoutDefault},
+		{"abc", sessionForkAckTimeoutDefault},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("CATS_SESSION_FORK_ACK_TIMEOUT_SECONDS", tc.raw)
+			if got := sessionForkAckTimeout(); got != tc.want {
+				t.Fatalf("timeout=%v want %v", got, tc.want)
+			}
+		})
 	}
 }
 

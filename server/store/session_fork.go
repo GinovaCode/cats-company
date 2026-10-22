@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -19,4 +21,12 @@ type SessionForkStore interface {
 	GetBotSessionFork(context.Context, int64, string) (*types.SessionFork, error)
 	CompleteSessionFork(context.Context, int64, types.SessionForkCompletion) (*types.SessionFork, error)
 	SessionForkWritable(context.Context, string) (bool, error)
+	// CancelSessionFork closes a pending copy on the user's behalf. It is
+	// idempotent and never rewrites a terminal state.
+	CancelSessionFork(context.Context, int64, string) (*types.SessionFork, error)
+	// ExpireSessionForks fails pending copies older than the cutoff, bounding how
+	// long a silent runtime can keep a copy open. It returns how many rows it
+	// actually transitioned, so a concurrent reaper or a late acknowledgement
+	// cannot be double counted.
+	ExpireSessionForks(context.Context, time.Time, int) (int, error)
 }

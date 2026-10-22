@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { forkTargetTopic, normalizeForkRecord } from './conversation-fork';
-import { readStorageValue, writeStorageValue } from './storage-access';
+import { readStorageValue, removeStorageValue, writeStorageValue } from './storage-access';
 
 const requestOptions = { timeoutMs: 15000 };
 const refreshConversations = () => window.dispatchEvent(new Event('cc:data-changed'));
@@ -129,6 +129,35 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     }
   }, [acceptSource, checkSource, isCurrent, operation, owner, topic]);
 
+  const cancel = useCallback(async () => {
+    if (owner.busy || !isCurrent()) return;
+    owner.payload = storedPayload(owner.key, topic) || owner.payload;
+    if (!owner.payload) return;
+    owner.busy = true;
+    setSource(state => ({ ...(state?.owner === owner ? state : {}), owner, busy: true, error: '' }));
+    try {
+      const result = await api.cancelConversationFork({ requestId: owner.payload.request_id }, requestOptions);
+      const record = normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic });
+      if (record.state === 'ready') {
+        // A copy that finished before the cancellation arrived stays openable.
+        if (isCurrent()) setSource({ owner, record, busy: false, error: '' });
+      } else {
+        removeStorageValue(owner.key);
+        owner.payload = null;
+        if (isCurrent()) setSource({ owner, record: null, busy: false, error: '' });
+      }
+    } catch (error) {
+      if (isCurrent()) setSource(state => ({ ...state, owner, busy: false, error: error.message || '取消复制失败，请重试。' }));
+    } finally {
+      owner.busy = false;
+      window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
+      if (owner.refreshRequested && isCurrent()) {
+        owner.refreshRequested = false;
+        void checkSource();
+      }
+    }
+  }, [checkSource, isCurrent, owner, topic]);
+
   const open = useCallback(async () => {
     if (operation?.state !== 'ready' || owner.busy) return;
     owner.busy = true;
@@ -152,6 +181,6 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     operation, error: sourceState.error || '', busy: sourceState.busy || false,
     provenance: targetState.record || null, targetError: targetState.error || '',
     checking: needsTargetCheck && (!targetState.checked || targetState.checking),
-    blocked: Boolean(blocked), create, open, checkTarget,
+    blocked: Boolean(blocked), create, open, cancel, checkTarget,
   };
 }

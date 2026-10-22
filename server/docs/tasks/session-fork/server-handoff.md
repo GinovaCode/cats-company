@@ -37,10 +37,15 @@ single-node fork rollout remain deployment requirements.
 
 ## Implemented
 
-- JWT POST/GET /api/conversations/fork, user-scoped request identity and durable
-  pending/ready/failed provenance. Payload conflicts reject reuse. Terminal state
-  wins before revision/online/body checks; failed never reopens. GET is read-only,
-  with no pending expiry. A new attempt after failure requires a new request ID.
+- JWT POST/GET/DELETE /api/conversations/fork, user-scoped request identity and
+  durable pending/ready/failed provenance. Payload conflicts reject reuse.
+  Terminal state wins before revision/online/body checks; failed never reopens.
+  GET is read-only. A new attempt after failure requires a new request ID.
+  DELETE cancels a pending copy (`session_fork_cancelled`); pending copies also
+  expire to `failed`/`session_fork_ack_timeout` after the acknowledgement window
+  (CATS_SESSION_FORK_ACK_TIMEOUT_SECONDS, default 120s) when the runtime never
+  acknowledges, so an old or offline runtime can no longer leave a copy pending
+  forever. See the ack-timeout amendment in plan.md.
 - Same owner/bot only, canonical p2p or exactly two-member agent_task. Online
   body/status gate plus runtime idle/local snapshot and server revision checks.
 - Serializable SQL clone creates a real agent_task group/topic and memberships,

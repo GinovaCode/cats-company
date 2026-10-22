@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"time"
+
 	"github.com/openchat/openchat/server/db/sessionfork"
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -26,4 +28,10 @@ func (a *Adapter) CompleteSessionFork(ctx context.Context, uid int64, req types.
 }
 func (a *Adapter) SessionForkWritable(ctx context.Context, topic string) (bool, error) {
 	return a.sessionForks().SessionForkWritable(ctx, topic)
+}
+func (a *Adapter) CancelSessionFork(ctx context.Context, uid int64, request string) (*types.SessionFork, error) {
+	return a.sessionForks().CancelSessionFork(ctx, uid, request)
+}
+func (a *Adapter) ExpireSessionForks(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	return a.sessionForks().ExpireSessionForks(ctx, cutoff, limit)
 }
