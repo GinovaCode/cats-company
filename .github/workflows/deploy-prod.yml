@@ -27,6 +27,11 @@ jobs:
       - name: Require a released compatible XiaoBa client
         env:
           GH_TOKEN: ${{ github.token }}
+          # Declares whether each manifest protocol is actually enabled in
+          # production. Protocols that are still switched off must not freeze
+          # unrelated deployments while their client release is pending, so set
+          # this repository variable to 1 when the protocol is turned on.
+          CATSCO_XIAOBA_RUNTIME_V2_ENABLED: ${{ vars.CATSCO_XIAOBA_RUNTIME_V2_ENABLED }}
         run: python3 deploy/check-xiaoba-client-compat.py --mode stable-release
       - name: Require CI and test deployment for the same revision
         id: gate
@@ -62,6 +67,7 @@ jobs:
       - name: Recheck released XiaoBa client compatibility
         env:
           GH_TOKEN: ${{ github.token }}
+          CATSCO_XIAOBA_RUNTIME_V2_ENABLED: ${{ vars.CATSCO_XIAOBA_RUNTIME_V2_ENABLED }}
         run: python3 deploy/check-xiaoba-client-compat.py --mode stable-release
 
       - name: Recheck release after waiting for production

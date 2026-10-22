@@ -6,7 +6,9 @@
       "id": "device-target-authorizations-v2",
       "description": "User-device target authorization envelope used by multi-device cloud Bot requests.",
       "minimumClientCommit": "abcd40686c9a41be0bc2299fa90bd3aad15b0aec",
-      "requireStableRelease": true
+      "requireStableRelease": true,
+      "enabledByEnv": "CATSCO_XIAOBA_RUNTIME_V2_ENABLED",
+      "assumeEnabledWhenUnset": false
     }
   ]
 }

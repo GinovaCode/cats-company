@@ -39,6 +39,15 @@ class DeployProdWorkflowTest(unittest.TestCase):
             step = workflow.split(f"- name: {name}\n", 1)[1].split("\n      - name:", 1)[0]
             self.assertIn("if: steps.gate.outputs.ready == 'true'", step)
 
+    def test_prod_gate_reads_the_protocol_enablement_variable(self):
+        # A protocol that is declared but not switched on must not freeze every
+        # deployment, so both gate invocations read the enablement variable.
+        workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(encoding="utf-8")
+        self.assertEqual(
+            workflow.count("CATSCO_XIAOBA_RUNTIME_V2_ENABLED: ${{ vars.CATSCO_XIAOBA_RUNTIME_V2_ENABLED }}"),
+            2,
+        )
+
     def test_prod_deploy_uses_noninteractive_sudo_for_root_owned_state(self):
         workflow = (ROOT / ".github/workflows/deploy-prod.yml").read_text(
             encoding="utf-8"
