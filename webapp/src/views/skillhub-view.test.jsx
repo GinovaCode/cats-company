@@ -31,6 +31,9 @@ import SkillHubView, {
   collectSkillHubWorkspacePages,
   waitForSkillHubWorkspaceAfterSwitch,
   waitForPublishedSkillHubEntry,
+  waitForSkillHubPublicationSource,
+  assertSkillHubPublicationAdmission,
+  shouldUseDurablePublicationUI,
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
@@ -59,6 +62,12 @@ vi.mock('../api', () => ({
     getLocalSkills: vi.fn(),
     getLocalStatusDetails: vi.fn(),
     shareLocalSkill: vi.fn(),
+    getSkillHubPublicationCapabilities: vi.fn(),
+    getSkillHubPublicationEntryByRequest: vi.fn(),
+    getSkillHubPublicationSourceStatus: vi.fn(),
+    getSkillHubPublicationCaptureStatus: vi.fn(),
+    getSkillHubPublicationCloudStatus: vi.fn(),
+    getSkillHubPublicationValidationReport: vi.fn(),
   },
   requestSkillHubDeviceTool: vi.fn(),
 }));
@@ -86,7 +95,14 @@ describe('SkillHubView', () => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
     globalThis.localStorage?.clear();
+    globalThis.sessionStorage?.clear();
+    api.getSkillHubPublicationEntryByRequest.mockReset();
+    api.getSkillHubPublicationSourceStatus.mockReset();
+    api.getSkillHubPublicationCaptureStatus.mockReset();
+    api.getSkillHubPublicationCloudStatus.mockReset();
+    api.getSkillHubPublicationValidationReport.mockReset();
     api.syncSkillHubPublisherProfile.mockResolvedValue({ synced: true });
+    api.getSkillHubPublicationCapabilities.mockResolvedValue({ workspaceDurableCreateEnabled: false });
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
@@ -1407,6 +1423,379 @@ describe('SkillHubView', () => {
     expect(getSkill).toHaveBeenCalledTimes(2);
     expect(getVersion).toHaveBeenCalledTimes(2);
     expect(waitFor).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts only a durable publication admission response', () => {
+    expect(assertSkillHubPublicationAdmission({
+      schema_version: 2,
+      entry_request_id: `pubentry_${'a'.repeat(32)}`,
+      state: 'waiting_runtime',
+      replay: false,
+    }, '42')).toMatchObject({ state: 'waiting_runtime' });
+    expect(() => assertSkillHubPublicationAdmission({
+      schema_version: 2,
+      entry_request_id: `pubentry_${'a'.repeat(32)}`,
+      state: 'published',
+      replay: false,
+    }, '42')).toThrow(/有效的持久发布受理结果/);
+  });
+
+  it('requires an explicit UI rollout before changing the publish button contract', () => {
+    expect(shouldUseDurablePublicationUI({ workspaceDurableCreateEnabled: true })).toBe(false);
+    expect(shouldUseDurablePublicationUI({
+      workspaceDurableCreateEnabled: true,
+      workspaceDurablePublishUiEnabled: true,
+    })).toBe(true);
+  });
+
+  it('reads a durable source failure report without retrying or mutating the task', async () => {
+    const getSourceStatus = vi.fn().mockResolvedValue({
+      schemaVersion: 1,
+      entryRequestId: `pubentry_${'a'.repeat(32)}`,
+      sourceStatus: { stage: 'needs_user_action', code: 'publication.source_changed' },
+    });
+    const getReport = vi.fn().mockResolvedValue({
+      validation: { issues: [{ code: 'metadata.description_missing' }] },
+    });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: `pubentry_${'a'.repeat(32)}`,
+      getSourceStatus,
+      getReport,
+      waitFor: vi.fn(),
+    })).resolves.toMatchObject({
+      stage: 'needs_user_action',
+      report: { validation: { issues: [{ code: 'metadata.description_missing' }] } },
+    });
+    expect(getSourceStatus).toHaveBeenCalledTimes(1);
+    expect(getReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits through capture and Cloud acceptance before reading the validation report', async () => {
+    const id = `pubentry_${'b'.repeat(32)}`;
+    const getSourceStatus = vi.fn().mockResolvedValue({ sourceStatus: { stage: 'verified' } });
+    const getCaptureStatus = vi.fn().mockResolvedValue({ captureStatus: { stage: 'captured' } });
+    const getCloudStatus = vi.fn().mockResolvedValue({ cloudStatus: { stage: 'acceptance_recorded' } });
+    const getReport = vi.fn().mockResolvedValue({ validation: { outcome: 'rejected', issues: [] } });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: id,
+      getSourceStatus,
+      getCaptureStatus,
+      getCloudStatus,
+      getReport,
+      waitFor: vi.fn(),
+    })).resolves.toMatchObject({ stage: 'report', report: { validation: { outcome: 'rejected' } } });
+    expect(getSourceStatus).toHaveBeenCalledTimes(1);
+    expect(getCaptureStatus).toHaveBeenCalledTimes(1);
+    expect(getCloudStatus).toHaveBeenCalledTimes(1);
+    expect(getReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a terminal capture failure instead of converting it to a timeout', async () => {
+    const id = `pubentry_${'c'.repeat(32)}`;
+    const getSourceStatus = vi.fn().mockResolvedValue({ sourceStatus: { stage: 'verified' } });
+    const getCaptureStatus = vi.fn().mockResolvedValue({ captureStatus: {
+      stage: 'needs_user_action', code: 'publication.capture_rejected',
+    } });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: id,
+      getSourceStatus,
+      getCaptureStatus,
+      getReport: vi.fn().mockRejectedValue(new Error('not ready')),
+      waitFor: vi.fn(),
+    })).resolves.toMatchObject({
+      stage: 'needs_user_action',
+      captureStatus: { captureStatus: { stage: 'needs_user_action' } },
+    });
+  });
+
+  it('retries a receipt whose validation report is not ready with read-budget headroom', async () => {
+    const getReport = vi.fn().mockRejectedValueOnce({ status: 404 })
+      .mockResolvedValue({ validation: { outcome: 'passed' } });
+    const waitFor = vi.fn();
+    const getCloudStatus = vi.fn().mockResolvedValue({ cloudStatus: { stage: 'acceptance_recorded' } });
+    await expect(waitForSkillHubPublicationSource({
+      entryRequestId: `pubentry_${'d'.repeat(32)}`,
+      getSourceStatus: vi.fn().mockResolvedValue({ sourceStatus: { stage: 'verified' } }),
+      getCaptureStatus: vi.fn().mockResolvedValue({ captureStatus: { stage: 'captured' } }),
+      getCloudStatus, getReport, waitFor,
+    })).resolves.toMatchObject({ stage: 'report', report: { validation: { outcome: 'passed' } } });
+    expect(waitFor).toHaveBeenCalledExactlyOnceWith(20_000);
+    expect(getCloudStatus).toHaveBeenCalledTimes(2);
+    expect(getReport).toHaveBeenCalledTimes(2);
+  });
+
+  describe('durable workspace publication UI', () => {
+    const entryID = `pubentry_${'a'.repeat(32)}`;
+    const revision = 'a'.repeat(64);
+    const sourceID = `pubsrc-${'b'.repeat(48)}`;
+    const sourceGeneration = 'c'.repeat(64);
+    const storageKey = 'catsco.skillhub.publication.request.7.alice-device.42.local-1';
+    const oldRequestID = 'pubreq_lost-reply';
+    let workspace;
+
+    beforeEach(() => {
+      api.getSkillHubPublicationCapabilities.mockResolvedValue({
+        workspaceDurableCreateEnabled: true, workspaceDurablePublishUiEnabled: true,
+      });
+      api.getDevices.mockResolvedValue({ devices: [{
+        deviceId: 'alice-device', runtimeRole: 'desktop', active: true,
+        routeConnected: true, routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get', 'skillhub.localWorkspace.pagination.v1',
+          'skillhub.localSkill.share', 'skillhub.localSkill.finalize', 'skillhub.localBot.switch',
+        ],
+      }] });
+      workspace = {
+        schema: 'xiaoba.skillhub.local_workspace.v1', bot_uid: '42', active_bot_uid: '42',
+        skills_path: 'C:\\xiaoba\\skills', workspace_revision: revision,
+        total_skills: 1, page_offset: 0, next_offset: null,
+        skills: [{ local_skill_id: 'local-1', name: 'local-demo', description: 'Local demo',
+          publication_source: { local_skill_id: sourceID, workspace_generation: sourceGeneration },
+          relative_path: 'local-demo', source: 'user', can_share: true }],
+      };
+      requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+        if (toolName === 'skillhub.localWorkspace.get') return workspace;
+        if (toolName === 'skillhub.publication.createEntry.v2') {
+          return { schema_version: 2, entry_request_id: entryID, state: 'waiting_runtime', replay: false };
+        }
+        throw new Error(`Unexpected mutation: ${toolName}`);
+      });
+      api.getSkillHubPublicationSourceStatus.mockResolvedValue({ sourceStatus: { stage: 'verified' } });
+      api.getSkillHubPublicationCaptureStatus.mockResolvedValue({ captureStatus: { stage: 'captured' } });
+      // Absence of this optional API still permits a source-verification notice.
+      api.getSkillHubPublicationCloudStatus.mockRejectedValue(new Error('not available'));
+      api.getSkillHubPublicationValidationReport.mockRejectedValue(new Error('not ready'));
+    });
+
+    function saveRecoveryHint(overrides = {}) {
+      sessionStorage.setItem(storageKey, JSON.stringify({
+        requestId: oldRequestID, sourceGeneration, ...overrides,
+      }));
+    }
+
+    function recoveredEntry(overrides = {}) {
+      return { schemaVersion: 1, entry: { entryRequestId: entryID, botUid: '42',
+        entrypoint: 'workspace', state: 'waiting_runtime', ...overrides } };
+    }
+
+    function admissions() {
+      return requestSkillHubDeviceTool.mock.calls.map(([args]) => args)
+        .filter(args => args.toolName === 'skillhub.publication.createEntry.v2');
+    }
+
+    function expectNoLegacyMutations() {
+      expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+      expect(requestSkillHubDeviceTool.mock.calls.every(([args]) =>
+        ['skillhub.localWorkspace.get', 'skillhub.publication.createEntry.v2'].includes(args.toolName))).toBe(true);
+    }
+
+    async function openWorkspace() {
+      await act(async () => {
+        root.render(<SkillHubView user={{ uid: 7 }} />);
+        await Promise.resolve();
+      });
+      await openCustomSkills();
+      expect(container.querySelector('.cc-skillhub-local-card')).toBeTruthy();
+    }
+
+    async function publish() {
+      await act(async () => {
+        Simulate.click(container.querySelector('.cc-skillhub-local-card button'));
+      });
+      await confirmPublishCategory();
+    }
+
+    it('clicks the gated v2 branch without claiming publication or binding success', async () => {
+      api.getSkillHubPublicationCloudStatus.mockResolvedValue({ cloudStatus: {
+        stage: 'acceptance_recorded', executionState: 'unknown',
+      } });
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ validation: { outcome: 'passed' } });
+      await openWorkspace();
+      await publish();
+      expect(admissions()).toEqual([expect.objectContaining({
+        deviceId: 'alice-device', ownerUserId: 7, requestId: expect.stringMatching(/^pubreq_/),
+        payload: { bot_uid: '42', local_skill_id: sourceID, workspace_generation: sourceGeneration },
+      })]);
+      expect(container.textContent).toContain('已通过 SkillHub 发布校验，等待最终发布结果');
+      expect(container.textContent).not.toContain('已发布到团队，并添加到当前 Agent');
+      expect(JSON.parse(sessionStorage.getItem(storageKey)).requestId).toBe(admissions()[0].requestId);
+      api.getSkillHubPublicationEntryByRequest.mockResolvedValue(recoveredEntry());
+      await publish();
+      expect(admissions()).toHaveLength(1);
+      expectNoLegacyMutations();
+    });
+
+    it('recovers a lost admission reply on the next click instead of creating another entry', async () => {
+      const originalTool = requestSkillHubDeviceTool.getMockImplementation();
+      requestSkillHubDeviceTool.mockImplementation(async (args) => {
+        if (args.toolName === 'skillhub.publication.createEntry.v2') throw new Error('Reply lost');
+        return originalTool(args);
+      });
+      await openWorkspace();
+      await publish();
+      const requestId = admissions()[0].requestId;
+      expect(JSON.parse(sessionStorage.getItem(storageKey)).requestId).toBe(requestId);
+      api.getSkillHubPublicationEntryByRequest.mockResolvedValue(recoveredEntry());
+      await publish();
+      expect(api.getSkillHubPublicationEntryByRequest).toHaveBeenCalledWith(requestId);
+      expect(admissions()).toHaveLength(1);
+      expect(container.textContent).toContain('来源已核验');
+      expectNoLegacyMutations();
+    });
+
+    it.each(['cancelled', 'missing', 'changed source'])('starts a new admission after %s recovery', async (kind) => {
+      saveRecoveryHint(kind === 'changed source' ? { sourceGeneration: 'b'.repeat(64) } : {});
+      if (kind === 'missing') {
+        api.getSkillHubPublicationEntryByRequest.mockRejectedValue({ status: 404 });
+      } else {
+        api.getSkillHubPublicationEntryByRequest.mockResolvedValue(recoveredEntry({ state: 'cancelled' }));
+      }
+      await openWorkspace();
+      await publish();
+      expect(admissions()).toHaveLength(1);
+      expect(admissions()[0].requestId).not.toBe(oldRequestID);
+      if (kind === 'changed source') expect(api.getSkillHubPublicationEntryByRequest).not.toHaveBeenCalled();
+      expectNoLegacyMutations();
+    });
+
+    it.each(['source failure', 'capture failure', 'report rejection', 'source cancelled', 'capture cancelled'])(
+      'clears terminal %s so a repaired Skill can be published again', async (kind) => {
+        if (kind === 'source failure' || kind === 'source cancelled') {
+          api.getSkillHubPublicationSourceStatus.mockResolvedValue({ sourceStatus: {
+            stage: kind === 'source failure' ? 'needs_user_action' : 'cancelled', code: 'publication.source_changed',
+          } });
+        } else if (kind === 'capture failure' || kind === 'capture cancelled') {
+          api.getSkillHubPublicationCaptureStatus.mockResolvedValue({ captureStatus: {
+            stage: kind === 'capture failure' ? 'needs_user_action' : 'cancelled', code: 'publication.capture_rejected',
+          } });
+        } else {
+          api.getSkillHubPublicationCloudStatus.mockResolvedValue({ cloudStatus: { stage: 'acceptance_recorded' } });
+          api.getSkillHubPublicationValidationReport.mockResolvedValue({ validation: {
+            outcome: 'rejected', issues: [{ code: 'metadata.description_missing' }],
+          } });
+        }
+        await openWorkspace();
+        await publish();
+        expect(sessionStorage.getItem(storageKey)).toBeNull();
+        expect(container.querySelector('[role="status"]')).toBeNull();
+        expect(container.querySelector('[role="alert"]')).toBeTruthy();
+        if (kind === 'capture failure') expect(container.textContent).toContain('publication.capture_rejected');
+        await publish();
+        expect(admissions()).toHaveLength(2);
+        expect(admissions()[0].requestId).not.toBe(admissions()[1].requestId);
+        expectNoLegacyMutations();
+      },
+    );
+
+    it.each(['wrong bot', 'wrong schema', 'wrong entrypoint', 'unavailable'])(
+      'preserves the recovery hint and refuses fallback for %s recovery', async (kind) => {
+        saveRecoveryHint();
+        if (kind === 'unavailable') api.getSkillHubPublicationEntryByRequest.mockRejectedValue({ status: 503 });
+        else {
+          const recovered = recoveredEntry(kind === 'wrong bot' ? { botUid: '43' }
+            : kind === 'wrong entrypoint' ? { entrypoint: 'chat' } : {});
+          if (kind === 'wrong schema') recovered.schemaVersion = 2;
+          api.getSkillHubPublicationEntryByRequest.mockResolvedValue(recovered);
+        }
+        await openWorkspace();
+        await publish();
+        expect(admissions()).toHaveLength(0);
+        expect(JSON.parse(sessionStorage.getItem(storageKey)).requestId).toBe(oldRequestID);
+        expect(container.querySelector('[role="alert"]')).toBeTruthy();
+        expectNoLegacyMutations();
+      },
+    );
+
+    it('does not recover another account or device request', async () => {
+      const hint = JSON.stringify({ requestId: oldRequestID, sourceGeneration });
+      sessionStorage.setItem(storageKey.replace('.7.', '.8.'), hint);
+      sessionStorage.setItem(storageKey.replace('alice-device', 'old-device'), hint);
+      await openWorkspace();
+      await publish();
+      expect(api.getSkillHubPublicationEntryByRequest).not.toHaveBeenCalled();
+      expect(admissions()).toHaveLength(1);
+    });
+
+    it('shows the real Cloud execution field when the report API is unavailable', async () => {
+      api.getSkillHubPublicationCloudStatus.mockResolvedValue({ cloudStatus: { stage: 'not_observed', executionState: 'unknown' } });
+      await openWorkspace();
+      await publish();
+      expect(container.textContent).toContain('云端状态：unknown');
+      expectNoLegacyMutations();
+    });
+
+    it.each(['missing', 'legacy selector', 'invalid generation'])('rejects %s source descriptors without legacy fallback', async (kind) => {
+      if (kind === 'missing') delete workspace.skills[0].publication_source;
+      if (kind === 'legacy selector') workspace.skills[0].publication_source.local_skill_id = 'local-1';
+      if (kind === 'invalid generation') workspace.skills[0].publication_source.workspace_generation = 'invalid';
+      await openWorkspace();
+      await publish();
+      expect(container.textContent).toContain('没有可核验的发布来源');
+      expect(admissions()).toHaveLength(0);
+      expect(sessionStorage.getItem(storageKey)).toBeNull();
+      expectNoLegacyMutations();
+    });
+
+    it('stops an obsolete observer when the same request is recovered again', async () => {
+      const oldRead = deferred();
+      api.getSkillHubPublicationSourceStatus.mockImplementationOnce(() => oldRead.promise);
+      await openWorkspace();
+      await publish();
+      api.getSkillHubPublicationEntryByRequest.mockResolvedValue(recoveredEntry());
+      await publish();
+      expect(container.textContent).toContain('来源已核验');
+      await act(async () => {
+        oldRead.resolve({ sourceStatus: { stage: 'cancelled' } });
+      });
+      expect(container.textContent).not.toContain('发布请求已取消');
+      expect(sessionStorage.getItem(storageKey)).not.toBeNull();
+      expect(api.getSkillHubPublicationSourceStatus).toHaveBeenCalledTimes(2);
+      expect(admissions()).toHaveLength(1);
+    });
+
+    it('does not continue polling after the view is unmounted', async () => {
+      const source = deferred();
+      api.getSkillHubPublicationSourceStatus.mockImplementationOnce(() => source.promise);
+      await openWorkspace();
+      await publish();
+      await act(async () => { root.render(null); });
+      await act(async () => { source.resolve({ sourceStatus: { stage: 'verified' } }); });
+      expect(api.getSkillHubPublicationCaptureStatus).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem(storageKey)).not.toBeNull();
+    });
+
+    it('reports exhausted polling and retains the in-flight request without fallback', async () => {
+      const source = deferred();
+      api.getSkillHubPublicationSourceStatus.mockImplementation(() => source.promise);
+      await openWorkspace();
+      await publish();
+      vi.useFakeTimers();
+      await act(async () => {
+        source.resolve({ sourceStatus: { stage: 'waiting_runtime' } });
+        await vi.advanceTimersByTimeAsync(12 * 20_000);
+      });
+      expect(container.textContent).toContain('当前页面轮询已结束');
+      expect(container.querySelector('[role="status"]')).toBeNull();
+      expect(sessionStorage.getItem(storageKey)).not.toBeNull();
+      expect(admissions()).toHaveLength(1);
+      expectNoLegacyMutations();
+    });
+
+    it('clears a terminal hint even after switching to a different Bot', async () => {
+      const source = deferred();
+      api.getSkillHubPublicationSourceStatus.mockImplementation(() => source.promise);
+      await openWorkspace();
+      await publish();
+      await act(async () => {
+        Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), { target: { value: '43' } });
+      });
+      await act(async () => {
+        source.resolve({ sourceStatus: { stage: 'cancelled' } });
+      });
+      expect(sessionStorage.getItem(storageKey)).toBeNull();
+      expect(container.textContent).not.toContain('发布请求已取消');
+      expectNoLegacyMutations();
+    });
   });
 
   it('opens with the simplified Agent capability workspace', async () => {

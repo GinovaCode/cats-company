@@ -943,6 +943,42 @@ export const api = {
     undefined,
     options,
   ),
+  getSkillHubPublicationCapabilities: (options = {}) => request(
+    'GET',
+    '/api/skillhub/publications/capabilities',
+    undefined,
+    options,
+  ),
+  getSkillHubPublicationEntryByRequest: (requestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/requests/${encodeURIComponent(requestId)}`,
+    undefined,
+    options,
+  ),
+  getSkillHubPublicationSourceStatus: (entryRequestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/entries/${encodeURIComponent(entryRequestId)}/source-status`,
+    undefined,
+    options,
+  ),
+  getSkillHubPublicationCaptureStatus: (entryRequestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/entries/${encodeURIComponent(entryRequestId)}/capture-status`,
+    undefined,
+    options,
+  ),
+  getSkillHubPublicationCloudStatus: (entryRequestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/entries/${encodeURIComponent(entryRequestId)}/cloud-status`,
+    undefined,
+    options,
+  ),
+  getSkillHubPublicationValidationReport: (entryRequestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/report`,
+    undefined,
+    options,
+  ),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {
@@ -1364,9 +1400,11 @@ export function requestSkillHubDeviceTool({
   ownerUserId,
   toolName,
   payload,
+  requestId: requestedRequestId = '',
   timeoutMs = 30_000,
 }) {
-  const requestId = globalThis.crypto?.randomUUID?.()
+  const requestId = String(requestedRequestId || '').trim()
+    || globalThis.crypto?.randomUUID?.()
     || `skillhub-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   const messageId = nextMsgId();
   const requestTimeoutMs = Math.max(1, Math.min(Number(timeoutMs) || 30_000, 120_000));
