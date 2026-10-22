@@ -145,6 +145,7 @@ build_web_image() {
     --build-arg REACT_APP_API_BASE="${REMOTE_WEB_REACT_APP_API_BASE:-}" \
     --build-arg NGINX_BROTLI_BASE_IMAGE="$web_base_image" \
     --build-arg NPM_REGISTRY="$npm_registry" \
+    --build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}" \
     -f deploy/Dockerfile.nginx \
     -t "$web_image" \
     .
