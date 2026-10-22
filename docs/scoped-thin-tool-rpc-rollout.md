@@ -48,6 +48,10 @@ Canary acceptance sequence:
 5. On rollback, remove the UID and recreate the server before restoring an old
    Bot version. Keep global v2 disabled throughout the canary period.
 
+After the canary has passed, a later full rollout may replace the UID list with
+the global `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` setting and separately decide
+whether strict grant enforcement is ready. The two switches remain independent.
+
 Username aliases use the scoped selected device; ordinary text never commits a
 multi-device switch. A local WebApp confirmation UI and human-JWT-only
 `GET/POST /api/conversations/device-selection` endpoint now implement the
@@ -458,9 +462,12 @@ deployment were performed by this audit.
 3. Confirm cloud chat and agent-host tools still work independently of desktop
    access. Test desktop/local-Bot compatibility and Connector login/logout.
 4. Inventory affected cloud Bots and explicitly coordinate their upgrades. Start
-   with one approved canary; enable `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` and
-   `CATSCO_DEVICE_GRANT_ENFORCEMENT=required` together only after that canary
-   passes.
+   with one approved canary by listing its numeric UID in
+   `CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS` while global v2 remains disabled; follow
+   the canary sequence above. Only after all upgraded Bots pass acceptance may
+   operators replace the list with `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1`.
+   `CATSCO_DEVICE_GRANT_ENFORCEMENT=required` remains a separate later decision
+   and is not required for the per-Bot metadata canary.
 5. Once strict mode is enabled, missing grants require upgrading the Bot and a
    new live user turn. Do not
    reconstruct authorization from chat history or retry without the grant.

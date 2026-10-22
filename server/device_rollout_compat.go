@@ -25,11 +25,11 @@ func xiaobaRuntimeV2Enabled() bool {
 // UID. A scoped rollout must not send v2 metadata to unrelated old consumers.
 // Entries are canonical positive decimal UIDs, not names or user-provided IDs.
 func xiaobaRuntimeV2EnabledForBot(botUID int64) bool {
-	if botUID <= 0 {
-		return false
-	}
 	if xiaobaRuntimeV2Enabled() {
 		return true
+	}
+	if botUID <= 0 {
+		return false
 	}
 	want := strconv.FormatInt(botUID, 10)
 	for _, entry := range strings.Split(os.Getenv("CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS"), ",") {

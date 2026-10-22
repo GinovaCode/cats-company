@@ -152,6 +152,7 @@ func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req
 		payload.Metadata = metadataWithoutGatewayAnnotationContext(payload.Metadata)
 		payload.Metadata = metadataWithoutGatewayAnnotations(payload.Metadata)
 		payload.Metadata = metadataWithoutFileAnnotations(payload.Metadata)
+		payload.Metadata = metadataWithoutXiaobaRuntime(payload.Metadata)
 	}
 	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 		h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
@@ -781,14 +782,43 @@ func withCatscoIdentityMetadata(metadata map[string]interface{}, identity map[st
 }
 
 func withXiaobaRuntimeMetadata(metadata map[string]interface{}, runtime map[string]interface{}) map[string]interface{} {
-	if runtime == nil {
-		return metadata
+	if metadata == nil && runtime == nil {
+		return nil
 	}
 	next := make(map[string]interface{}, len(metadata)+1)
 	for key, value := range metadata {
+		if key == "xiaoba_runtime" {
+			continue
+		}
 		next[key] = value
 	}
-	next["xiaoba_runtime"] = runtime
+	if runtime != nil {
+		next["xiaoba_runtime"] = runtime
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
+}
+
+// xiaoba_runtime is server-generated routing metadata. It is removed from
+// client-authored inbound messages so a sender cannot forge a rollout signal.
+func metadataWithoutXiaobaRuntime(metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	if _, present := metadata["xiaoba_runtime"]; !present {
+		return metadata
+	}
+	next := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		if key != "xiaoba_runtime" {
+			next[key] = value
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
 	return next
 }
 

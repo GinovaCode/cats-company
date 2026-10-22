@@ -1,11 +1,31 @@
 package server
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestXiaobaRuntimeMetadataCannotBeForgedByInboundClients(t *testing.T) {
+	input := map[string]interface{}{
+		"xiaoba_runtime": map[string]interface{}{"schema": "xiaoba.runtime.v2", "devices": []string{"forged"}},
+		"keep":           "visible",
+	}
+	clean := metadataWithoutXiaobaRuntime(input)
+	if reflect.DeepEqual(clean, input) || clean["xiaoba_runtime"] != nil || clean["keep"] != "visible" {
+		t.Fatalf("runtime metadata was not stripped: %#v", clean)
+	}
+	if got := withXiaobaRuntimeMetadata(input, nil); got["xiaoba_runtime"] != nil || got["keep"] != "visible" {
+		t.Fatalf("nil server runtime did not remove stale client value: %#v", got)
+	}
+	serverRuntime := map[string]interface{}{"schema": "xiaoba.runtime.v1"}
+	got := withXiaobaRuntimeMetadata(input, serverRuntime)
+	if !reflect.DeepEqual(got["xiaoba_runtime"], serverRuntime) {
+		t.Fatalf("server runtime was not authoritative: %#v", got)
+	}
+}
 
 func TestRuntimeV2BotCanaryConfiguration(t *testing.T) {
 	for _, tc := range []struct {
@@ -19,7 +39,7 @@ func TestRuntimeV2BotCanaryConfiguration(t *testing.T) {
 		{"unlisted bot", "", "42", 43, false},
 		{"no substring match", "", "142,420", 42, false},
 		{"no aliases or wildcard", "", "usr42,David,*,+42,042,4.2e1", 42, false},
-		{"invalid uid", "1", "0,-1", 0, false},
+		{"invalid uid", "", "0,-1", 0, false},
 		{"global opt in", "1", "42", 43, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
