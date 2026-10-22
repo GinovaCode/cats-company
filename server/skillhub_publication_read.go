@@ -25,15 +25,16 @@ var skillHubPublicationEntryID = regexp.MustCompile(`^pubentry_[a-f0-9]{32}$`)
 // It also serves a separately gated pre-Cloud cancellation action. It has no
 // creation, runtime dispatch or Cloud transport method; GET never mutates state.
 type SkillHubPublicationReadHandler struct {
-	db                               store.Store
-	entries                          store.SkillHubPublicationEntryStore
-	enabled                          bool
-	limits                           *HTTPRateLimiter
-	reads                            chan struct{}
-	workspaceEntriesEnabled          bool
-	workspaceDurableEntriesEnabled   bool
-	workspaceDurablePublishUIEnabled bool
-	cancellationEnabled              bool
+	db                                 store.Store
+	entries                            store.SkillHubPublicationEntryStore
+	enabled                            bool
+	limits                             *HTTPRateLimiter
+	reads                              chan struct{}
+	workspaceEntriesEnabled            bool
+	workspaceDurableEntriesEnabled     bool
+	workspaceDurablePublishUIEnabled   bool
+	workspaceDurableHumanCommitEnabled bool
+	cancellationEnabled                bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -59,6 +60,8 @@ func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicati
 	// existing "publish and add to Agent" contract.
 	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DURABLE_PUBLISH_UI_ENABLED"))
 	h.workspaceDurablePublishUIEnabled = h.workspaceDurableEntriesEnabled && (v == "1" || strings.EqualFold(v, "true"))
+	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED"))
+	h.workspaceDurableHumanCommitEnabled = h.workspaceDurableEntriesEnabled && (v == "1" || strings.EqualFold(v, "true"))
 	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_CANCELLATION_ENABLED"))
 	h.cancellationEnabled = h.enabled && (v == "1" || strings.EqualFold(v, "true"))
 	return h
@@ -187,10 +190,11 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 			"captureStatusReadsEnabled": h.enabled && h.entries != nil && captureStatusSupported,
 			"cloudStatusReadsEnabled":   h.enabled && h.entries != nil && cloudStatusSupported,
 			"workspaceCreateEnabled":    h.workspaceEntriesEnabled, "chatCreateEnabled": false,
-			"workspaceDurableCreateEnabled":    h.workspaceDurableEntriesEnabled,
-			"workspaceDurablePublishUiEnabled": h.workspaceDurablePublishUIEnabled,
-			"entryCancellationEnabled":         h.enabled && h.entries != nil && h.cancellationEnabled && cancelSupported,
-			"minPollIntervalMs":                5000,
+			"workspaceDurableCreateEnabled":      h.workspaceDurableEntriesEnabled,
+			"workspaceDurablePublishUiEnabled":   h.workspaceDurablePublishUIEnabled,
+			"workspaceDurableHumanCommitEnabled": h.workspaceDurableHumanCommitEnabled,
+			"entryCancellationEnabled":           h.enabled && h.entries != nil && h.cancellationEnabled && cancelSupported,
+			"minPollIntervalMs":                  5000,
 		})
 		return
 	}
