@@ -1863,8 +1863,12 @@ describe('SkillHubView', () => {
           } });
         } else {
           api.getSkillHubPublicationCloudStatus.mockResolvedValue({ cloudStatus: { stage: 'acceptance_recorded' } });
-          api.getSkillHubPublicationValidationReport.mockResolvedValue({ validation: {
-            outcome: 'rejected', issues: [{ code: 'metadata.description_missing' }],
+          api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID, validation: {
+            schemaVersion: '1', ruleVersion: 'skillhub-publish-v1.0.1', outcome: 'rejected',
+            issues: [{ code: 'metadata.description_missing', category: 'format', blocking: true,
+              location: { relativePath: 'SKILL.md', field: 'description', entryIndex: 0 },
+              message: '入口缺少 description；可生成草稿，但确认后才能写入发布副本。',
+              repairPolicy: 'confirmation_required' }],
           } });
         }
         await openWorkspace();
@@ -1873,6 +1877,23 @@ describe('SkillHubView', () => {
         expect(container.querySelector('[role="status"]')).toBeNull();
         expect(container.querySelector('[role="alert"]')).toBeTruthy();
         if (kind === 'capture failure') expect(container.textContent).toContain('publication.capture_rejected');
+        if (kind === 'report rejection') {
+          const reportButton = container.querySelector('.cc-skillhub-publication-report-button');
+          expect(reportButton).toBeTruthy();
+          await act(async () => {
+            Simulate.click(reportButton);
+            await Promise.resolve();
+          });
+          const reportDialog = document.body.querySelector('.cc-skillhub-publication-report-dialog');
+          expect(reportDialog?.textContent).toContain('metadata.description_missing');
+          expect(reportDialog?.textContent).toContain('SKILL.md · description · 条目索引 0');
+          expect(reportDialog?.textContent).toContain('需确认后修改');
+          expect(reportDialog?.textContent).not.toContain('[object Object]');
+          await act(async () => {
+            Simulate.click(reportDialog.querySelector('button[aria-label="关闭发布报告"]'));
+            await Promise.resolve();
+          });
+        }
         await publish();
         expect(admissions()).toHaveLength(2);
         expect(admissions()[0].requestId).not.toBe(admissions()[1].requestId);
@@ -1898,6 +1919,92 @@ describe('SkillHubView', () => {
         expectNoLegacyMutations();
       },
     );
+
+    it('recovers a report reference after remount and reads without creating a publication', async () => {
+      const reportKey = `catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`;
+      sessionStorage.setItem(reportKey, JSON.stringify({ entryRequestId: entryID }));
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID, validation: {
+        schemaVersion: '1', outcome: 'rejected', issues: [{ code: 'package.unsafe', category: 'package_safety',
+          location: {}, message: '请检查包内容', blocking: true, repairPolicy: 'manual' }], truncated: true,
+      } });
+      await openWorkspace();
+      const reportButton = container.querySelector('.cc-skillhub-publication-report-button');
+      expect(reportButton).toBeTruthy();
+      expect(api.getSkillHubPublicationValidationReport).not.toHaveBeenCalled();
+      await act(async () => { Simulate.click(reportButton); await Promise.resolve(); });
+      const dialog = document.body.querySelector('.cc-skillhub-publication-report-dialog');
+      expect(dialog.textContent).toContain('请检查包内容');
+      expect(dialog.textContent).toContain('需人工处理');
+      expect(dialog.textContent).toContain('报告已截断');
+      expect(admissions()).toHaveLength(0);
+      expectNoLegacyMutations();
+      await act(async () => { Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')); });
+      expect(document.activeElement).toBe(reportButton);
+    });
+
+    it('keeps runtime failures distinct from report-read failures and allows a read retry', async () => {
+      api.getSkillHubPublicationSourceStatus.mockResolvedValue({ sourceStatus: {
+        stage: 'needs_user_action', code: 'publication.source_changed',
+      } });
+      await openWorkspace();
+      await publish();
+      api.getSkillHubPublicationValidationReport.mockRejectedValue({ status: 503, message: 'private upstream error' });
+      await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')); await Promise.resolve(); });
+      let dialog = document.body.querySelector('.cc-skillhub-publication-report-dialog');
+      expect(dialog.textContent).toContain('运行环境检查');
+      expect(dialog.textContent).toContain('publication.source_changed');
+      expect(dialog.textContent).toContain('暂时无法读取发布报告');
+      expect(dialog.textContent).not.toContain('校验未通过');
+      expect(dialog.textContent).not.toContain('private upstream error');
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID, validation: {
+        schemaVersion: '1', outcome: 'rejected', issues: [{ code: 'metadata.description_missing',
+          location: { relativePath: 'SKILL.md', field: 'description' }, message: '需确认草稿',
+          blocking: true, repairPolicy: 'confirmation_required' }],
+      } });
+      await act(async () => { Simulate.click([...dialog.querySelectorAll('button')].find(button => button.textContent === '重新读取')); await Promise.resolve(); });
+      dialog = document.body.querySelector('.cc-skillhub-publication-report-dialog');
+      expect(dialog.textContent).toContain('需确认草稿');
+      expect(admissions()).toHaveLength(1);
+      expectNoLegacyMutations();
+    });
+
+    it('does not attach a recovered report to changed source bytes', async () => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      workspace.skills[0].publication_source.workspace_generation = 'e'.repeat(64);
+      await openWorkspace();
+      expect(container.querySelector('.cc-skillhub-publication-report-button')).toBeNull();
+      expect(api.getSkillHubPublicationValidationReport).not.toHaveBeenCalled();
+    });
+
+    it('ignores an old report read after the workspace is refreshed', async () => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      const pendingReport = deferred();
+      api.getSkillHubPublicationValidationReport.mockReturnValueOnce(pendingReport.promise);
+      await openWorkspace();
+      await act(async () => { Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')); });
+      const dialog = document.body.querySelector('.cc-skillhub-publication-report-dialog');
+      expect(dialog.textContent).toContain('正在读取发布报告');
+      await act(async () => { Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')); });
+      workspace.skills[0].publication_source.workspace_generation = 'e'.repeat(64);
+      await act(async () => {
+        Simulate.click([...container.querySelectorAll('.cc-skillhub-local-actions button')]
+          .find(button => button.textContent.includes('刷新')));
+        await Promise.resolve();
+      });
+      await act(async () => {
+        pendingReport.resolve({ schemaVersion: 1, entryRequestId: entryID, validation: {
+          schemaVersion: '1', outcome: 'rejected', issues: [{ code: 'metadata.description_missing',
+            location: { relativePath: 'SKILL.md' }, message: 'old-source-report', blocking: true,
+            repairPolicy: 'confirmation_required' }],
+        } });
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.cc-skillhub-publication-report-button')).toBeNull();
+      expect(document.body.textContent).not.toContain('old-source-report');
+      expect(admissions()).toHaveLength(0);
+    });
 
     it('does not recover another account or device request', async () => {
       const hint = JSON.stringify({ requestId: oldRequestID, sourceGeneration });

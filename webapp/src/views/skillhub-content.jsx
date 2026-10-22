@@ -1112,9 +1112,11 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID, fallbackDe
   return { details, directory, displayName, publisher, skillId, version };
 }
 
-function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
+function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, onLoadPublicationReport, publicationReports, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
   const [publishOpen, setPublishOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const actionRef = useRef(null);
+  const reportRef = useRef(null);
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
@@ -1123,6 +1125,7 @@ function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definiti
   const statusClass = blocked ? 'blocked' : shared ? 'synced' : 'local';
   const statusLabel = blocked ? '无法发布' : shared ? '已发布' : '未发布';
   const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID, skillHubUpdateDetailsByID);
+  const publicationReport = publicationReports?.[skill.localSkillId] || null;
   return (
     <article className='cc-skillhub-local-card'>
       <div className='cc-skillhub-local-card-heading'><strong>{displayName}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>
@@ -1138,12 +1141,20 @@ function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definiti
         {blocked ? <Info size={14} aria-hidden='true' /> : shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
         {blocked ? '请先修复此 Skill' : shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
       </button>
+      {publicationReport && <button ref={reportRef} type='button' className='cc-skillhub-publication-report-button' onClick={() => {
+        setReportOpen(true);
+        onLoadPublicationReport?.(skill);
+      }}>
+        <ClipboardCheck size={14} aria-hidden='true' /> 查看发布报告
+      </button>}
       {publishOpen && <SkillPublishDialog skill={skill} category={categoryOf(skill)} returnFocusRef={actionRef}
         onClose={() => setPublishOpen(false)} onConfirm={value => {
           onSkillCategoryChange(skill, value);
           setPublishOpen(false);
           onShareLocalSkill(skill);
         }} />}
+      {reportOpen && publicationReport && <PublicationReportDialog report={publicationReport} returnFocusRef={reportRef}
+        onRetry={() => onLoadPublicationReport?.(skill)} onClose={() => setReportOpen(false)} />}
     </article>
   );
 }
@@ -1168,6 +1179,52 @@ function SkillPublishDialog({ skill, category, onClose, onConfirm, returnFocusRe
         <footer className='cc-skillhub-detail-footer'>
           <button ref={cancelRef} type='button' onClick={onClose}>取消</button>
           <button type='button' disabled={!value} onClick={() => onConfirm(value)}>发布并添加</button>
+        </footer>
+      </section>
+    </div>, document.body,
+  );
+}
+
+function PublicationReportDialog({ report, onClose, onRetry, returnFocusRef }) {
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: cancelRef, returnFocusRef });
+  const issues = Array.isArray(report?.issues) ? report.issues : [];
+  const outcome = report?.outcome === 'rejected' ? '校验未通过' : '发布需要处理';
+  const stage = report?.failureStage === 'capture' ? '运行环境捕获' : report?.failureStage === 'source' ? '运行环境检查' : 'SkillHub 发布校验';
+  const policyLabel = value => ({ manual: '需人工处理', confirmation_required: '需确认后修改', none: '无自动修复' })[value] || '需人工检查';
+  return createPortal(
+    <div className='cc-skillhub-detail-overlay' onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} tabIndex={-1} className='cc-skillhub-detail-dialog cc-skillhub-publication-report-dialog' role='dialog' aria-modal='true' aria-labelledby={titleId} aria-describedby={descriptionId}>
+        <header className='cc-skillhub-detail-header'>
+          <span className='cc-skillhub-detail-icon' aria-hidden='true'><ClipboardCheck size={19} /></span>
+          <div><span>{stage}</span><h2 id={titleId}>{report?.skillName || 'Skill'} · {outcome}</h2></div>
+          <button type='button' className='icon-button' aria-label='关闭发布报告' onClick={onClose}><X size={17} aria-hidden='true' /></button>
+        </header>
+        <p id={descriptionId} className='cc-skillhub-detail-description'>请根据下面的问题检查 Skill，修改后可回到运行工作区重新发布。</p>
+        {report?.loading ? <p role='status' className='cc-skillhub-report-empty'>正在读取发布报告…</p>
+          : report?.error ? <p role='alert' className='cc-skillhub-report-empty'>{report.error}</p> : null}
+        {report?.failureCode && <div className='cc-skillhub-report-summary'><strong>失败代码</strong><code>{report.failureCode}</code></div>}
+        {!report?.loading && !report?.error && <>
+        {report?.ruleVersion && <div className='cc-skillhub-report-summary'><strong>校验规则</strong><span>{report.ruleVersion}</span></div>}
+        {issues.length > 0 ? <ol className='cc-skillhub-publication-issues'>
+          {issues.map((issue, index) => <li key={`${issue.code}:${index}`}>
+            <code>{issue.code || '未命名问题'}</code>
+            <span className='cc-skillhub-report-location'>{[
+              issue.location?.relativePath, issue.location?.field,
+              issue.location?.entryIndex != null ? `条目索引 ${issue.location.entryIndex}` : '',
+            ].filter(Boolean).join(' · ')}</span>
+            {issue.message && <p>{issue.message}</p>}
+            <span>{issue.blocking ? '阻止发布' : '提示'} · {policyLabel(issue.repairPolicy)}</span>
+          </li>)}
+        </ol> : <p className='cc-skillhub-report-empty'>当前没有云端校验问题，请根据失败代码检查运行环境。</p>}
+        {report?.truncated && <p className='cc-skillhub-report-empty'>问题较多，报告已截断。修复列出的问题后，请重新发布以继续检查。</p>}
+        </>}
+        <footer className='cc-skillhub-detail-footer'>
+          <button type='button' disabled={report?.loading} onClick={onRetry}>重新读取</button>
+          <button ref={cancelRef} type='button' onClick={onClose}>关闭</button>
         </footer>
       </section>
     </div>, document.body,
