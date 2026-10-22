@@ -1138,6 +1138,23 @@ Cloud's delegated scheduler can execute only commits for which authorization
 already completed. Keep all new production switches off until isolated
 end-to-end acceptance.
 
+The gated workspace UI offers **查看发布报告** after a source/capture failure or
+Cloud validation rejection. It renders the human report API's structured
+`location` (relative path, field and zero-based entry index), per-issue blocking
+status and `repairPolicy`, rule version and truncation notice. All 50 permitted
+issues remain available. Source/capture failures stay distinct from Cloud
+validation; report-read failures use a static retryable message and discard
+previously read details instead of presenting stale evidence.
+
+Within the same browser tab, a sessionStorage hint retains only the entry ID,
+scoped to account, device, Bot, local Skill and source generation. Reopening the
+workspace restores the report button; opening it or choosing **重新读取** calls
+the authenticated read-only report API. The hint grants no access, stores no
+report content, and a changed source cannot inherit it. Late replies after a
+workspace/account/route change are ignored. Neither reading nor retrying creates
+a publication, repairs files, opens a chat or consumes model quota. The repair
+conversation handoff remains a later step; all rollout gates remain unchanged.
+
 Tests cover signed human JWTs, exact plan binding, privacy, authority changes,
 cancel/deny/write failure, lost-reply replay, result consistency and concurrency.
 The existing required PostgreSQL peer test also drives the human handler over

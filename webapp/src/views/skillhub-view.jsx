@@ -18,6 +18,7 @@ import SkillHubContent from './skillhub-content';
 import { MarketplaceProvider } from './skillhub-marketplace-state';
 import { skillSourceQuery } from './skillhub-presentation';
 import { readSkillAdditionTimes, recordSkillAdditions } from '../utils/skillhub-addition-order';
+import { normalizePublicationReport, publicationReportStorageKey, readPublicationReportHint, writePublicationReportHint } from '../utils/skillhub-publication-report';
 import '../css/skillhub-view.css';
 
 export {
@@ -148,30 +149,6 @@ function clearStoredPublicationRequest(key, requestId) {
   if (readStoredPublicationRequest(key)?.requestId === requestId) {
     writeStoredPublicationRequest(key, null);
   }
-}
-
-function normalizePublicationReport(report, fallback = {}) {
-  const validation = report?.validation || report?.result?.validation || {};
-  const issues = Array.isArray(validation?.issues) ? validation.issues : [];
-  const normalizedIssues = issues.map((issue) => ({
-    code: String(issue?.code || '').trim(),
-    location: String(issue?.location || issue?.path || '').trim(),
-    message: String(issue?.message || issue?.summary || '').trim(),
-  })).filter((issue) => issue.code || issue.location || issue.message).slice(0, 32);
-  const repairPolicy = validation?.repairPolicy || validation?.repair_policy || null;
-  return {
-    entryRequestId: String(fallback.entryRequestId || report?.entryRequestId || '').trim(),
-    outcome: String(validation?.outcome || fallback.outcome || '').trim(),
-    ruleVersion: String(validation?.ruleVersion || validation?.rule_version || '').trim(),
-    issues: normalizedIssues,
-    repairPolicy: repairPolicy && typeof repairPolicy === 'object' ? {
-      mode: String(repairPolicy.mode || '').trim(),
-      maxRounds: Number.isSafeInteger(Number(repairPolicy.maxRounds || repairPolicy.max_rounds))
-        ? Number(repairPolicy.maxRounds || repairPolicy.max_rounds) : 0,
-    } : null,
-    failureCode: String(fallback.failureCode || '').trim(),
-    failureStage: String(fallback.failureStage || '').trim(),
-  };
 }
 
 function readRecoveredPublicationEntry(response, botUID) {
@@ -1334,6 +1311,14 @@ export default function SkillHubView({
 
   const selectedAgentIsFriend = isFriendBotUID(bots, selectedBotUID);
 
+  const visiblePublicationReports = useMemo(() => {
+    if (selectedAgentIsFriend || !shouldUseDurablePublicationUI(publicationCapabilities)) return {};
+    return Object.fromEntries(localSkills.map(skill => {
+      const key = publicationReportStorageKey(user?.uid, selectedDeviceID, selectedBotUID, skill);
+      return [skill.localSkillId, publicationReports[key] || null];
+    }));
+  }, [localSkills, publicationCapabilities, publicationReports, selectedAgentIsFriend, selectedBotUID, selectedDeviceID, user?.uid]);
+
   const installedByID = useMemo(() => new Map(
     (definition.skills || []).map((skill) => [skill.skillId, skill]),
   ), [definition.skills]);
@@ -1703,7 +1688,6 @@ export default function SkillHubView({
     setLocalWorkspaceIncomplete(false);
     setLocalSkillsError('');
     setLocalNotice('');
-    setPublicationReports({});
     const isCurrentRequest = () => (
       requestID === localRequestRef.current
       && requestedBotUID === selectedBotUIDRef.current
@@ -1819,7 +1803,18 @@ export default function SkillHubView({
       if (String(workspace?.bot_uid || '') !== requestedBotUID) {
         throw new Error('XiaoBa 返回了其他 Agent 的运行工作区，已停止展示。');
       }
-      setLocalSkills(normalizeLocalSkills(workspace));
+      const skills = normalizeLocalSkills(workspace);
+      setLocalSkills(skills);
+      setPublicationReports(current => {
+        const next = { ...current };
+        for (const skill of skills) {
+          const key = publicationReportStorageKey(user?.uid, requestedDeviceID, requestedBotUID, skill);
+          const hint = key && readPublicationReportHint(key);
+          if (hint && !next[key]) next[key] = { ...hint, skillName: skill.displayName || skill.name };
+          if (next[key]?.loading) next[key] = { ...next[key], loading: false };
+        }
+        return next;
+      });
       setLocalSkillsPath(String(workspace?.skills_path || '').trim());
       setLocalWorkspaceRevision(String(workspace?.workspace_revision || '').trim().toLowerCase());
       setLocalWorkspaceIncomplete(workspace?.legacyTruncated === true);
@@ -2313,6 +2308,38 @@ export default function SkillHubView({
     }
   };
 
+  const loadPublicationReport = async (skill) => {
+    if (selectedAgentIsFriend || !shouldUseDurablePublicationUI(publicationCapabilities)) return;
+    const botUID = selectedBotUIDRef.current;
+    const deviceID = selectedDeviceIDRef.current;
+    const key = publicationReportStorageKey(user?.uid, deviceID, botUID, skill);
+    const saved = publicationReports[key];
+    if (!saved?.entryRequestId || saved.loading) return;
+    const observationGeneration = publicationObservationRef.current;
+    const workspaceRequest = localRequestRef.current;
+    const isCurrent = () => observationGeneration === publicationObservationRef.current
+      && workspaceRequest === localRequestRef.current
+      && botUID === selectedBotUIDRef.current && deviceID === selectedDeviceIDRef.current;
+    setPublicationReports(current => ({ ...current, [key]: { ...saved, loading: true, error: '' } }));
+    try {
+      const response = await api.getSkillHubPublicationValidationReport(saved.entryRequestId);
+      const report = normalizePublicationReport(response, saved.entryRequestId);
+      if (!isCurrent()) return;
+      setPublicationReports(current => ({ ...current, [key]: { ...saved, ...report, loading: false, error: '' } }));
+    } catch (error) {
+      if (!isCurrent()) return;
+      // A transport or authority failure is not a new validation rejection.
+      // Drop previously read details instead of presenting stale evidence.
+      setPublicationReports(current => ({ ...current, [key]: {
+        entryRequestId: saved.entryRequestId, skillName: saved.skillName,
+        failureCode: saved.failureCode, failureStage: saved.failureStage,
+        loading: false,
+        error: error?.status === 404 ? '尚无可读取的云端校验报告，或当前账号无法读取。'
+          : '暂时无法读取发布报告，请稍后重试。',
+      } }));
+    }
+  };
+
   const shareLocalSkill = async (localSkill) => {
     const requestedBotUID = selectedBotUIDRef.current;
     const requestedDeviceID = selectedDeviceID;
@@ -2322,9 +2349,11 @@ export default function SkillHubView({
     const requestedRevision = definition.revision;
     const requestedSkills = definition.skills;
     setSharingSkill(localSkill.name);
+    const reportKey = publicationReportStorageKey(user?.uid, requestedDeviceID, requestedBotUID, localSkill);
+    writePublicationReportHint(reportKey, null);
     setPublicationReports((current) => {
       const next = { ...current };
-      delete next[localSkill.localSkillId];
+      delete next[reportKey];
       return next;
     });
     setLocalSkillsError('');
@@ -2518,15 +2547,17 @@ export default function SkillHubView({
           }
           if (requestedBotUID !== selectedBotUIDRef.current) return;
           const savePublicationReport = (report, fallback = {}) => {
-            const normalized = normalizePublicationReport(report, {
-              entryRequestId,
-              ...fallback,
-            });
-            if (!normalized.entryRequestId && !normalized.failureCode && normalized.issues.length === 0) return;
+            let normalized = { entryRequestId };
+            if (report) {
+              try { normalized = normalizePublicationReport(report, entryRequestId); }
+              catch { normalized.error = '发布报告暂时无法展示，请重试读取。'; }
+            }
+            writePublicationReportHint(reportKey, entryRequestId);
             setPublicationReports((current) => ({
               ...current,
-              [localSkill.localSkillId]: {
+              [reportKey]: {
                 ...normalized,
+                ...fallback,
                 skillName: localSkill.displayName || localSkill.name,
               },
             }));
@@ -2836,7 +2867,8 @@ export default function SkillHubView({
     libraryLocalError={libraryLocalError}
     localNotice={localNotice}
     localSkills={localSkills}
-    publicationReports={publicationReports}
+    publicationReports={visiblePublicationReports}
+    onLoadPublicationReport={loadPublicationReport}
     localSkillsError={localSkillsError}
     localSkillsPath={localSkillsPath}
     localWorkspaceRevision={localWorkspaceRevision}
