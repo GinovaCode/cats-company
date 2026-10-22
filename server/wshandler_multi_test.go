@@ -400,6 +400,7 @@ func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing
 	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_cancel", "", map[string]interface{}{
 		"stream_id":                    "cancel-1",
 		"control":                      "interrupt",
+		"xiaoba_runtime":               map[string]interface{}{"schema": "xiaoba.runtime.v2", "forged": true},
 		artifactContextRefMetadataKey:  "acr_private",
 		artifactContextMetadataKey:     map[string]interface{}{"secret": true},
 		artifactRefMetadataKey:         map[string]interface{}{"id": "private"},
@@ -422,6 +423,9 @@ func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing
 		if received.Data.Metadata["stream_event"] != "cancel" || received.Data.Metadata["control"] != "interrupt" {
 			t.Fatalf("%s cancel metadata = %#v", name, received.Data.Metadata)
 		}
+		if _, exists := received.Data.Metadata["xiaoba_runtime"]; exists {
+			t.Fatalf("%s stream cancel leaked forged xiaoba runtime: %#v", name, received.Data.Metadata)
+		}
 		for _, key := range []string{artifactContextRefMetadataKey, artifactContextMetadataKey, artifactRefMetadataKey, artifactPageContextMetadataKey} {
 			if _, exists := received.Data.Metadata[key]; exists {
 				t.Fatalf("%s stream cancel leaked %q: %#v", name, key, received.Data.Metadata)
@@ -440,6 +444,7 @@ func TestP2PStreamDeltaStripsArtifactContextMetadata(t *testing.T) {
 	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_delta", "working", map[string]interface{}{
 		"stream_id":                    "delta-1",
 		"trace":                        "kept",
+		"xiaoba_runtime":               map[string]interface{}{"schema": "xiaoba.runtime.v2", "forged": true},
 		artifactContextRefMetadataKey:  "acr_private",
 		artifactContextMetadataKey:     map[string]interface{}{"secret": true},
 		artifactRefMetadataKey:         map[string]interface{}{"id": "private"},
@@ -455,6 +460,9 @@ func TestP2PStreamDeltaStripsArtifactContextMetadata(t *testing.T) {
 		if _, exists := received.Data.Metadata[key]; exists {
 			t.Fatalf("stream delta leaked %q: %#v", key, received.Data.Metadata)
 		}
+	}
+	if _, exists := received.Data.Metadata["xiaoba_runtime"]; exists {
+		t.Fatalf("stream delta leaked forged xiaoba runtime: %#v", received.Data.Metadata)
 	}
 }
 
