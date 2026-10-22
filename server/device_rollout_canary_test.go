@@ -55,7 +55,10 @@ func TestForgedRuntimeMetadataCannotReachPersistenceOrReplay(t *testing.T) {
 		t.Fatalf("ingestion dropped unrelated metadata: %#v", payload.Metadata)
 	}
 
-	// Persistence boundary.
+	// Exercise persistence independently of normalization: alternate producers
+	// can construct a payload directly. Otherwise the ingestion scrub would
+	// mask a missing persistence guard.
+	payload.Metadata = forged
 	store := &metadataMessageStore{}
 	if _, err := saveNormalizedMessage(store, "p2p_7_42", 7, 0, payload); err != nil {
 		t.Fatal(err)
@@ -70,17 +73,70 @@ func TestForgedRuntimeMetadataCannotReachPersistenceOrReplay(t *testing.T) {
 	// History replay, including rows written before the key was scrubbed.
 	hub := NewHub(&identityMessageStore{users: map[int64]*types.User{
 		7:  {ID: 7, Username: "alice", AccountType: types.AccountHuman},
-		42: {ID: 42, Username: "cloud", AccountType: types.AccountBot},
+		43: {ID: 43, Username: "cloud", AccountType: types.AccountBot},
 	}}, nil)
-	replay := hub.historyMessageDataForRecipient(42, &types.Message{
-		ID: 1, TopicID: "p2p_7_42", FromUID: 7, Content: `"hi"`,
-		Metadata: map[string]interface{}{"xiaoba_runtime": map[string]interface{}{"schema": "xiaoba.runtime.v2"}},
+	replay := hub.historyMessageDataForRecipient(43, &types.Message{
+		ID: 1, TopicID: "p2p_7_43", FromUID: 7, Content: `"hi"`,
+		Metadata: forged,
 	})
 	if replay == nil {
 		t.Fatal("expected replayed message")
 	}
 	if _, present := replay.Metadata["xiaoba_runtime"]; present {
 		t.Fatalf("history replay kept a forged directory: %#v", replay.Metadata)
+	}
+	if replay.Metadata["keep"] != "visible" || forged["xiaoba_runtime"] == nil {
+		t.Fatal("replay dropped unrelated metadata or mutated stored metadata")
+	}
+}
+
+func TestForgedRuntimeMetadataCannotReachRecipientFanout(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "0")
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS", "42")
+	hub, _ := deviceSelectionFixture(t)
+	for _, tc := range []struct {
+		name       string
+		actor, to  int64
+		native     bool
+		wantSchema string
+	}{
+		{"unlisted Bot", 7, 43, false, "xiaoba.runtime.v1"},
+		{"listed Bot", 7, 42, false, "xiaoba.runtime.v2"},
+		{"missing owner", 999, 43, false, ""},
+		{"Bot owner", 42, 43, false, ""},
+		{"human recipient", 7, 8, false, ""},
+		{"native group skips runtime builder", 7, 43, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := map[string]interface{}{
+				"keep":           "visible",
+				"xiaoba_runtime": map[string]interface{}{"schema": "xiaoba.runtime.v2", "forged": true},
+			}
+			if tc.native {
+				input["channel_native_group_binding_id"] = int64(1)
+			}
+			// Bypass normalization to exercise the live fanout boundary itself.
+			msg := hub.messageForRecipient(tc.actor, tc.to, "grp_1", 0, &normalizedMessagePayload{
+				Metadata: input, DisplayContent: "hi", StoredContent: "hi", StoredType: "text", DisplayType: "text",
+			}, 1)
+			if msg == nil || msg.Data == nil || msg.Data.Metadata["keep"] != "visible" {
+				t.Fatal("fanout lost message or unrelated metadata")
+			}
+			runtime, present := msg.Data.Metadata["xiaoba_runtime"]
+			if tc.wantSchema == "" {
+				if present {
+					t.Fatalf("forged runtime reached recipient: %#v", runtime)
+				}
+			} else {
+				directory, ok := runtime.(map[string]interface{})
+				if !ok || directory["schema"] != tc.wantSchema || directory["forged"] != nil {
+					t.Fatalf("recipient did not receive authoritative runtime: %#v", runtime)
+				}
+			}
+			if input["xiaoba_runtime"] == nil {
+				t.Fatal("fanout mutated source metadata used for other recipients")
+			}
+		})
 	}
 }
 

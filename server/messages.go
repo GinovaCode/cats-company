@@ -152,7 +152,6 @@ func (h *MessageHandler) sendMessage(w http.ResponseWriter, r *http.Request, req
 		payload.Metadata = metadataWithoutGatewayAnnotationContext(payload.Metadata)
 		payload.Metadata = metadataWithoutGatewayAnnotations(payload.Metadata)
 		payload.Metadata = metadataWithoutFileAnnotations(payload.Metadata)
-		payload.Metadata = metadataWithoutXiaobaRuntime(payload.Metadata)
 	}
 	if payload.ArtifactTaskRef != nil && (isTransientRuntimePayload(payload) || isTaskStatusPayload(payload)) {
 		h.hub.artifactTasks.releaseDelivery(payload.ArtifactTaskRef)
@@ -562,7 +561,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	sourceMetadata := payload.Metadata
 	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
-	publicMetadata := metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata))
+	publicMetadata := metadataWithoutXiaobaRuntime(metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)))
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
 	if !nativeChannelGroup {
 		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID, sourceMetadata))
@@ -703,8 +702,8 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	displayContent := decodeStoredContent(message.Content)
 	// The stored annotation context key is fanout-only; a value that somehow
 	// reached the store must never be replayed to readers as server output.
-	// The device directory is rebuilt per recipient below, so a persisted copy
-	// (including rows written before the key was scrubbed) is dropped here.
+	// Runtime directories are live-only. Drop any persisted copy (including
+	// rows written before the key was scrubbed), rather than replaying it.
 	storedMetadata := metadataWithoutXiaobaRuntime(metadataWithoutFileAnnotationContext(metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))))
 	// Offline agent readers rebuild their session from history (XiaoBa
 	// cloud-session-restore), which ignores metadata and prefers a non-empty
