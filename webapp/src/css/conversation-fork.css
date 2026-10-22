@@ -29,6 +29,13 @@
 .cc-fork-notice > span { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
 .cc-fork-notice svg { flex-shrink: 0; }
 .cc-fork-notice[role="alert"] { color: var(--cc-danger-text, #b42318); }
+/* A dismiss control sits at the far end and stays small, so it reads as
+   "close this report" rather than another action on the copy. */
+.cc-fork-notice .cc-fork-dismiss {
+  flex: 0 0 auto; margin-inline-start: auto; width: 26px; min-height: 26px;
+  padding: 0; border-radius: 4px; color: inherit; opacity: .75;
+}
+.cc-fork-notice .cc-fork-dismiss:hover { opacity: 1; background: var(--cc-control-surface, #eee); }
 .cc-fork-provenance { padding-block: 5px; font-size: 12px; }
 .cc-fork-sidebar-status .cc-fork-notice { padding: 8px; max-width: 248px; }
 @media (max-width: 600px) {

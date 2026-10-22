@@ -62,7 +62,8 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
         <Info size={15} aria-hidden="true" />
         <span>复制自 <bdi>{provenance.source_topic_id}</bdi></span>
       </div>}
-      {blocked && <div className="cc-fork-notice" role={targetError || provenance?.state === 'failed' ? 'alert' : 'status'}>
+      {blocked && !(fork.noticeDismissed && provenance?.state === 'failed')
+        && <div className="cc-fork-notice" role={targetError || provenance?.state === 'failed' ? 'alert' : 'status'}>
         {checking && <LoaderCircle size={16} className="is-spinning" aria-hidden="true" />}
         <span>{targetError ? `无法确认会话状态：${targetError}`
           : provenance?.state === 'failed' ? `会话初始化失败：${describeForkError(provenance.error) || '未能复制 Agent 上下文，请返回原会话重新创建。'}`
@@ -70,6 +71,14 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
         {targetError && <button type="button" role={buttonRole} disabled={checking} onClick={() => void fork.checkTarget()}>
           <RefreshCw size={15} aria-hidden="true" />重新查询
         </button>}
+        {/* A failed copy stays fenced server-side, so this report would otherwise
+            repeat on every visit. Closing it acknowledges that the copy cannot be
+            used instead of leaving the conversation looking stuck. */}
+        {provenance?.state === 'failed' && fork.dismissNotice && (
+          <button type="button" className="cc-fork-dismiss" aria-label="关闭提示" title="关闭提示" onClick={() => fork.dismissNotice()}>
+            <X size={15} aria-hidden="true" />
+          </button>
+        )}
       </div>}
       {(operation || busy || error) && <div className="cc-fork-notice" role={error || operation?.state === 'failed' ? 'alert' : 'status'}>
         {busy && <LoaderCircle size={16} className="is-spinning" aria-hidden="true" />}

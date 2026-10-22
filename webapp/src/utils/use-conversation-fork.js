@@ -24,6 +24,20 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   current.current = owner;
   const [source, setSource] = useState(null);
   const [target, setTarget] = useState(null);
+  // A terminal failure is only a report: the copy is already unusable and the
+  // topic stays fenced server-side, so the banner cannot be "fixed" by clicking.
+  // Without a way to acknowledge it, every visit to the copy re-renders the same
+  // error and the conversation looks permanently broken.
+  //
+  // The dismissal records the failed request ID rather than a bare flag, so a
+  // later copy that fails for a new reason still surfaces instead of being
+  // hidden by an old acknowledgement.
+  const dismissKey = `cc:conversation-fork-dismissed:${scope}`;
+  const [dismissRevision, setDismissRevision] = useState(0);
+  const dismissedRequestId = useMemo(
+    () => String(readStorageValue(dismissKey) || ''),
+    [dismissKey, dismissRevision],
+  );
   const isCurrent = useCallback(() => owner.active && current.current === owner, [owner]);
   const sourceState = source?.owner === owner ? source : {};
   const targetState = target?.owner === owner ? target : {};
@@ -31,6 +45,24 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   const needsTargetCheck = /^grp_\d+$/.test(topic || '');
   const blocked = needsTargetCheck && (!targetState.checked || Boolean(targetState.error)
     || (targetState.record && targetState.record.state !== 'ready'));
+
+  // Only a terminal failure is dismissable. It is a report the user cannot act
+  // on from inside the copy: the topic stays fenced server-side, so hiding the
+  // banner never makes it writable. Without this the same error re-renders on
+  // every visit and the conversation looks permanently broken.
+  //
+  // The stored value is the failed request id, not a bare flag, so a later copy
+  // that fails for a different reason surfaces again instead of inheriting an
+  // old acknowledgement.
+  const failedRequestId = targetState.record?.state === 'failed'
+    ? String(targetState.record.request_id || '')
+    : operation?.state === 'failed' ? String(operation.request_id || '') : '';
+  const noticeDismissed = Boolean(failedRequestId) && dismissedRequestId === failedRequestId;
+  const dismissNotice = useCallback(() => {
+    if (!failedRequestId) return;
+    writeStorageValue(dismissKey, failedRequestId);
+    setDismissRevision(revision => revision + 1);
+  }, [dismissKey, failedRequestId]);
 
   const acceptSource = useCallback(record => {
     if (!isCurrent()) return;
@@ -182,5 +214,6 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     provenance: targetState.record || null, targetError: targetState.error || '',
     checking: needsTargetCheck && (!targetState.checked || targetState.checking),
     blocked: Boolean(blocked), create, open, cancel, checkTarget,
+    noticeDismissed, dismissNotice,
   };
 }
