@@ -407,6 +407,7 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 
 func admitHumanCommitPostgres(t *testing.T, db *postgres.Adapter, in store.SkillHubPublicationCommitInput, actor int64) {
 	t.Helper()
+	verifyHumanRepairContextPostgres(t, db, in, actor)
 	c := &humanCommitCloud{in: in, state: "delegated_pending", authorize: func(context.Context) error { return errPublicationCommitCloud }}
 	h := newPublicationHumanCommitHandler(db, c, true)
 	ts := httptest.NewTLSServer(http.HandlerFunc(h.Handle))
@@ -454,4 +455,38 @@ func admitHumanCommitPostgres(t *testing.T, db *postgres.Adapter, in store.Skill
 		t.Fatal("human intent not durable", err)
 	}
 	t.Log("real JWT/HTTPS/PostgreSQL human plan and confirmation recorded one exact intent; Cloud execution failure remains uncertain")
+}
+
+func verifyHumanRepairContextPostgres(t *testing.T, db *postgres.Adapter, in store.SkillHubPublicationCommitInput, actor int64) {
+	t.Helper()
+	c := &humanCommitCloud{in: in}
+	c.plan = func(context.Context) error { t.Fatal("context read planned publication"); return nil }
+	c.authorize = func(context.Context) error { t.Fatal("context read authorized publication"); return nil }
+	peer := &humanReportCloud{c, func(_ context.Context, r store.SkillHubPublicationCloudReceipt) (*PublicationCloudValidationReport, error) {
+		if r != in.Receipt {
+			t.Fatal("context read changed persisted receipt")
+		}
+		return publicationReportFixture(r), nil
+	}}
+	h := newPublicationHumanCommitHandler(db, peer, true)
+	ts := httptest.NewTLSServer(http.HandlerFunc(h.Handle))
+	defer ts.Close()
+	r := repairContextRequest(t, actor)
+	r.URL.Path = strings.Replace(r.URL.Path, publicationReadTestID, in.Receipt.Query.EntryID, 1)
+	r.URL.Scheme, r.URL.Host, r.RequestURI = "https", strings.TrimPrefix(ts.URL, "https://"), ""
+	res, err := ts.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil || res.StatusCode != 200 || !strings.Contains(string(data), `"maxFormatRepairRounds":3`) ||
+		!strings.Contains(string(data), `"entryRequestId":"`+in.Receipt.Query.EntryID+`"`) {
+		t.Fatalf("repair context PG status=%d data=%s err=%v", res.StatusCode, data, err)
+	}
+	state, err := db.GetSkillHubPublicationCommitContext(context.Background(), actor, in.Receipt.Query.EntryID, true)
+	if err != nil || state == nil || state.Intent != nil || state.Receipt == nil || *state.Receipt != in.Receipt {
+		t.Fatal("context read mutated publication evidence", err)
+	}
+	t.Log("real JWT/HTTPS/PostgreSQL repair context read retained original receipt and no commit intent; Cloud rejection is synthetic")
 }

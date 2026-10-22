@@ -95,13 +95,13 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix), "/")
-	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report") {
+	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report" && parts[2] != "repair-context") {
 		fail(404, "publication.not_found")
 		return
 	}
 	id, action := parts[1], parts[2]
 	method := http.MethodPost
-	readOnly := action == "status" || action == "report"
+	readOnly := action == "status" || action == "report" || action == "repair-context"
 	if readOnly {
 		method = http.MethodGet
 	}
@@ -172,7 +172,9 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 			return
 		}
 	}
-	current := !readOnly
+	// Preparing a repair handoff requires current ownership, unlike reading
+	// historical reports after a transfer. It is still strictly read-only.
+	current := !readOnly || action == "repair-context"
 	local, err := h.reader.GetSkillHubPublicationCommitContext(ctx, claims.UID, id, current)
 	if err != nil {
 		h.failure(w, err)
@@ -195,7 +197,11 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		fail(409, "publication.commit_cancelled")
 		return
 	}
-	if action == "report" {
+	if action == "repair-context" && (local.Entry.Input.BotUID <= 0 || local.Entry.Input.Entrypoint != "workspace" || local.Intent != nil) {
+		fail(409, "publication.repair_context_unavailable")
+		return
+	}
+	if action == "report" || action == "repair-context" {
 		peer, ok := h.cloud.(publicationHumanReportCloud)
 		if !ok {
 			fail(503, "publication.report_unavailable")
@@ -205,6 +211,10 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		if err != nil || out == nil || out.SchemaVersion != 1 || out.Receipt != publicationControlReceipt(receipt) ||
 			!validPublicationValidationReport(out.Validation, receipt.Query.SourceSnapshotHash) || ctx.Err() != nil {
 			fail(503, "publication.report_unavailable")
+			return
+		}
+		if action == "repair-context" {
+			h.writeRepairContext(ctx, w, claims.UID, *local, out.Validation)
 			return
 		}
 		if !h.recheck(ctx, claims.UID, id, false, receipt) {
