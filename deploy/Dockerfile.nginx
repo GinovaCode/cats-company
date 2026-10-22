@@ -2,6 +2,13 @@ ARG NGINX_BROTLI_BASE_IMAGE="georgjung/nginx-brotli:latest@sha256:488e48d7773dee
 
 FROM node:24-alpine3.24 AS webapp-build
 
+# Keep the Alpine package source overridable for remote builders that cannot
+# reliably reach the default Alpine CDN.
+ARG APK_REPOSITORY=
+RUN if [ -n "${APK_REPOSITORY}" ]; then \
+      sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${APK_REPOSITORY}#g" /etc/apk/repositories; \
+    fi
+
 # Overridable Node registry. The deploy script passes a China-friendly mirror
 # (npmmirror) for the build host; the default keeps plain docker builds on the
 # official registry.

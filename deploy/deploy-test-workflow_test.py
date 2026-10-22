@@ -32,6 +32,17 @@ class DeployTestWorkflowTest(unittest.TestCase):
         self.assertIn('wait_for_health "api" "$health_api"', script)
         self.assertIn('wait_for_health "web" "$health_web"', script)
 
+    def test_remote_web_build_uses_the_configured_alpine_mirror(self):
+        script = (ROOT / "deploy/remote-build-source.sh").read_text(encoding="utf-8")
+        for dockerfile in ("deploy/Dockerfile.nginx", "deploy/Dockerfile.website"):
+            self.assertIn(
+                '--build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}"',
+                script,
+            )
+            contents = (ROOT / dockerfile).read_text(encoding="utf-8")
+            self.assertIn("ARG APK_REPOSITORY=", contents)
+            self.assertIn("sed -i", contents)
+
     def test_deploy_hands_the_shimo_session_mount_to_the_worker_user(self):
         # The Shimo worker image runs as uid/gid 1000.  When the deploy only
         # ran `mkdir`, the container could read the session mount but never
