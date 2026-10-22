@@ -61,6 +61,7 @@ import {
   resolveScopedModelState,
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
+import { createPublicationRepairTopic } from '../utils/skillhub-publication-repair';
 import { createDraftTaskCoordinator } from '../utils/draft-task-coordinator';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import {
@@ -1453,6 +1454,17 @@ function TinodeWebApp({ location }) {
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
 
+  const startPublicationRepair = useCallback(async ({ agent, entryRequestId, isCurrent }) => {
+    const created = await createPublicationRepairTopic({ agent, entryRequestId, userUid: user?.uid, isCurrent });
+    if (!created || !isCurrent()) return;
+    setStandaloneCloudArtifactsRequest(null);
+    setMessageLocationRequest(null);
+    activateResolvedTopic(created);
+    setActiveView('chats');
+    setMobileSidebarOpen(false);
+    window.dispatchEvent(new Event('cc:data-changed'));
+  }, [activateResolvedTopic, user?.uid]);
+
   const syncTaskContextDraft = useCallback((next) => {
     const current = readComposerTaskContextDraft(
       composerDraftStoreRef.current,
@@ -1879,6 +1891,7 @@ function TinodeWebApp({ location }) {
                   skillHubUpdateSummary={skillHubUpdateSummary}
                   onRegisterSkillHubCatalogue={registerSkillHubCatalogue}
                   onRefreshSkillHubUpdateSummary={refreshSkillHubUpdateSummary}
+                  onStartPublicationRepair={startPublicationRepair}
                 />
               </Suspense>
             ) : !showOnboardingPreview && activeTopic ? (

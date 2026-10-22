@@ -47,6 +47,9 @@ import {
 } from '../utils/skillhub-entry';
 
 vi.mock('../api', () => ({
+  getToken: vi.fn(() => 'session'),
+  getAuthRevision: vi.fn(() => 1),
+  isCurrentAuthSession: vi.fn(() => true),
   api: {
     getAgentSkills: vi.fn(),
     getAgentSkillVersions: vi.fn(),
@@ -1650,9 +1653,9 @@ describe('SkillHubView', () => {
         ['skillhub.localWorkspace.get', 'skillhub.publication.createEntry.v2'].includes(args.toolName))).toBe(true);
     }
 
-    async function openWorkspace() {
+    async function openWorkspace(props = {}) {
       await act(async () => {
-        root.render(<SkillHubView user={{ uid: 7 }} />);
+        root.render(<SkillHubView user={{ uid: 7 }} {...props} />);
         await Promise.resolve();
       });
       await openCustomSkills();
@@ -1940,6 +1943,66 @@ describe('SkillHubView', () => {
       expectNoLegacyMutations();
       await act(async () => { Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')); });
       expect(document.activeElement).toBe(reportButton);
+    });
+
+    it('offers a same-Bot repair handoff only after reading a rejected report and blocks duplicate clicks', async () => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID,
+        validation: { schemaVersion: '1', outcome: 'rejected', issues: [] } });
+      const pending = deferred();
+      const onStartPublicationRepair = vi.fn(() => pending.promise);
+      await openWorkspace({ onStartPublicationRepair });
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const dialog = document.querySelector('.cc-skillhub-publication-report-dialog');
+      const repair = [...dialog.querySelectorAll('button')].find(button => button.textContent.includes('新建修复对话'));
+      expect(repair).toBeTruthy();
+      expect(dialog.textContent).toContain('自动修复尚未启用');
+      await act(async () => { Simulate.click(repair); Simulate.click(repair); });
+      expect(onStartPublicationRepair).toHaveBeenCalledTimes(1);
+      const args = onStartPublicationRepair.mock.calls[0][0];
+      expect(String(args.agent.uid)).toBe('42');
+      expect(args.entryRequestId).toBe(entryID);
+      expect(args.isCurrent()).toBe(true);
+      expect(repair.disabled).toBe(true);
+      await act(async () => pending.reject(new Error('private upstream error')));
+      expect(dialog.textContent).toContain('无法创建修复对话');
+      expect(dialog.textContent).not.toContain('private upstream error');
+      expect(repair.disabled).toBe(false);
+      expectNoLegacyMutations();
+    });
+
+    it('invalidates a pending repair handoff when the workspace is refreshed', async () => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ schemaVersion: 1, entryRequestId: entryID,
+        validation: { schemaVersion: '1', outcome: 'rejected', issues: [] } });
+      const pending = deferred();
+      const onStartPublicationRepair = vi.fn(() => pending.promise);
+      await openWorkspace({ onStartPublicationRepair });
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      const dialog = document.querySelector('.cc-skillhub-publication-report-dialog');
+      await act(async () => Simulate.click([...dialog.querySelectorAll('button')].find(button => button.textContent.includes('新建修复对话'))));
+      const args = onStartPublicationRepair.mock.calls[0][0];
+      await act(async () => Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')));
+      await act(async () => Simulate.click([...container.querySelectorAll('.cc-skillhub-local-actions button')]
+        .find(button => button.textContent.includes('刷新'))));
+      expect(args.isCurrent()).toBe(false);
+      await act(async () => pending.resolve());
+      expectNoLegacyMutations();
+    });
+
+    it.each(['passed', 'unreadable'])('does not offer repair for a %s report', async (outcome) => {
+      sessionStorage.setItem(`catsco.skillhub.publication.report.7.alice-device.42.local-1.${sourceGeneration}`,
+        JSON.stringify({ entryRequestId: entryID }));
+      if (outcome === 'passed') api.getSkillHubPublicationValidationReport.mockResolvedValue({
+        schemaVersion: 1, entryRequestId: entryID, validation: { schemaVersion: '1', outcome, issues: [] },
+      });
+      const onStartPublicationRepair = vi.fn();
+      await openWorkspace({ onStartPublicationRepair });
+      await act(async () => Simulate.click(container.querySelector('.cc-skillhub-publication-report-button')));
+      expect(document.querySelector('.cc-skillhub-publication-report-dialog').textContent).not.toContain('新建修复对话');
+      expect(onStartPublicationRepair).not.toHaveBeenCalled();
     });
 
     it('keeps runtime failures distinct from report-read failures and allows a read retry', async () => {

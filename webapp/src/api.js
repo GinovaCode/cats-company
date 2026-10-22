@@ -985,6 +985,12 @@ export const api = {
     undefined,
     options,
   ),
+  getSkillHubPublicationRepairContext: (entryRequestId, options = {}) => request(
+    'GET',
+    `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/repair-context`,
+    undefined,
+    options,
+  ),
   planSkillHubPublicationCommit: (entryRequestId, confirmVersionPublish, options = {}) => request(
     'POST',
     `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/plan`,

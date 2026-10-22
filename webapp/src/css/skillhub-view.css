@@ -786,6 +786,44 @@
   gap: 0;
 }
 
+.cc-publication-repair-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--cc-border);
+  background: var(--cc-panel-raised);
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+}
+
+.cc-publication-repair-panel > svg { flex-shrink: 0; }
+.cc-publication-repair-panel > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cc-publication-repair-panel p { margin: 4px 0 0; line-height: 1.5; }
+.cc-publication-repair-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  font: inherit;
+  cursor: pointer;
+}
+.cc-publication-repair-panel button:disabled { opacity: 0.55; cursor: not-allowed; }
+.cc-publication-repair-panel button:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
+@media (max-width: 480px) {
+  .cc-publication-repair-panel { flex-wrap: wrap; }
+  .cc-publication-repair-panel > div { flex-basis: calc(100% - 30px); }
+  .cc-publication-repair-panel button { margin-left: auto; }
+}
+
 .cc-skillhub-report-summary {
   display: flex;
   align-items: baseline;
