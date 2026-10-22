@@ -67,3 +67,16 @@ export function describeForkError(error) {
   };
   return messages[text] || text;
 }
+
+// Explains a disabled composer inside a copy.
+//
+// This deliberately keys off a *confirmed* provenance state and not the
+// `blocked` flag: `blocked` is also true for an ordinary group topic until the
+// first fork lookup answers, and for any lookup failure. Using it would tell
+// ordinary conversations they are copies, and would contradict the banner that
+// reports an unknown state.
+export function forkComposerNotice(provenanceState) {
+  if (provenanceState === 'failed') return '此副本未能创建成功，无法发送消息';
+  if (provenanceState === 'pending') return '副本正在初始化，暂不能发送消息';
+  return '';
+}

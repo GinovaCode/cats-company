@@ -69,3 +69,33 @@ it('hides the cancel action once the copy is ready or failed', async () => {
   expect(container.textContent).toContain('升级');
   expect(container.textContent).not.toContain('取消复制');
 });
+
+it('lets the user close a failed copy report without pretending it is writable', async () => {
+  const dismissNotice = vi.fn();
+  const failed = { request_id: 'r1', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_9', state: 'failed', error: 'session_fork_ack_timeout' };
+  await act(async () => root.render(<ConversationForkNotice fork={{ provenance: failed, blocked: true, dismissNotice }} />));
+  expect(container.textContent).toContain('升级');
+  const close = container.querySelector('[aria-label="关闭提示"]');
+  expect(close).toBeTruthy();
+  await act(async () => close.click());
+  expect(dismissNotice).toHaveBeenCalledTimes(1);
+  // The notice is only a report; closing it must not invent a write action.
+  expect(container.textContent).not.toContain('打开新会话');
+});
+
+it('keeps showing a failure report until it is dismissed', async () => {
+  const failed = { request_id: 'r1', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_9', state: 'failed', error: 'session_fork_ack_timeout' };
+  await act(async () => root.render(<ConversationForkNotice fork={{ provenance: failed, blocked: true, dismissNotice: vi.fn() }} />));
+  expect(container.querySelector('[role="alert"]')).toBeTruthy();
+  await act(async () => root.render(<ConversationForkNotice fork={{
+    provenance: failed, blocked: true, noticeDismissed: true, dismissNotice: vi.fn(),
+  }} />));
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('does not offer a close control for a copy that is only still initializing', async () => {
+  const pending = { request_id: 'r1', source_topic_id: 'p2p_1_2', target_topic_id: 'grp_9', state: 'pending' };
+  await act(async () => root.render(<ConversationForkNotice fork={{ provenance: pending, blocked: true, dismissNotice: vi.fn() }} />));
+  expect(container.textContent).toContain('初始化');
+  expect(container.querySelector('[aria-label="关闭提示"]')).toBeNull();
+});

@@ -1,4 +1,4 @@
-import { canForkConversation, describeForkError, forkTargetTopic, normalizeForkRecord } from './conversation-fork';
+import { canForkConversation, describeForkError, forkComposerNotice, forkTargetTopic, normalizeForkRecord } from './conversation-fork';
 
 const agent = { uid: 2, is_owner: true };
 
@@ -65,5 +65,25 @@ describe('fork error copy', () => {
     expect(describeForkError('session_fork_source_busy')).toBe('原会话正在执行，请等待完成后重试。');
     expect(describeForkError('unexpected_failure')).toBe('unexpected_failure');
     expect(describeForkError(undefined)).toBe('');
+  });
+});
+
+describe('fork composer notice', () => {
+  // Regression: the composer wording must key off a confirmed fork state, not
+  // the blocked flag. `blocked` is also true for an ordinary group topic before
+  // the first fork lookup answers, and for any lookup failure, so using it told
+  // ordinary conversations they were copies.
+  it('explains a copy that cannot accept messages', () => {
+    expect(forkComposerNotice('failed')).toBe('此副本未能创建成功，无法发送消息');
+    expect(forkComposerNotice('pending')).toBe('副本正在初始化，暂不能发送消息');
+  });
+
+  it('says nothing for ordinary topics and unresolved lookups', () => {
+    // 404 (record null) means "not a copy"; '' covers an unresolved or failed
+    // lookup, which the separate notice already explains.
+    expect(forkComposerNotice(null)).toBe('');
+    expect(forkComposerNotice(undefined)).toBe('');
+    expect(forkComposerNotice('')).toBe('');
+    expect(forkComposerNotice('ready')).toBe('');
   });
 });

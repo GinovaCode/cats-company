@@ -12,7 +12,7 @@ import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TAS
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import { ConversationForkAction, ConversationForkNotice } from '../widgets/conversation-fork';
-import { canForkConversation } from '../utils/conversation-fork';
+import { canForkConversation, forkComposerNotice } from '../utils/conversation-fork';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
@@ -5038,13 +5038,20 @@ export default function MessagesView({
       || members.some((member) => member?.is_bot),
     )
     : peerIsBot;
-  const composerPlaceholder = isGroup
-    ? (
-      isOneUserOneAgentGroup
-        ? '输入指令，我帮您完成'
-        : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
-    )
-    : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
+  // A failed copy stays fenced server-side even after its banner is dismissed,
+  // so the composer has to keep saying why it cannot send. Without this the
+  // banner disappears and the disabled input looks broken for no reason.
+  //
+  // Only a confirmed fork state changes the wording; see forkComposerNotice.
+  const forkCopyNotice = forkComposerNotice(conversationFork.provenance?.state);
+  const composerPlaceholder = forkCopyNotice
+    || (isGroup
+      ? (
+        isOneUserOneAgentGroup
+          ? '输入指令，我帮您完成'
+          : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
+      )
+      : (peerIsBot ? '输入指令，我帮您完成' : '输入消息'));
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
