@@ -150,6 +150,30 @@ function clearStoredPublicationRequest(key, requestId) {
   }
 }
 
+function normalizePublicationReport(report, fallback = {}) {
+  const validation = report?.validation || report?.result?.validation || {};
+  const issues = Array.isArray(validation?.issues) ? validation.issues : [];
+  const normalizedIssues = issues.map((issue) => ({
+    code: String(issue?.code || '').trim(),
+    location: String(issue?.location || issue?.path || '').trim(),
+    message: String(issue?.message || issue?.summary || '').trim(),
+  })).filter((issue) => issue.code || issue.location || issue.message).slice(0, 32);
+  const repairPolicy = validation?.repairPolicy || validation?.repair_policy || null;
+  return {
+    entryRequestId: String(fallback.entryRequestId || report?.entryRequestId || '').trim(),
+    outcome: String(validation?.outcome || fallback.outcome || '').trim(),
+    ruleVersion: String(validation?.ruleVersion || validation?.rule_version || '').trim(),
+    issues: normalizedIssues,
+    repairPolicy: repairPolicy && typeof repairPolicy === 'object' ? {
+      mode: String(repairPolicy.mode || '').trim(),
+      maxRounds: Number.isSafeInteger(Number(repairPolicy.maxRounds || repairPolicy.max_rounds))
+        ? Number(repairPolicy.maxRounds || repairPolicy.max_rounds) : 0,
+    } : null,
+    failureCode: String(fallback.failureCode || '').trim(),
+    failureStage: String(fallback.failureStage || '').trim(),
+  };
+}
+
 function readRecoveredPublicationEntry(response, botUID) {
   const entry = response?.entry;
   if (response?.schemaVersion !== 1
@@ -1221,6 +1245,7 @@ export default function SkillHubView({
   const [localWorkspaceIncomplete, setLocalWorkspaceIncomplete] = useState(false);
   const [localSkillsError, setLocalSkillsError] = useState('');
   const [localNotice, setLocalNotice] = useState('');
+  const [publicationReports, setPublicationReports] = useState({});
   const [loadingLocalSkills, setLoadingLocalSkills] = useState(false);
   const [libraryLocalSkills, setLibraryLocalSkills] = useState([]);
   const [libraryLocalError, setLibraryLocalError] = useState('');
@@ -1678,6 +1703,7 @@ export default function SkillHubView({
     setLocalWorkspaceIncomplete(false);
     setLocalSkillsError('');
     setLocalNotice('');
+    setPublicationReports({});
     const isCurrentRequest = () => (
       requestID === localRequestRef.current
       && requestedBotUID === selectedBotUIDRef.current
@@ -2296,6 +2322,11 @@ export default function SkillHubView({
     const requestedRevision = definition.revision;
     const requestedSkills = definition.skills;
     setSharingSkill(localSkill.name);
+    setPublicationReports((current) => {
+      const next = { ...current };
+      delete next[localSkill.localSkillId];
+      return next;
+    });
     setLocalSkillsError('');
     setLocalNotice('');
     let uploaded = false;
@@ -2486,6 +2517,20 @@ export default function SkillHubView({
             clearStoredPublicationRequest(requestStorageKey, requestID);
           }
           if (requestedBotUID !== selectedBotUIDRef.current) return;
+          const savePublicationReport = (report, fallback = {}) => {
+            const normalized = normalizePublicationReport(report, {
+              entryRequestId,
+              ...fallback,
+            });
+            if (!normalized.entryRequestId && !normalized.failureCode && normalized.issues.length === 0) return;
+            setPublicationReports((current) => ({
+              ...current,
+              [localSkill.localSkillId]: {
+                ...normalized,
+                skillName: localSkill.displayName || localSkill.name,
+              },
+            }));
+          };
           if (observation.stage === 'needs_user_action') {
             setLocalNotice('');
             const code = observation.captureStatus?.captureStatus?.code
@@ -2494,6 +2539,10 @@ export default function SkillHubView({
             setLocalSkillsError(code
               ? `发布请求需要处理（${code}）。请打开发布详情查看报告。`
               : '发布请求需要处理，请打开发布详情查看报告。');
+            savePublicationReport(observation.report, {
+              failureCode: code,
+              failureStage: observation.captureStatus ? 'capture' : 'source',
+            });
           } else if (observation.stage === 'cancelled') {
             setLocalNotice('');
             setLocalSkillsError('发布请求已取消，可以重新发起发布。');
@@ -2503,6 +2552,7 @@ export default function SkillHubView({
               setLocalNotice('');
               const code = validation.issues?.[0]?.code || 'publication.validation_rejected';
               setLocalSkillsError(`发布校验未通过（${code}）。请打开发布详情查看报告。`);
+              savePublicationReport(observation.report, { outcome: 'rejected' });
             } else if (validation?.outcome === 'passed') {
               if (useHumanCommit) {
                 void finishHumanCommit().catch((error) => {
@@ -2786,6 +2836,7 @@ export default function SkillHubView({
     libraryLocalError={libraryLocalError}
     localNotice={localNotice}
     localSkills={localSkills}
+    publicationReports={publicationReports}
     localSkillsError={localSkillsError}
     localSkillsPath={localSkillsPath}
     localWorkspaceRevision={localWorkspaceRevision}

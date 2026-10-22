@@ -1873,6 +1873,21 @@ describe('SkillHubView', () => {
         expect(container.querySelector('[role="status"]')).toBeNull();
         expect(container.querySelector('[role="alert"]')).toBeTruthy();
         if (kind === 'capture failure') expect(container.textContent).toContain('publication.capture_rejected');
+        if (kind === 'report rejection') {
+          const reportButton = container.querySelector('.cc-skillhub-publication-report-button');
+          expect(reportButton).toBeTruthy();
+          await act(async () => {
+            Simulate.click(reportButton);
+            await Promise.resolve();
+          });
+          const reportDialog = document.body.querySelector('.cc-skillhub-publication-report-dialog');
+          expect(reportDialog?.textContent).toContain('metadata.description_missing');
+          expect(reportDialog?.textContent).toContain('当前只展示报告');
+          await act(async () => {
+            Simulate.click(reportDialog.querySelector('button[aria-label="关闭发布报告"]'));
+            await Promise.resolve();
+          });
+        }
         await publish();
         expect(admissions()).toHaveLength(2);
         expect(admissions()[0].requestId).not.toBe(admissions()[1].requestId);

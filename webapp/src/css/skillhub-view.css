@@ -771,6 +771,79 @@
   overflow-wrap: anywhere;
 }
 
+.cc-skillhub-publication-report-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 8px;
+  border-color: color-mix(in srgb, var(--cc-danger) 35%, var(--cc-border));
+  color: var(--cc-danger);
+}
+
+.cc-skillhub-publication-report-dialog {
+  gap: 0;
+}
+
+.cc-skillhub-report-summary,
+.cc-skillhub-report-policy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  padding: 9px 10px;
+  background: var(--cc-panel-raised);
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+}
+
+.cc-skillhub-report-summary code,
+.cc-skillhub-publication-issues code {
+  color: var(--cc-danger);
+  font-family: var(--cc-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.cc-skillhub-publication-issues {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  margin: 14px 0 0;
+  padding: 0 0 0 24px;
+}
+
+.cc-skillhub-publication-issues li {
+  padding-left: 4px;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cc-skillhub-publication-issues p {
+  margin: 4px 0 0;
+  color: var(--cc-text-secondary);
+}
+
+.cc-skillhub-report-location {
+  display: block;
+  margin-top: 3px;
+  color: var(--cc-muted);
+  font-family: var(--cc-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.cc-skillhub-report-empty {
+  margin: 14px 0 0;
+  color: var(--cc-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .cc-skillhub-installed-list {
   display: grid;
   gap: 7px;

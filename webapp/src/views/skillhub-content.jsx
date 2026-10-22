@@ -1112,8 +1112,9 @@ export function resolveRuntimeSkillPresentation(skill, catalogueByID, fallbackDe
   return { details, directory, displayName, publisher, skillId, version };
 }
 
-function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
+function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, publicationReports, saving, selectedDeviceID, sharingSkill, skill, skillHubUpdateDetailsByID, syncingWorkspace }) {
   const [publishOpen, setPublishOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const actionRef = useRef(null);
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
@@ -1123,6 +1124,7 @@ function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definiti
   const statusClass = blocked ? 'blocked' : shared ? 'synced' : 'local';
   const statusLabel = blocked ? '无法发布' : shared ? '已发布' : '未发布';
   const { directory, displayName, publisher, version } = resolveRuntimeSkillPresentation(skill, catalogueByID, skillHubUpdateDetailsByID);
+  const publicationReport = publicationReports?.[skill.localSkillId] || null;
   return (
     <article className='cc-skillhub-local-card'>
       <div className='cc-skillhub-local-card-heading'><strong>{displayName}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>
@@ -1138,12 +1140,16 @@ function CustomCard({ categoryOf, onSkillCategoryChange, catalogueByID, definiti
         {blocked ? <Info size={14} aria-hidden='true' /> : shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
         {blocked ? '请先修复此 Skill' : shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
       </button>
+      {publicationReport && <button type='button' className='cc-skillhub-publication-report-button' onClick={() => setReportOpen(true)}>
+        <ClipboardCheck size={14} aria-hidden='true' /> 查看发布报告
+      </button>}
       {publishOpen && <SkillPublishDialog skill={skill} category={categoryOf(skill)} returnFocusRef={actionRef}
         onClose={() => setPublishOpen(false)} onConfirm={value => {
           onSkillCategoryChange(skill, value);
           setPublishOpen(false);
           onShareLocalSkill(skill);
         }} />}
+      {reportOpen && <PublicationReportDialog report={publicationReport} returnFocusRef={actionRef} onClose={() => setReportOpen(false)} />}
     </article>
   );
 }
@@ -1168,6 +1174,45 @@ function SkillPublishDialog({ skill, category, onClose, onConfirm, returnFocusRe
         <footer className='cc-skillhub-detail-footer'>
           <button ref={cancelRef} type='button' onClick={onClose}>取消</button>
           <button type='button' disabled={!value} onClick={() => onConfirm(value)}>发布并添加</button>
+        </footer>
+      </section>
+    </div>, document.body,
+  );
+}
+
+function PublicationReportDialog({ report, onClose, returnFocusRef }) {
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  useDialogBehavior(dialogRef, { onClose, initialFocusRef: cancelRef, returnFocusRef });
+  const issues = Array.isArray(report?.issues) ? report.issues : [];
+  const outcome = report?.outcome === 'rejected' ? '校验未通过' : '发布需要处理';
+  const stage = report?.failureStage === 'capture' ? '运行环境捕获' : report?.failureStage === 'source' ? '运行环境检查' : 'SkillHub 格式校验';
+  return createPortal(
+    <div className='cc-skillhub-detail-overlay' onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} tabIndex={-1} className='cc-skillhub-detail-dialog cc-skillhub-publication-report-dialog' role='dialog' aria-modal='true' aria-labelledby={titleId} aria-describedby={descriptionId}>
+        <header className='cc-skillhub-detail-header'>
+          <span className='cc-skillhub-detail-icon' aria-hidden='true'><ClipboardCheck size={19} /></span>
+          <div><span>{stage}</span><h2 id={titleId}>{report?.skillName || 'Skill'} · {outcome}</h2></div>
+          <button type='button' className='icon-button' aria-label='关闭发布报告' onClick={onClose}><X size={17} aria-hidden='true' /></button>
+        </header>
+        <p id={descriptionId} className='cc-skillhub-detail-description'>这是 SkillHub 保存的结构化结果。当前只展示报告，不会自动修改本地 Skill 或重新发布。</p>
+        {report?.failureCode && <div className='cc-skillhub-report-summary'><strong>失败代码</strong><code>{report.failureCode}</code></div>}
+        {report?.ruleVersion && <div className='cc-skillhub-report-summary'><strong>校验规则</strong><span>{report.ruleVersion}</span></div>}
+        {issues.length > 0 ? <ol className='cc-skillhub-publication-issues'>
+          {issues.map((issue, index) => <li key={`${issue.code}:${issue.location}:${index}`}>
+            <code>{issue.code || '未命名问题'}</code>
+            {issue.location && <span className='cc-skillhub-report-location'>{issue.location}</span>}
+            {issue.message && <p>{issue.message}</p>}
+          </li>)}
+        </ol> : <p className='cc-skillhub-report-empty'>当前没有可展示的字段。请稍后刷新运行工作区，或根据失败代码检查运行环境。</p>}
+        {report?.repairPolicy && <div className='cc-skillhub-report-policy'>
+          <strong>修复策略</strong>
+          <span>{report.repairPolicy.mode || '由发布助手判断'}{report.repairPolicy.maxRounds > 0 ? ` · 最多 ${report.repairPolicy.maxRounds} 轮` : ''}</span>
+        </div>}
+        <footer className='cc-skillhub-detail-footer'>
+          <button ref={cancelRef} type='button' onClick={onClose}>关闭</button>
         </footer>
       </section>
     </div>, document.body,
