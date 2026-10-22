@@ -305,6 +305,7 @@ func TestGroupStreamCancelAllowsInitiatorAndTargetsOnlyTheirAgent(t *testing.T) 
 	cancel.Metadata[artifactContextMetadataKey] = map[string]interface{}{"secret": true}
 	cancel.Metadata[artifactRefMetadataKey] = map[string]interface{}{"id": "private"}
 	cancel.Metadata[artifactPageContextMetadataKey] = map[string]interface{}{"selected_text": "private"}
+	cancel.Metadata["xiaoba_runtime"] = map[string]interface{}{"schema": "xiaoba.runtime.v2", "forged": true}
 	hub.handleStreamPub(initiator, cancel, "grp_80")
 
 	var ack ServerMessage
@@ -328,6 +329,9 @@ func TestGroupStreamCancelAllowsInitiatorAndTargetsOnlyTheirAgent(t *testing.T) 
 			if _, exists := received.Data.Metadata[key]; exists {
 				t.Fatalf("%s group cancel leaked %q: %#v", name, key, received.Data.Metadata)
 			}
+		}
+		if _, exists := received.Data.Metadata["xiaoba_runtime"]; exists {
+			t.Fatalf("%s group cancel leaked forged xiaoba runtime: %#v", name, received.Data.Metadata)
 		}
 	}
 	if drainOne(otherBot.send) {

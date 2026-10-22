@@ -533,7 +533,7 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	// The legacy grant list remains selected-only even during a v2 rollout.
 	// Explicit capabilities live in a separate envelope ignored by old Bots,
 	// and cannot execute through either RPC without an exact explicit target.
-	if ownerUID == actorUID && xiaobaRuntimeV2Enabled() && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
+	if ownerUID == actorUID && xiaobaRuntimeV2EnabledForBot(agentUID) && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
 		explicitGrants = r.grantsForExplicitDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, selection.Revision)
 	}
 	return DeviceTurnContext{

@@ -1855,7 +1855,7 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 	streamMetadata := map[string]interface{}{}
 	// Streaming events are transport-only: neither the annotation attachment
 	// nor any (forged) server-context copy may ride them.
-	streamBase := metadataWithoutGatewayAnnotationContext(metadataWithoutGatewayAnnotations(metadataWithoutArtifactContext(metadata)))
+	streamBase := metadataWithoutXiaobaRuntime(metadataWithoutGatewayAnnotationContext(metadataWithoutGatewayAnnotations(metadataWithoutArtifactContext(metadata))))
 	for key, value := range streamBase {
 		streamMetadata[key] = value
 	}

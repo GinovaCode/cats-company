@@ -409,6 +409,9 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 	// message metadata. Scrub again at the persistence boundary so alternate
 	// ingestion paths and legacy clients cannot reintroduce it.
 	payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
+	// The device directory is rebuilt per recipient on read. Persisting a
+	// client copy would replay a forged rollout signal to later readers.
+	payload.Metadata = metadataWithoutXiaobaRuntime(payload.Metadata)
 	if metadataStore, ok := db.(store.MessageMetadataStore); ok {
 		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata)
 		if err != nil {
@@ -558,7 +561,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	sourceMetadata := payload.Metadata
 	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
-	publicMetadata := metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata))
+	publicMetadata := metadataWithoutXiaobaRuntime(metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)))
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
 	if !nativeChannelGroup {
 		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID, sourceMetadata))
@@ -699,7 +702,9 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	displayContent := decodeStoredContent(message.Content)
 	// The stored annotation context key is fanout-only; a value that somehow
 	// reached the store must never be replayed to readers as server output.
-	storedMetadata := metadataWithoutFileAnnotationContext(metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata)))
+	// Runtime directories are live-only. Drop any persisted copy (including
+	// rows written before the key was scrubbed), rather than replaying it.
+	storedMetadata := metadataWithoutXiaobaRuntime(metadataWithoutFileAnnotationContext(metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))))
 	// Offline agent readers rebuild their session from history (XiaoBa
 	// cloud-session-restore), which ignores metadata and prefers a non-empty
 	// string content over content_blocks. The authorized target Agent's read
@@ -781,14 +786,43 @@ func withCatscoIdentityMetadata(metadata map[string]interface{}, identity map[st
 }
 
 func withXiaobaRuntimeMetadata(metadata map[string]interface{}, runtime map[string]interface{}) map[string]interface{} {
-	if runtime == nil {
-		return metadata
+	if metadata == nil && runtime == nil {
+		return nil
 	}
 	next := make(map[string]interface{}, len(metadata)+1)
 	for key, value := range metadata {
+		if key == "xiaoba_runtime" {
+			continue
+		}
 		next[key] = value
 	}
-	next["xiaoba_runtime"] = runtime
+	if runtime != nil {
+		next["xiaoba_runtime"] = runtime
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
+}
+
+// xiaoba_runtime is server-generated routing metadata. It is removed from
+// client-authored inbound messages so a sender cannot forge a rollout signal.
+func metadataWithoutXiaobaRuntime(metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	if _, present := metadata["xiaoba_runtime"]; !present {
+		return metadata
+	}
+	next := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		if key != "xiaoba_runtime" {
+			next[key] = value
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
 	return next
 }
 
@@ -842,7 +876,7 @@ func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, top
 			"status":   status,
 		})
 	}
-	if !xiaobaRuntimeV2Enabled() {
+	if !xiaobaRuntimeV2EnabledForBot(recipientUID) {
 		// v1 consumers assume every entry is ready. During the compatibility
 		// phase, only advertise routable devices and keep the v1 wire shape.
 		ready := make([]map[string]interface{}, 0, len(devices))
@@ -1742,6 +1776,10 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
 	metadata := sanitizeMessageMap(req.Metadata)
+	// Single ingestion choke point for HTTP, WebSocket and channel paths. The
+	// device directory is server-generated and recipient-gated, so a client
+	// copy must not reach persistence or fanout as if the server issued it.
+	metadata = metadataWithoutXiaobaRuntime(metadata)
 	mentions := normalizeStructuredMentions(req.Mentions)
 	if len(mentions) > 0 {
 		if metadata == nil {
