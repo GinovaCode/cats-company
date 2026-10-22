@@ -1,12 +1,5 @@
 FROM node:24-alpine3.24 AS website-build
 
-# Keep the Alpine package source overridable for remote builders that cannot
-# reliably reach the default Alpine CDN.
-ARG APK_REPOSITORY=
-RUN if [ -n "${APK_REPOSITORY}" ]; then \
-      sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${APK_REPOSITORY}#g" /etc/apk/repositories; \
-    fi
-
 # Overridable Node registry (same convention as Dockerfile.nginx).
 # COREPACK_NPM_REGISTRY keeps the corepack-provisioned pnpm download off the
 # default registry as well.

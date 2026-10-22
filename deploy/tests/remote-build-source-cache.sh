@@ -62,12 +62,14 @@ chmod +x "$fake_bin/docker"
 run_build() {
   local target_revision="${1:?revision is required}"
   local web_mode="${2:-pull}"
+  local alpine_repository="${3:-https://mirrors.aliyun.com/alpine}"
   PATH="$fake_bin:$PATH" \
   FAKE_DOCKER_LOG="$docker_log" \
   FAKE_DOCKER_IMAGES="$docker_images" \
   CATSCO_SHARED_RELEASE_ROOT="$cache_root/releases" \
   CATSCO_SHARED_SOURCE_ROOT="$cache_root/source" \
   REMOTE_WEB_IMAGE_MODE="$web_mode" \
+  REMOTE_ALPINE_REPOSITORY="$alpine_repository" \
     bash "$repo_root/deploy/remote-build-source.sh" "$stack_root" "$target_revision" buildsense-ai
 }
 
@@ -80,7 +82,15 @@ fallback_output="$(run_build "$fallback_revision" pull 2>&1)"
 [ "$(grep -c '^pull ' "$docker_log")" -eq 1 ]
 [ -f "$cache_root/source/$revision/reuse-marker" ]
 grep -q 'Building web image locally' <<<"$first_output"
-grep -q -- '--build-arg APK_REPOSITORY=https://mirrors.aliyun.com/alpine' "$docker_log"
+# Assert every web build, including pull fallback, rather than accidentally
+# matching the server's pre-existing Alpine build argument.
+for image in cats-company-server cats-company-web; do
+  build_lines="$(grep "^build ghcr.io/buildsense-ai/${image}:" "$docker_log")"
+  [ "$(wc -l <<<"$build_lines")" -eq 2 ]
+  while IFS= read -r build_line; do
+    grep -Fq -- '--build-arg APK_REPOSITORY=https://mirrors.aliyun.com/alpine' <<<"$build_line"
+  done <<<"$build_lines"
+done
 grep '^build .*cats-company-web:' "$docker_log" | grep -q -- '--build-arg NPM_REGISTRY=https://registry.npmmirror.com'
 grep '^build .*cats-company-website:' "$docker_log" | grep -q -- '--build-arg NPM_REGISTRY=https://registry.npmmirror.com'
 grep '^build .*cats-company-shimo-worker:' "$docker_log" | grep -q -- '--build-arg DEBIAN_MIRROR=http://mirrors.ustc.edu.cn/debian'
@@ -97,7 +107,13 @@ mkdir -p "$stack_root/env"
 printf 'IMAGE_TAG=%s\n' "$fallback_revision" > "$stack_root/env/test.env"
 printf '%s\n' "ghcr.io/buildsense-ai/cats-company-web:${fallback_revision}" >> "$docker_images"
 sed -i '/georgjung\/nginx-brotli:latest@sha256:/d' "$docker_images"
-base_output="$(run_build "$base_revision" local 2>&1)"
+custom_alpine_repository="https://alpine.example.test/alpine"
+base_output="$(run_build "$base_revision" local "$custom_alpine_repository" 2>&1)"
+
+for image in cats-company-server cats-company-web; do
+  grep "^build ghcr.io/buildsense-ai/${image}:${base_revision} " "$docker_log" \
+    | grep -Fq -- "--build-arg APK_REPOSITORY=$custom_alpine_repository"
+done
 grep -q 'Using cached Web runtime as local Brotli build base' <<<"$base_output"
 grep -q "NGINX_BROTLI_BASE_IMAGE=ghcr.io/buildsense-ai/cats-company-web:${fallback_revision}" "$docker_log"
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -34,14 +35,23 @@ class DeployTestWorkflowTest(unittest.TestCase):
 
     def test_remote_web_build_uses_the_configured_alpine_mirror(self):
         script = (ROOT / "deploy/remote-build-source.sh").read_text(encoding="utf-8")
-        for dockerfile in ("deploy/Dockerfile.nginx", "deploy/Dockerfile.website"):
-            self.assertIn(
-                '--build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}"',
-                script,
-            )
-            contents = (ROOT / dockerfile).read_text(encoding="utf-8")
-            self.assertIn("ARG APK_REPOSITORY=", contents)
-            self.assertIn("sed -i", contents)
+        web_build = re.search(r"(?ms)^build_web_image\(\) \{\n(.*?)^\}", script)
+        self.assertIsNotNone(web_build)
+        self.assertIn(
+            '--build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}"',
+            web_build.group(1),
+        )
+        self.assertIn('-f deploy/Dockerfile.nginx', web_build.group(1))
+        self.assertIn('-t "$web_image"', web_build.group(1))
+
+    def test_web_alpine_mirror_is_set_before_package_install_in_build_stage(self):
+        contents = (ROOT / "deploy/Dockerfile.nginx").read_text(encoding="utf-8")
+        build_stage = contents.split(" AS webapp-build\n", 1)[1].split("\nFROM ", 1)[0]
+        argument = build_stage.index("ARG APK_REPOSITORY=")
+        rewrite = build_stage.index('sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${APK_REPOSITORY}#g" /etc/apk/repositories')
+        install = build_stage.index("RUN apk add --no-cache brotli gzip")
+        self.assertLess(argument, rewrite)
+        self.assertLess(rewrite, install)
 
     def test_deploy_hands_the_shimo_session_mount_to_the_worker_user(self):
         # The Shimo worker image runs as uid/gid 1000.  When the deploy only

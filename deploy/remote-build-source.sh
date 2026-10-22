@@ -189,7 +189,6 @@ build_website_image() {
   timeout "$website_build_timeout" docker build --progress=plain \
     --build-arg VITE_APP_BASE_URL="${REMOTE_WEBSITE_APP_BASE_URL:-https://app.catsco.cn}" \
     --build-arg NPM_REGISTRY="$npm_registry" \
-    --build-arg APK_REPOSITORY="${REMOTE_ALPINE_REPOSITORY:-https://mirrors.aliyun.com/alpine}" \
     -f deploy/Dockerfile.website \
     -t "$website_image" \
     .
