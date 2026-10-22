@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -24,6 +25,62 @@ func TestXiaobaRuntimeMetadataCannotBeForgedByInboundClients(t *testing.T) {
 	got := withXiaobaRuntimeMetadata(input, serverRuntime)
 	if !reflect.DeepEqual(got["xiaoba_runtime"], serverRuntime) {
 		t.Fatalf("server runtime was not authoritative: %#v", got)
+	}
+}
+
+// The helper-level test above does not prove the real paths strip the key. A
+// forged rollout signal must not survive ingestion, persistence, or replay.
+func TestForgedRuntimeMetadataCannotReachPersistenceOrReplay(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "0")
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS", "42") // bot 43 is not listed
+
+	forged := map[string]interface{}{
+		"keep": "visible",
+		"xiaoba_runtime": map[string]interface{}{
+			"schema": "xiaoba.runtime.v2", "devices": []interface{}{"forged"},
+		},
+	}
+
+	// Ingestion choke point shared by HTTP, WebSocket and channel paths.
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_7_42", Content: json.RawMessage(`"hi"`), Metadata: forged,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := payload.Metadata["xiaoba_runtime"]; present {
+		t.Fatalf("ingestion kept a forged directory: %#v", payload.Metadata)
+	}
+	if payload.Metadata["keep"] != "visible" {
+		t.Fatalf("ingestion dropped unrelated metadata: %#v", payload.Metadata)
+	}
+
+	// Persistence boundary.
+	store := &metadataMessageStore{}
+	if _, err := saveNormalizedMessage(store, "p2p_7_42", 7, 0, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := store.metadata["xiaoba_runtime"]; present {
+		t.Fatalf("persistence kept a forged directory: %#v", store.metadata)
+	}
+	if store.metadata["keep"] != "visible" {
+		t.Fatalf("persistence dropped unrelated metadata: %#v", store.metadata)
+	}
+
+	// History replay, including rows written before the key was scrubbed.
+	hub := NewHub(&identityMessageStore{users: map[int64]*types.User{
+		7:  {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+		42: {ID: 42, Username: "cloud", AccountType: types.AccountBot},
+	}}, nil)
+	replay := hub.historyMessageDataForRecipient(42, &types.Message{
+		ID: 1, TopicID: "p2p_7_42", FromUID: 7, Content: `"hi"`,
+		Metadata: map[string]interface{}{"xiaoba_runtime": map[string]interface{}{"schema": "xiaoba.runtime.v2"}},
+	})
+	if replay == nil {
+		t.Fatal("expected replayed message")
+	}
+	if _, present := replay.Metadata["xiaoba_runtime"]; present {
+		t.Fatalf("history replay kept a forged directory: %#v", replay.Metadata)
 	}
 }
 

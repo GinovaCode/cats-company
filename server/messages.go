@@ -410,6 +410,9 @@ func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, rep
 	// message metadata. Scrub again at the persistence boundary so alternate
 	// ingestion paths and legacy clients cannot reintroduce it.
 	payload.Metadata = metadataWithoutArtifactContext(payload.Metadata)
+	// The device directory is rebuilt per recipient on read. Persisting a
+	// client copy would replay a forged rollout signal to later readers.
+	payload.Metadata = metadataWithoutXiaobaRuntime(payload.Metadata)
 	if metadataStore, ok := db.(store.MessageMetadataStore); ok {
 		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata)
 		if err != nil {
@@ -700,7 +703,9 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	displayContent := decodeStoredContent(message.Content)
 	// The stored annotation context key is fanout-only; a value that somehow
 	// reached the store must never be replayed to readers as server output.
-	storedMetadata := metadataWithoutFileAnnotationContext(metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata)))
+	// The device directory is rebuilt per recipient below, so a persisted copy
+	// (including rows written before the key was scrubbed) is dropped here.
+	storedMetadata := metadataWithoutXiaobaRuntime(metadataWithoutFileAnnotationContext(metadataWithoutGatewayAnnotationContext(metadataWithoutArtifactContext(message.Metadata))))
 	// Offline agent readers rebuild their session from history (XiaoBa
 	// cloud-session-restore), which ignores metadata and prefers a non-empty
 	// string content over content_blocks. The authorized target Agent's read
@@ -1772,6 +1777,10 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
 	metadata := sanitizeMessageMap(req.Metadata)
+	// Single ingestion choke point for HTTP, WebSocket and channel paths. The
+	// device directory is server-generated and recipient-gated, so a client
+	// copy must not reach persistence or fanout as if the server issued it.
+	metadata = metadataWithoutXiaobaRuntime(metadata)
 	mentions := normalizeStructuredMentions(req.Mentions)
 	if len(mentions) > 0 {
 		if metadata == nil {
