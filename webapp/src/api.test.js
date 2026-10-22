@@ -1003,10 +1003,12 @@ describe('local XiaoBa SkillHub bridge', () => {
     await apiModule.api.planSkillHubPublicationCommit(entry, true);
     await apiModule.api.confirmSkillHubPublicationCommit(entry, 'b'.repeat(64));
     await apiModule.api.getSkillHubPublicationCommitStatus(entry);
+    await apiModule.api.getSkillHubPublicationRepairContext(entry);
     expect(global.fetch.mock.calls.map(([url, options]) => [url, options.method])).toEqual([
       [`/api/skillhub/publications/commit/entries/${entry}/plan`, 'POST'],
       [`/api/skillhub/publications/commit/entries/${entry}/confirm`, 'POST'],
       [`/api/skillhub/publications/commit/entries/${entry}/status`, 'GET'],
+      [`/api/skillhub/publications/commit/entries/${entry}/repair-context`, 'GET'],
     ]);
     expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
       schemaVersion: 1, confirmVersionPublish: true,

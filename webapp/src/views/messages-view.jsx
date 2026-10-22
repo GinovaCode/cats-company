@@ -13,6 +13,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import { ConversationForkAction, ConversationForkNotice } from '../widgets/conversation-fork';
 import { canForkConversation, forkComposerNotice } from '../utils/conversation-fork';
+import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
 import PwaDownloadLink from '../widgets/pwa-download-link';
@@ -6722,6 +6723,7 @@ export default function MessagesView({
           }) : <>{topBar}<ConversationForkAction key={topic} eligible={forkEligible}
             busy={conversationFork.busy} pending={conversationFork.operation?.state === 'pending'} onCreate={conversationFork.create} /></>}
           <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} />
+          <PublicationRepairPanel key={`${user.uid}:${topic}`} userUid={user.uid} topic={topic} isGroup={isGroup} groupId={groupId} />
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
             <section className="cc-cloud-worker-pending-notice" role="status" aria-live="polite">
               <span>
