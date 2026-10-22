@@ -24,6 +24,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+      - name: Require a released compatible XiaoBa client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/check-xiaoba-client-compat.py --mode stable-release
       - name: Require CI and test deployment for the same revision
         id: gate
         env:
@@ -54,6 +58,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+
+      - name: Recheck released XiaoBa client compatibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/check-xiaoba-client-compat.py --mode stable-release
 
       - name: Recheck release after waiting for production
         id: gate

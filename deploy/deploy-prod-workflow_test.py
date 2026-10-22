@@ -31,6 +31,9 @@ class DeployProdWorkflowTest(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertNotIn("cancel-in-progress: true", workflow)
         self.assertIn("run-name: Deploy production ${{ github.event.workflow_run.head_sha }}", workflow)
+        self.assertEqual(workflow.count("python3 deploy/check-xiaoba-client-compat.py --mode stable-release"), 2)
+        self.assertIn("Require a released compatible XiaoBa client", workflow)
+        self.assertIn("Recheck released XiaoBa client compatibility", workflow)
         self.assertIn("if: ${{ failure() && steps.deploy.outcome == 'failure' }}", workflow)
         for name in ("Checkout tested revision", "Prepare SSH key", "Upload prod stack files", "Deploy prod stack"):
             step = workflow.split(f"- name: {name}\n", 1)[1].split("\n      - name:", 1)[0]
