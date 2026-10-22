@@ -35,6 +35,7 @@ import SkillHubView, {
   assertSkillHubPublicationAdmission,
   shouldUseDurablePublicationUI,
   shouldUseDurablePublicationCommitUI,
+  skillHubPublicationErrorCode,
   waitForSkillHubPublicationCommitStatus,
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
@@ -1479,6 +1480,28 @@ describe('SkillHubView', () => {
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 
+  it('recognizes nested publication errors and terminal publish failures', async () => {
+    expect(skillHubPublicationErrorCode({ data: {
+      error: { code: 'publication.version_confirmation_required' },
+    } })).toBe('publication.version_confirmation_required');
+    const getStatus = vi.fn().mockResolvedValue({
+      executionState: 'publish_failed',
+      errorCode: 'skillhub.publication_task_publish_attempts_exhausted',
+    });
+    await expect(waitForSkillHubPublicationCommitStatus({
+      entryRequestId: `pubentry_${'p'.repeat(32)}`, getStatus, waitFor: vi.fn(),
+    })).resolves.toMatchObject({ state: 'publish_failed' });
+    expect(getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops commit polling without updating a replaced observation', async () => {
+    const getStatus = vi.fn();
+    await expect(waitForSkillHubPublicationCommitStatus({
+      entryRequestId: `pubentry_${'s'.repeat(32)}`, getStatus, isCurrent: () => false,
+    })).resolves.toBeNull();
+    expect(getStatus).not.toHaveBeenCalled();
+  });
+
   it('keeps a commit task recoverable when final status polling expires', async () => {
     const getStatus = vi.fn().mockResolvedValue({ executionState: 'commit_accepted' });
     await expect(waitForSkillHubPublicationCommitStatus({
@@ -1731,6 +1754,67 @@ describe('SkillHubView', () => {
         toolName: 'skillhub.localSkill.finalize',
         payload: expect.objectContaining({ skill_id: 'alice/local-demo', version: '1.0.0' }),
       }));
+      expect(container.textContent).toContain('已发布到团队，并添加到当前 Agent');
+    });
+
+    it('confirms a required new version before planning and publishing it', async () => {
+      api.getSkillHubPublicationCapabilities.mockResolvedValue({
+        workspaceDurableCreateEnabled: true,
+        workspaceDurablePublishUiEnabled: true,
+        workspaceDurableHumanCommitEnabled: true,
+      });
+      api.getSkillHubPublicationCloudStatus.mockResolvedValue({ cloudStatus: {
+        stage: 'acceptance_recorded', executionState: 'unknown',
+      } });
+      api.getSkillHubPublicationValidationReport.mockResolvedValue({ validation: { outcome: 'passed' } });
+      api.planSkillHubPublicationCommit
+        .mockRejectedValueOnce({ status: 409, data: { error: {
+          code: 'publication.version_confirmation_required', message: '需要确认新版本',
+        } } })
+        .mockResolvedValueOnce({ plan: {
+          skillId: 'alice/local-demo', version: '1.0.1', confirmationKey: 'e'.repeat(64),
+        } });
+      api.confirmSkillHubPublicationCommit.mockResolvedValue({ state: 'commit_accepted' });
+      api.getSkillHubPublicationCommitStatus.mockResolvedValue({
+        executionState: 'published', result: {
+          skillId: 'alice/local-demo', version: '1.0.1',
+          packageId: 'pkg_12345678-1234-4123-8123-123456789abc',
+          checksumSha256: 'e'.repeat(64), publishedAt: '2026-10-22T01:00:00Z',
+        },
+      });
+      api.getSkillHubVersion.mockResolvedValue({ version: {
+        id: 'alice/local-demo', version: '1.0.1', contentHash: 'f'.repeat(64),
+      } });
+      requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+        if (toolName === 'skillhub.localWorkspace.get') return workspace;
+        if (toolName === 'skillhub.publication.createEntry.v2') {
+          return { schema_version: 2, entry_request_id: entryID, state: 'waiting_runtime', replay: false };
+        }
+        if (toolName === 'skillhub.localSkill.finalize') return {
+          schema: 'xiaoba.skillhub.local_finalize.v1', bot_uid: '42',
+          skill_id: 'alice/local-demo', version: '1.0.1', content_hash: 'f'.repeat(64),
+        };
+        throw new Error(`Unexpected mutation: ${toolName}`);
+      });
+      await openWorkspaceWithFeedback();
+      await publish();
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      let dialog = document.body.querySelector('.cc-confirm-overlay');
+      expect(dialog?.textContent).toContain('确认发布');
+      expect(dialog?.textContent).toContain('新版本');
+      await act(async () => {
+        Simulate.click(dialog.querySelector('.cc-confirm-submit'));
+        await Promise.resolve(); await Promise.resolve();
+      });
+      dialog = document.body.querySelector('.cc-confirm-overlay');
+      expect(dialog?.textContent).toContain('alice/local-demo');
+      await act(async () => {
+        Simulate.click(dialog.querySelector('.cc-confirm-submit'));
+        await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      });
+      expect(api.planSkillHubPublicationCommit).toHaveBeenNthCalledWith(1, entryID, false);
+      expect(api.planSkillHubPublicationCommit).toHaveBeenNthCalledWith(2, entryID, true);
+      expect(api.confirmSkillHubPublicationCommit).toHaveBeenCalledWith(entryID, 'e'.repeat(64));
       expect(container.textContent).toContain('已发布到团队，并添加到当前 Agent');
     });
 

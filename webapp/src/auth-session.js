@@ -166,9 +166,12 @@ export function statusMessage(status) {
 
 export function responseErrorMessage(status, detail) {
   const normalizedStatus = Number(status);
+  const normalizedDetail = typeof detail === 'string'
+    ? detail
+    : (detail?.message || detail?.code || '');
   return normalizedStatus === 408 || normalizedStatus >= 500
     ? statusMessage(normalizedStatus)
-    : (detail || statusMessage(normalizedStatus));
+    : (normalizedDetail || statusMessage(normalizedStatus));
 }
 
 // Authentication requests should fail visibly instead of leaving the login
@@ -203,6 +206,7 @@ export async function request(method, path, body, options = {}) {
     const error = new Error(responseErrorMessage(res.status, data.error));
     error.status = res.status;
     error.data = data;
+    error.code = data?.error?.code || data?.code;
     throw error;
   }
   return data;

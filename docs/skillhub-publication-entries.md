@@ -1109,7 +1109,10 @@ service credentials in place of the active original human's Bearer JWT.
   or start repair.
 
 Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
-if its ACK claims published. Only verified status supplies the final result.
+if its ACK claims published. Only verified status supplies the final result. The
+status observer treats `published`, `publish_failed`, `cancelled` and `rejected`
+as terminal; a `publish_failed` response preserves its structured `errorCode`
+for the user-facing failure instead of being reported as an indefinite wait.
 Timeout/lost reply after intent recording is uncertain, not proof of rollback:
 read status, then retry the same entry/key if appropriate. No new version or
 intent is created by exact replay. A missing receipt means acceptance has not

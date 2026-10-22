@@ -18,6 +18,26 @@ describe('request status copy', () => {
     expect(responseErrorMessage(408, 'Request failed')).toBe('请求超时，请稍后重试');
   });
 
+  test('normalizes structured server errors and preserves their code', async () => {
+    expect(responseErrorMessage(409, {
+      code: 'publication.version_confirmation_required',
+      message: '需要确认新版本',
+    })).toBe('需要确认新版本');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: vi.fn().mockResolvedValue({ error: {
+        code: 'publication.version_confirmation_required', message: '需要确认新版本',
+      } }),
+    }));
+    await expect(request('POST', '/api/skillhub/publications/commit/entries/x/plan'))
+      .rejects.toMatchObject({
+        code: 'publication.version_confirmation_required',
+        message: '需要确认新版本',
+        data: { error: { code: 'publication.version_confirmation_required' } },
+      });
+  });
+
   test.each([502, 503, 504])('uses gateway status copy instead of a JSON server detail for HTTP %i', async (status) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,

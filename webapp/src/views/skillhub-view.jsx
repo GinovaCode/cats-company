@@ -172,6 +172,10 @@ export function shouldUseDurablePublicationCommitUI(capabilities) {
     && capabilities?.workspaceDurableHumanCommitEnabled === true;
 }
 
+export function skillHubPublicationErrorCode(error) {
+  return String(error?.code || error?.data?.error?.code || error?.data?.code || '').trim();
+}
+
 function runWithTimeout(operation, timeoutMs, createTimeoutError) {
   let result;
   try {
@@ -1025,7 +1029,7 @@ export async function waitForSkillHubPublicationCommitStatus({
       const response = await getStatus(id);
       if (!isCurrent()) return null;
       const state = String(response?.executionState || response?.execution_state || '').trim();
-      if (['published', 'failed', 'cancelled', 'rejected'].includes(state)) {
+      if (['published', 'publish_failed', 'failed', 'cancelled', 'rejected'].includes(state)) {
         return { entryRequestId: id, state, response };
       }
       last = { entryRequestId: id, state, response };
@@ -2388,7 +2392,7 @@ export default function SkillHubView({
           try {
             plan = await planRequest(false);
           } catch (error) {
-            if (String(error?.code || '') !== 'publication.version_confirmation_required') throw error;
+            if (skillHubPublicationErrorCode(error) !== 'publication.version_confirmation_required') throw error;
             const confirmedVersion = await feedback.confirm({
               title: `确认发布“${localSkill.name}”的新版本？`,
               message: 'SkillHub 检测到这会创建或覆盖一个新版本。确认后才会继续最终发布。',
@@ -2427,7 +2431,9 @@ export default function SkillHubView({
             entryRequestId,
             isCurrent: isCurrentObservation,
           });
-          if (!status || status.state === 'waiting') {
+          if (!status) return false;
+          if (status.state === 'waiting') {
+            if (!isCurrentObservation()) return false;
             setLocalSkillsError('最终发布仍在处理中，受理记录已保留；请刷新后继续查看。');
             return false;
           }
