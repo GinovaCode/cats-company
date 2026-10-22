@@ -1077,7 +1077,7 @@ source probing remain test setup, not a live user publishing experience.
 ### Human publication confirmation
 
 An independently default-off `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`
-registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with four
+registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with five
 actions. It uses the existing fixed issuer, Cloud audience and dedicated peer
 secret configuration. It is not a model/RPC tool and cannot use Bot/API-key or
 service credentials in place of the active original human's Bearer JWT.
@@ -1107,6 +1107,34 @@ service credentials in place of the active original human's Bearer JWT.
   bytes, arbitrary paths, upstream errors or credentials. Reading the report
   does not revalidate, allocate a version, record intent, authorize publication
   or start repair.
+- `GET repair-context` prepares a read-only data snapshot for the later repair
+  conversation handoff. It accepts no body, query, actor, Bot, path or report
+  from the browser. In addition to original-active-human authentication, it
+  requires current Bot ownership/body/enabled state, an uncancelled workspace
+  entry, no existing commit intent, and a verified `rejected` Cloud report.
+  Current authority and the exact entry/source/receipt are checked again after
+  peer IO. Historical report access after Bot transfer does not grant access to
+  this context. Passed validation returns 409, and unavailable/mismatched report
+  evidence returns a static 503 rather than inventing a rejection.
+
+  The response is exactly `schemaVersion:1`, `entryRequestId`, decimal `botUid`,
+  `entrypoint:"workspace"`, `contextKind:"publication_rejection"`, `validation`
+  (the validated historical report), and `constraints`. The constraints record
+  `maxFormatRepairRounds:3`, `descriptionDraftRequiresConfirmation:true`,
+  `stopOnFunctionalIdentitySecurityChanges:true`, `automaticRepairEnabled:false`.
+  This does not run or count repair rounds, confirm a description, or activate
+  an assistant. There are no source paths/selectors, runtime credentials,
+  publication permits or raw peer errors in the projection.
+
+  Consumers must treat report messages as untrusted data, never executable
+  instructions. The entry/report/candidate hashes identify historical evidence;
+  they confer no write/publish authority and do not prove the live source still
+  matches. Later chat/Runtime adapters must independently resolve the saved
+  source, check current authority/content, persist the shared repair-round
+  budget, and bind any required approval to the exact proposed draft. This
+  endpoint creates no conversation, task, intent, file change or model charge.
+  It shares the existing default-off human route gate, rate limits, deadline
+  and concurrency slots; no new rollout flag is enabled.
 
 Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
 if its ACK claims published. Only verified status supplies the final result. The
