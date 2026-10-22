@@ -62,7 +62,9 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
         <Info size={15} aria-hidden="true" />
         <span>复制自 <bdi>{provenance.source_topic_id}</bdi></span>
       </div>}
-      {blocked && !(fork.noticeDismissed && provenance?.state === 'failed')
+      {/* Dismissing hides the failure report only. A separate lookup error still
+          needs its own "重新查询" action, so keep the block when one is present. */}
+      {blocked && !(fork.noticeDismissed && provenance?.state === 'failed' && !targetError)
         && <div className="cc-fork-notice" role={targetError || provenance?.state === 'failed' ? 'alert' : 'status'}>
         {checking && <LoaderCircle size={16} className="is-spinning" aria-hidden="true" />}
         <span>{targetError ? `无法确认会话状态：${targetError}`
