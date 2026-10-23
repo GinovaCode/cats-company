@@ -1878,7 +1878,8 @@ function TinodeWebApp({ location }) {
             : <PanelLeftOpen size={18} aria-hidden="true" />}
         </button>
         <div className="v3-main-body">
-          <div data-loading-region="" className="v3-main-content">
+          {/* A view owns its loading handoff; navigation must retire that region. */}
+          <div key={activeView} data-loading-region="" className="v3-main-content">
             {activeView === 'apps' ? (
               <Suspense fallback={<SecondaryViewLoading kind="apps" label="正在读取应用" />}>
                 <AppsView key={user?.uid} user={user} topicId={activeTopic?.topicId || ''} viewStateRef={appsViewStateRef} />

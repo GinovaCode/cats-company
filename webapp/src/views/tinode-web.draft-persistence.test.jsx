@@ -99,11 +99,19 @@ vi.mock('./sidepanel-view', () => ({
 }));
 
 vi.mock('./skillhub-view', () => ({
-  default: ({ viewStateRef }) => { mocks.skillHubViewStateRef = viewStateRef; return <main data-testid="skillhub-view">SkillHub</main>; },
+  default: ({ viewStateRef }) => {
+    if (mocks.skillHubSuspense) throw mocks.skillHubSuspense;
+    mocks.skillHubViewStateRef = viewStateRef;
+    return <main data-testid="skillhub-view">SkillHub</main>;
+  },
 }));
 
 vi.mock('./apps-view', () => ({
-  default: ({ viewStateRef }) => { mocks.appsViewStateRef = viewStateRef; return <main data-testid="apps-view">应用</main>; },
+  default: ({ viewStateRef }) => {
+    if (mocks.appsSuspense) throw mocks.appsSuspense;
+    mocks.appsViewStateRef = viewStateRef;
+    return <main data-testid="apps-view">应用</main>;
+  },
 }));
 
 vi.mock('./messages-view', () => ({
@@ -230,6 +238,8 @@ beforeEach(() => {
   mocks.messageProps = null;
   mocks.emptyProps = null;
   mocks.standaloneProps = null;
+  mocks.appsSuspense = null;
+  mocks.skillHubSuspense = null;
   api.createGroup.mockReset().mockResolvedValue({ group: { id: 901, name: '标注任务', member_count: 2 }, topic: 'grp_901' });
   api.sendMessage.mockReset();
   api.openAgent.mockReset();
@@ -277,6 +287,58 @@ test('only marks the displayed conversation active and retains each tool browse 
     await selectTestConversation();
   }
   expect(mocks.appsViewStateRef).not.toBe(mocks.skillHubViewStateRef);
+});
+
+test.each([
+  ['打开应用', 'appsSuspense', false],
+  ['打开应用', 'appsSuspense', true],
+  ['打开 SkillHub', 'skillHubSuspense', false],
+  ['打开 SkillHub', 'skillHubSuspense', true],
+])('cancels %s loading on navigation (%s, handoff already started: %s)', async (label, suspenseKey, completed) => {
+  let resolvePage;
+  const pendingPage = new Promise(resolve => { resolvePage = resolve; });
+  const animations = [];
+  const originalAnimate = Object.getOwnPropertyDescriptor(Element.prototype, 'animate');
+  const bounds = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 300, height: 200 });
+  Object.defineProperty(Element.prototype, 'animate', { configurable: true, value: vi.fn(() => {
+    const animation = { finished: new Promise(() => {}), cancel: vi.fn() };
+    animations.push(animation);
+    return animation;
+  }) });
+  try {
+    await act(async () => renderWorkspace());
+    await selectTestConversation();
+    mocks[suspenseKey] = pendingPage;
+    await act(async () => container.querySelector(`[aria-label="${label}"]`).click());
+    const region = container.querySelector('.v3-main-content');
+    const loader = region.querySelector('.cc-loading-state');
+    expect(loader).not.toBeNull();
+    // JSDOM does not run the CSS reveal animation; model its visible frame.
+    loader.style.opacity = '1';
+    if (completed) {
+      await act(async () => {
+        mocks[suspenseKey] = null;
+        resolvePage();
+      });
+      expect(container.querySelector('.v3-main-content')).toBe(region);
+      expect(document.querySelector('.cc-loading-handoff')).not.toBeNull();
+      expect(animations.length).toBeGreaterThan(0);
+    }
+    await selectTestConversation();
+    expect(container.querySelector('[aria-label="消息草稿"]')).not.toBeNull();
+    expect(document.querySelector('.cc-loading-handoff')).toBeNull();
+    if (completed) animations.forEach(animation => expect(animation.cancel).toHaveBeenCalled());
+    else expect(animations).toHaveLength(0);
+  } finally {
+    await act(async () => {
+      mocks[suspenseKey] = null;
+      resolvePage();
+      root.render(null);
+    });
+    bounds.mockRestore();
+    if (originalAnimate) Object.defineProperty(Element.prototype, 'animate', originalAnimate);
+    else delete Element.prototype.animate;
+  }
 });
 
 test('shows the onboarding card once for a new account entering the workspace', async () => {
