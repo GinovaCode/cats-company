@@ -61,7 +61,7 @@ func TestPostgresConversationTaskRunMigration(t *testing.T) {
 	}
 	load := func(suffix string) string {
 		t.Helper()
-		data, err := os.ReadFile(filepath.Join("..", "migrations", "postgres", "000052_conversation_task_runs."+suffix+".sql"))
+		data, err := os.ReadFile(filepath.Join("..", "migrations", "postgres", "000054_conversation_task_runs."+suffix+".sql"))
 		if err != nil {
 			t.Fatal(err)
 		}

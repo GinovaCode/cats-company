@@ -8,7 +8,7 @@ import (
 )
 
 func TestConversationTaskRunStartupMigrationMatchesFile(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "migrations", "postgres", "000052_conversation_task_runs.up.sql"))
+	data, err := os.ReadFile(filepath.Join("..", "migrations", "postgres", "000054_conversation_task_runs.up.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}

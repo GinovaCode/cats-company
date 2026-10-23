@@ -103,7 +103,7 @@ nonmembers and humans in channel-managed groups cannot fetch it.
 
 ## Migration and recovery
 
-PostgreSQL migration `000052_conversation_task_runs` and startup schema creation
+PostgreSQL migration `000054_conversation_task_runs` and startup schema creation
 add the run/outbox tables, the internal aggregate provenance stamp, and backfill
 the source records currently available.
 The migration also adds the publisher event clock when upgrading directly from
