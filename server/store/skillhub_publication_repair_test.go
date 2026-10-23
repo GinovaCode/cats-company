@@ -10,7 +10,7 @@ func repairEvidenceTest() SkillHubPublicationRepairEvidence {
 }
 
 func TestSkillHubPublicationRepairAdmissionValidation(t *testing.T) {
-	in := SkillHubPublicationRepairInput{Receipt: commitTestInput().Receipt, TopicID: "grpRepair123", Evidence: repairEvidenceTest()}
+	in := SkillHubPublicationRepairInput{Receipt: commitTestInput().Receipt, TopicID: "grp_123", Evidence: repairEvidenceTest()}
 	in.Evidence.CandidateHash = in.Receipt.Query.SourceSnapshotHash
 	if _, err := in.IdentityHash(); err != nil {
 		t.Fatal(err)
@@ -25,6 +25,11 @@ func TestSkillHubPublicationRepairAdmissionValidation(t *testing.T) {
 		change(&x)
 		if _, err := x.IdentityHash(); err == nil {
 			t.Fatal("invalid admission facts accepted")
+		}
+	}
+	for _, topic := range []string{"grpRepair123", "grp_0", "grp_01", "grp_-1", "grp_9223372036854775808", "grp_1/other"} {
+		if _, err := ParseSkillHubPublicationRepairTopic(topic); err == nil {
+			t.Fatal("invalid topic", topic)
 		}
 	}
 }

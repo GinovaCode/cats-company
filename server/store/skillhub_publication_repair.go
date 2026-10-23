@@ -6,18 +6,33 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
 const SkillHubPublicationRepairMaxRounds = 3
 const SkillHubPublicationRepairLeaseTTL = 2 * time.Minute
 
-var publicationRepairTopic = regexp.MustCompile(`^grp[A-Za-z0-9_-]{1,128}$`)
+var publicationRepairTopic = regexp.MustCompile(`^grp_[1-9][0-9]{0,18}$`)
 var publicationRepairID = regexp.MustCompile(`^pubrepair_[a-f0-9]{32}$`)
 var publicationRepairToken = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 func ValidSkillHubPublicationRepairWorker(id string) bool {
 	return publicationReference.MatchString(id)
+}
+
+// ParseSkillHubPublicationRepairTopic accepts only canonical CatsCo group topics.
+// Parsing is not authority: the store also locks and verifies current membership.
+func ParseSkillHubPublicationRepairTopic(topic string) (int64, error) {
+	if !publicationRepairTopic.MatchString(topic) {
+		return 0, ErrSkillHubPublicationInvalid
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(topic, "grp_"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, ErrSkillHubPublicationInvalid
+	}
+	return id, nil
 }
 
 // These digests are derived by the trusted report adapter, NEVER the model or
@@ -40,9 +55,9 @@ func (e SkillHubPublicationRepairEvidence) Validate() error {
 }
 
 // Internal admission facts. A future human adapter must independently verify
-// the rejected Cloud report, private agent_task topic (owner and sole Bot),
-// explicit repair action and exact receipt before calling this store. A topic
-// string or digest supplied by a browser is not such verification.
+// the rejected Cloud report, explicit repair action and exact receipt before
+// calling this store. PostgreSQL checks the private same-Bot task under lock.
+// A topic string or digest supplied by a browser is not report verification.
 type SkillHubPublicationRepairInput struct {
 	Receipt  SkillHubPublicationCloudReceipt   `json:"receipt"`
 	TopicID  string                            `json:"topicId"`
@@ -50,7 +65,8 @@ type SkillHubPublicationRepairInput struct {
 }
 
 func (in SkillHubPublicationRepairInput) Validate() error {
-	if in.Receipt.Validate() != nil || !publicationRepairTopic.MatchString(in.TopicID) ||
+	_, topicErr := ParseSkillHubPublicationRepairTopic(in.TopicID)
+	if in.Receipt.Validate() != nil || topicErr != nil ||
 		in.Evidence.Validate() != nil || in.Evidence.CandidateHash != in.Receipt.Query.SourceSnapshotHash {
 		return ErrSkillHubPublicationInvalid
 	}
@@ -177,9 +193,10 @@ func (t SkillHubPublicationRepairTask) State() string {
 	return "queued"
 }
 
-// Dormant, optional persistent accounting only: no handler, worker, task event,
-// model call or file edit is registered. All mutations serialize with entry
-// cancellation and current human/owner/body checks. No in-memory fallback.
+// Optional persistent accounting only: the human admission route may create a
+// task but registers no worker, task event, model call or file edit. All writes
+// serialize with entry cancellation and current human/owner/body/task checks.
+// No in-memory fallback.
 // Reclaiming an expired lease resumes the SAME round and fences the old worker;
 // it must not be interpreted as permission to repeat an uncertain paid call.
 type SkillHubPublicationRepairStore interface {

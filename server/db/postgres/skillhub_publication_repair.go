@@ -20,6 +20,9 @@ func lockPublicationRepairAuthority(ctx context.Context, tx *sql.Tx, actor int64
 	if e.Input.ActorUID != actor {
 		return nil, store.ErrSkillHubPublicationDenied
 	}
+	if e.Input.Entrypoint != "workspace" {
+		return nil, store.ErrSkillHubPublicationDenied
+	}
 	if err := lockPublicationCommitAuthority(ctx, tx, e); err != nil {
 		return nil, err
 	}
@@ -32,6 +35,56 @@ func lockPublicationRepairAuthority(ctx context.Context, tx *sql.Tx, actor int64
 		return nil, store.ErrSkillHubPublicationSettled
 	}
 	return e, nil
+}
+
+// FOR UPDATE on the group conflicts with the FK key-share taken by new member
+// inserts. Lock existing member rows too, so removals cannot cross this check.
+// No group/database lock is held during a Cloud round trip or model operation.
+func lockPublicationRepairTopic(ctx context.Context, tx *sql.Tx, e *store.SkillHubPublicationEntry, topic string) error {
+	groupID, err := store.ParseSkillHubPublicationRepairTopic(topic)
+	if err != nil {
+		return err
+	}
+	var owner int64
+	var kind string
+	err = tx.QueryRowContext(ctx, `SELECT owner_id,group_kind FROM "groups" WHERE id=$1 FOR UPDATE`, groupID).Scan(&owner, &kind)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner != e.Input.ActorUID || kind != "agent_task")) {
+		return store.ErrSkillHubPublicationDenied
+	}
+	if err != nil {
+		return err
+	}
+	var topicOwner int64
+	err = tx.QueryRowContext(ctx, `SELECT owner_id FROM topics WHERE id=$1 AND type='group' FOR SHARE`, topic).Scan(&topicOwner)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && topicOwner != owner) {
+		return store.ErrSkillHubPublicationDenied
+	}
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT user_id,role FROM group_members WHERE group_id=$1 ORDER BY user_id FOR SHARE`, groupID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count, hasOwner, hasBot := 0, false, false
+	for rows.Next() {
+		var uid int64
+		var role string
+		if err := rows.Scan(&uid, &role); err != nil {
+			return err
+		}
+		count++
+		hasOwner = hasOwner || (uid == owner && role == "owner")
+		hasBot = hasBot || uid == e.Input.BotUID
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if count != 2 || !hasOwner || !hasBot {
+		return store.ErrSkillHubPublicationDenied
+	}
+	return nil
 }
 
 func readPublicationRepairTask(ctx context.Context, tx *sql.Tx, id string) (*store.SkillHubPublicationRepairTask, error) {
@@ -109,7 +162,8 @@ func (a *Adapter) CreateSkillHubPublicationRepairTask(ctx context.Context, actor
 	}
 	defer tx.Rollback()
 	id := in.Receipt.Query.EntryID
-	if _, err := lockPublicationRepairAuthority(ctx, tx, actor, id); err != nil {
+	entry, err := lockPublicationRepairAuthority(ctx, tx, actor, id)
+	if err != nil {
 		return nil, err
 	}
 	r, err := readPublicationCommitReceipt(ctx, tx, id)
@@ -127,7 +181,11 @@ func (a *Adapter) CreateSkillHubPublicationRepairTask(ctx context.Context, actor
 		if t.Input != in {
 			return nil, store.ErrSkillHubPublicationConflict
 		}
-	} else {
+	}
+	if err := lockPublicationRepairTopic(ctx, tx, entry, in.TopicID); err != nil {
+		return nil, err
+	}
+	if t == nil {
 		suffix, err := uploadRandomHex(16)
 		if err != nil {
 			return nil, err
@@ -194,7 +252,8 @@ func (a *Adapter) ClaimSkillHubPublicationRepairRound(ctx context.Context, actor
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := lockPublicationRepairAuthority(ctx, tx, actor, id); err != nil {
+	entry, err := lockPublicationRepairAuthority(ctx, tx, actor, id)
+	if err != nil {
 		return nil, err
 	}
 	t, err := readPublicationRepairTask(ctx, tx, id)
@@ -203,6 +262,9 @@ func (a *Adapter) ClaimSkillHubPublicationRepairRound(ctx context.Context, actor
 	}
 	if t == nil {
 		return nil, store.ErrSkillHubPublicationDenied
+	}
+	if err := lockPublicationRepairTopic(ctx, tx, entry, t.Input.TopicID); err != nil {
+		return nil, err
 	}
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
@@ -286,7 +348,8 @@ func (a *Adapter) FinishSkillHubPublicationRepairRound(ctx context.Context, acto
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := lockPublicationRepairAuthority(ctx, tx, actor, lease.EntryID); err != nil {
+	entry, err := lockPublicationRepairAuthority(ctx, tx, actor, lease.EntryID)
+	if err != nil {
 		return err
 	}
 	t, err := readPublicationRepairTask(ctx, tx, lease.EntryID)
@@ -295,6 +358,9 @@ func (a *Adapter) FinishSkillHubPublicationRepairRound(ctx context.Context, acto
 	}
 	if t == nil || t.ID != lease.TaskID || len(t.Rounds) < lease.Round {
 		return store.ErrSkillHubPublicationStale
+	}
+	if err := lockPublicationRepairTopic(ctx, tx, entry, t.Input.TopicID); err != nil {
+		return err
 	}
 	r := t.Rounds[lease.Round-1]
 	if r.Lease != lease {
