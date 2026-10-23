@@ -102,6 +102,12 @@ vi.mock('../widgets/chat-message', () => ({
             edit
           </button>
         )}
+        {props.onCreateConversationFork && (
+          <button type="button" className="mock-create-conversation-fork"
+            disabled={props.conversationForkDisabled} onClick={props.onCreateConversationFork}>
+            复制对话
+          </button>
+        )}
         {props.onCreateConversationShare && (
           <button
             type="button"
@@ -985,26 +991,35 @@ describe('MessagesView composer draft isolation', () => {
     api.forkConversation.mockImplementation(async payload => ({
       ...payload, target_topic_id: 'grp_99', state: 'ready',
     }));
+    api.getMessages.mockResolvedValueOnce({ messages: [{
+      id: 42, from_uid: 2, type: 'text', content: 'Agent reply', created_at: '2026-10-23T00:00:00Z',
+    }] });
     await mountTopic(root, 'p2p_1_2', { onActivateTopic });
-    await act(async () => container.querySelector('[aria-label="会话操作"]').click());
-    const action = container.querySelector('[role="menuitem"]');
-    expect(action.textContent).toContain('复制为新会话');
+    expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    const action = container.querySelector('.mock-create-conversation-fork');
+    expect(action.textContent).toContain('复制对话');
     await act(async () => action.click());
     expect(container.textContent).toContain('新会话已就绪');
+    expect(api.forkConversation).toHaveBeenCalledWith(expect.objectContaining({ source_topic_id: 'p2p_1_2' }), expect.any(Object));
     expect(api.sendMessage).not.toHaveBeenCalled();
     await act(async () => Array.from(container.querySelectorAll('button')).find(button => button.textContent.includes('打开新会话')).click());
     expect(onActivateTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'grp_99', isGroup: true, isAgentTask: true }));
   });
 
   it('does not offer a fork for a multi-human agent task or a human p2p', async () => {
+    api.getMessages.mockResolvedValue({ messages: [{
+      id: 42, from_uid: 2, type: 'text', content: 'Existing reply', created_at: '2026-10-23T00:00:00Z',
+    }] });
     api.getAgents.mockResolvedValue({ agents: [{ uid: 2, is_owner: true }] });
     api.getGroupInfo.mockResolvedValue({ group: { id: 10, kind: 'agent_task' }, members: [
       { user_id: 1, role: 'owner' }, { user_id: 2, is_bot: true }, { user_id: 3 },
     ] });
     await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
     expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    expect(container.querySelector('.mock-create-conversation-fork')).toBeNull();
     await mountTopic(root, 'p2p_1_3');
     expect(container.querySelector('[aria-label="会话操作"]')).toBeNull();
+    expect(container.querySelector('.mock-create-conversation-fork')).toBeNull();
   });
 
   it('disables the pending target composer and renders provenance outside message history', async () => {
@@ -7773,6 +7788,12 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.querySelector('.cc-tutorial-empty')).toBeNull();
+    const loadingState = container.querySelector('.cc-history-loading');
+    expect(loadingState?.getAttribute('role')).toBe('status');
+    expect(loadingState?.textContent).toContain('正在读取对话');
+    expect(loadingState?.querySelectorAll('.cc-history-loading-bubble')).toHaveLength(3);
+    expect(container.querySelector('.v3-timeline.is-history-loading')).not.toBeNull();
+    expect(container.querySelector('.v3-date-divider')).toBeNull();
 
     await act(async () => {
       resolveHistory({ messages: [] });
@@ -7780,6 +7801,9 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.querySelector('.cc-tutorial-empty')).not.toBeNull();
+    expect(container.querySelector('.cc-history-loading')).toBeNull();
+    expect(container.querySelector('.v3-timeline.is-history-loading')).toBeNull();
+    expect(container.querySelector('.v3-date-divider')).not.toBeNull();
   });
 
   it('shows an actionable state when initial history loading fails', async () => {

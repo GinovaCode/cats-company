@@ -17,6 +17,7 @@ import { api } from '../api';
 import { gatewayApplicationShareURL } from '../artifact-preview-coordinator';
 import CustomSelect from '../widgets/custom-select';
 import AppMetadataEditor from '../widgets/app-metadata-editor';
+import LoadingState from '../widgets/loading-state';
 import '../css/apps-view.css';
 import '../css/skillhub-view.css';
 
@@ -123,31 +124,6 @@ function readFavorites(uid) {
   }
 }
 
-function AppCardSkeletons() {
-  return (
-    <div className="cc-apps-grid cc-apps-skeleton-grid" aria-hidden="true">
-      {Array.from({ length: 6 }, (_, index) => (
-        <div className="cc-app-card cc-app-card-skeleton" key={index}>
-          <div className="cc-app-skeleton-heading">
-            <span className="cc-app-skeleton-block cc-app-skeleton-avatar" />
-            <div className="cc-app-skeleton-copy">
-              <span className="cc-app-skeleton-block cc-app-skeleton-title" />
-              <span className="cc-app-skeleton-block cc-app-skeleton-agent" />
-            </div>
-          </div>
-          <div className="cc-app-skeleton-description">
-            <span className="cc-app-skeleton-block" />
-            <span className="cc-app-skeleton-block" />
-          </div>
-          <div className="cc-app-skeleton-tags">
-            <span className="cc-app-skeleton-block" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function AppCard({ app, agent, openingID, onOpen, onOpenWindow, onShare, shared, onEdit, favorite, onToggleFavorite }) {
   const id = String(app?.id || app?.url || appTitle(app));
   const title = appTitle(app);
@@ -225,7 +201,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
   const [apps, setApps] = useState(() => cachedView?.apps || []);
   const [loading, setLoading] = useState(true);
   const [hasLoaded, setHasLoaded] = useState(() => Boolean(cachedView?.hasLoaded));
-  const [showSkeletons, setShowSkeletons] = useState(false);
+  const [showLoadingMotion, setShowLoadingMotion] = useState(false);
   const [failedAgentUIDs, setFailedAgentUIDs] = useState([]);
   const [error, setError] = useState('');
   const [selectedApp, setSelectedApp] = useState(null);
@@ -304,10 +280,10 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
 
   useEffect(() => {
     if (!loading || hasLoaded) {
-      setShowSkeletons(false);
+      setShowLoadingMotion(false);
       return undefined;
     }
-    const timer = window.setTimeout(() => setShowSkeletons(true), 150);
+    const timer = window.setTimeout(() => setShowLoadingMotion(true), 150);
     return () => window.clearTimeout(timer);
   }, [loading, hasLoaded]);
 
@@ -454,7 +430,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
   }
 
   return (
-    <section ref={listRef} className="cc-apps-page" aria-label="共享应用" aria-busy={loading} onScroll={rememberListScroll}>
+    <section ref={listRef} className="cc-apps-page" data-loading-region="" aria-label="共享应用" aria-busy={loading} onScroll={rememberListScroll}>
       <header className="cc-apps-header">
         <div>
           <h1>应用</h1>
@@ -503,7 +479,7 @@ function AppsViewSession({ user = null, topicId = '', viewStateRef }) {
       </div>
 
       {loading && <span className="cc-apps-loading-announcement" role="status">正在加载共享应用…</span>}
-      {loading && !hasLoaded && <div className="cc-apps-initial-loading">{showSkeletons && <AppCardSkeletons />}</div>}
+      {loading && !hasLoaded && <div className="cc-apps-initial-loading">{showLoadingMotion && <LoadingState kind="apps" label="正在读取应用" announce={false} />}</div>}
       {!loading && listError && <div className="cc-apps-state is-error" role="alert"><span>{listError}</span><button type="button" onClick={loadApps}>重试</button></div>}
       {!loading && !listError && visibleApps.length === 0 && <div className="cc-apps-state is-empty"><AppWindow size={24} aria-hidden="true" /><strong>{emptyTitle}</strong><span>{emptyCopy}</span></div>}
       {visibleApps.length > 0 && (

@@ -9,6 +9,7 @@ import {
   Wrench, X,
 } from 'lucide-react';
 import CustomSelect from '../widgets/custom-select';
+import LoadingState from '../widgets/loading-state';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import PublicationReportDialog from '../widgets/skillhub-publication-report-dialog';
 import { useFeedback } from '../components/feedback-system';
@@ -303,14 +304,14 @@ function AddedSkills(props) {
   const visibleSkillCount = visibleSkills.length;
   const totalSkillCount = formalSkills.length + localOnlySkills.length;
   return (
-    <section id='skillhub-added-panel' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
+    <section id='skillhub-added-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
       {selectedBotUID && !loadingDefinition && definition.skills.length > 0 && (normalizedQuery || updatesOnly) && (
         <span className='cc-visually-hidden cc-skillhub-added-search-count' role='status'>{visibleSkillCount} / {totalSkillCount}</span>
       )}
       {!selectedBotUID ? (
         <EmptyState icon={<Bot size={21} />} title='请先选择 Agent' copy='选择后即可查看它已经具备的能力。' />
       ) : loadingDefinition ? (
-        <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取 Agent 能力' status />
+        <LoadingState kind='skills' label='正在读取 Agent 能力' />
       ) : definition.skills.length === 0 ? (
         <div className='cc-skillhub-empty cc-skillhub-empty-added'>
           <Package size={22} aria-hidden='true' /><strong>{isReadOnly ? '暂无已同步能力' : '还没有添加能力'}</strong>
@@ -831,7 +832,7 @@ function Catalogue(props) {
     .sort((left, right) => skillUploadedTimestamp(right) - skillUploadedTimestamp(left));
   const loading = (market.enabled ? Boolean(market.state?.loading) : loadingCatalogue) || loadingLibraryLocalSkills;
   return (
-    <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
+    <section id='skillhub-catalogue-panel' data-loading-region='' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
       {market.state?.error && <div className='cc-skillhub-alert error' role='status'>{market.state.error}<button type='button' className='icon-button' disabled={market.state.loading} onClick={market.refresh} aria-label='重新加载能力分类' title='重试'><RefreshCw size={15} /></button></div>}
       {!hasMarketPage && catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}
         {legacySkills.length > 0 && <span> · 已保留上次加载的能力。</span>}
@@ -839,7 +840,7 @@ function Catalogue(props) {
       </div>}
       {libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
       {loading && librarySkills.length === 0 ? (
-        <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取能力库' status />
+        <LoadingState kind='skills' label='正在读取能力库' />
       ) : librarySkills.length === 0 ? (
         <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='换一个更宽泛的关键词再试试。' />
       ) : (
@@ -1006,7 +1007,7 @@ function formatAddedSkillVersion(skill, privateReference) {
 function CustomSkills(props) {
   const { devices, localSkills, localSkillsError, loadingDevices, loadingLocalSkills, localNotice, localSkillsPath, onChangeSection, runtimeRouteError, selectedDeviceID } = props;
   return (
-    <section className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-title'>
+    <section data-loading-region='' className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-title'>
       <div className='cc-skillhub-custom-header'>
         <div><span className='cc-skillhub-section-kicker'>开发者工具</span><h2 id='skillhub-custom-title'>运行工作区（真实目录）</h2><p>这里直接读取当前 Agent 对应 XiaoBa 的真实 skills 目录，不是 BotDefinition 配置列表。</p></div>
         <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}><ArrowLeft size={15} aria-hidden='true' /> 返回 Agent 能力总览</button>
@@ -1021,7 +1022,7 @@ function CustomSkills(props) {
       {localNotice && <div className='cc-skillhub-alert success' role='status'>{localNotice}</div>}
       {localSkillsError && <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div>}
       {loadingLocalSkills ? (
-        <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取工作区能力' copy='正在同步当前 Agent 对应的 XiaoBa 运行工作区。' status />
+        <LoadingState kind='skills' label='正在读取工作区能力' copy='正在同步当前 Agent 对应的 XiaoBa 运行工作区。' />
       ) : localSkills.length === 0 ? (
         <EmptyState icon={<Wrench size={21} />} title='还没有自定义能力' copy='在 XiaoBa 中创建 Skill 后，回到这里刷新。' />
       ) : <CustomGrid {...props} />}

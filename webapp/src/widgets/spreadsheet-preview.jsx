@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import LoadingState from './loading-state';
 
 export const SPREADSHEET_PREVIEW_MAX_ROWS = 200;
 export const SPREADSHEET_PREVIEW_MAX_COLUMNS = 50;
@@ -215,7 +216,7 @@ export function SpreadsheetPreview({ buffer, kind }) {
   );
 
   if (loading) {
-    return <div className="v3-file-preview-state">正在解析表格...</div>;
+    return <LoadingState kind="document" label="正在解析表格" className="v3-file-preview-state" />;
   }
   if (error) {
     return <div className="v3-file-preview-state error">{error}</div>;

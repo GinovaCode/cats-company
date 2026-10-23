@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
 import pdfWorkerURL from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+import LoadingState from './loading-state';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
@@ -494,6 +495,7 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
       </a>
       <div
         ref={viewportRef}
+        data-loading-region=""
         className="v3-mobile-pdf-viewport"
         role="region"
         aria-label="PDF 页面滚动区域"
@@ -506,11 +508,12 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         onLostPointerCapture={handleLostPointerCapture}
       >
         {(loadState === 'loading' || renderState === 'rendering') && !error && (
-          <div className="v3-mobile-pdf-status" role="status">正在加载 PDF…</div>
+          <div className="v3-mobile-pdf-status"><LoadingState kind="document" label="正在加载 PDF" /></div>
         )}
         {error && <div className="v3-mobile-pdf-status error" role="alert">{error}</div>}
         <canvas
           ref={canvasRef}
+          data-loading-content=""
           className="v3-mobile-pdf-canvas"
           data-file-annotation-surface="pdf"
           data-file-annotation-page={pageNumber}
@@ -519,6 +522,7 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         />
         <div
           ref={textLayerContainerRef}
+          data-loading-content=""
           className="textLayer v3-mobile-pdf-text-layer"
           style={annotationMode ? { pointerEvents: 'none' } : undefined}
           role="document"

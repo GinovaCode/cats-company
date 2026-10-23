@@ -9,6 +9,7 @@ import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import { ConversationForkMenuItem } from '../widgets/conversation-fork';
 import Avatar from '../widgets/avatar';
+import LoadingState from '../widgets/loading-state';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
 import { readStorageValue, writeStorageValue } from '../utils/storage-access';
@@ -358,6 +359,8 @@ export default function ChatListView({
 }) {
   const feedback = useFeedback();
   const [chats, setChats] = useState([]);
+  const [conversationsLoaded, setConversationsLoaded] = useState(false);
+  const [conversationsError, setConversationsError] = useState(false);
   const [friends, setFriends] = useState([]);
   const [groups, setGroups] = useState([]);
   const [pending, setPending] = useState([]);
@@ -844,10 +847,25 @@ export default function ChatListView({
     return requestPromise;
   };
 
+  const applyConversations = (result) => {
+    if (!Array.isArray(result?.conversations)) throw new Error('conversation response is invalid');
+    setChats(previous => reconcileConversationTaskStatuses(
+      result.conversations.map(conversationSummaryToChat), previous,
+      result.taskStatusVersions, taskStatusVersionsRef.current,
+    ));
+    setConversationsLoaded(true);
+    setConversationsError(false);
+    return result;
+  };
+
   const loadAll = async () => {
     try {
       const [resC, resF, resG, resP, resA, resProjects] = await Promise.all([
-        requestConversations().catch((error) => ({ error })),
+        requestConversations().then(applyConversations).catch((error) => {
+          setConversationsLoaded(true);
+          setConversationsError(true);
+          return { error };
+        }),
         api.getFriends().catch(()=>({})),
         api.getGroups().catch(()=>({})),
         api.getPendingRequests().catch(()=>({})),
@@ -855,15 +873,11 @@ export default function ChatListView({
         api.getProjects().catch(()=>({})),
       ]);
       const groups = resG.groups || [];
-      const conversationItems = resC.conversations || [];
-      const conversations = conversationItems.map(conversationSummaryToChat);
       const friends = resF.friends || [];
       const fallbackConversations = resC.error
         ? [...groups.map(groupToConversation), ...friends.map((friend) => friendToConversation(user.uid, friend))]
         : [];
-      setChats(previous => resC.error
-        ? (previous.length ? previous : fallbackConversations)
-        : reconcileConversationTaskStatuses(conversations, previous, resC.taskStatusVersions, taskStatusVersionsRef.current));
+      if (resC.error) setChats(previous => previous.length ? previous : fallbackConversations);
       setFriends(friends);
       setGroups(groups);
       if (resC.error) {
@@ -876,22 +890,20 @@ export default function ChatListView({
       await loadAgentPendingRequests(nextAgents);
     } catch (e) {
       console.error('Failed to load sidebar data:', e);
+      setConversationsLoaded(true);
+      setConversationsError(true);
     }
   };
 
   const refreshConversations = () => {
+    setConversationsError(false);
+    setConversationsLoaded(false);
     return requestConversations()
-      .then((result) => {
-        if (!Array.isArray(result?.conversations)) {
-          throw new Error('conversation response is invalid');
-        }
-        setChats(previous => reconcileConversationTaskStatuses(
-          result.conversations.map(conversationSummaryToChat), previous,
-          result.taskStatusVersions, taskStatusVersionsRef.current,
-        ));
-      })
+      .then(applyConversations)
       .catch((error) => {
         console.warn('Failed to refresh conversations after returning online:', error);
+        setConversationsLoaded(true);
+        setConversationsError(true);
       });
   };
 
@@ -3315,9 +3327,11 @@ export default function ChatListView({
               onPointerLeave={scheduleCompactHistoryClose}
             >
               <div className="cc-compact-history-heading">历史任务</div>
-              <div className="cc-compact-history-list" onScroll={() => setCompactHistoryTooltip(null)}>
+              <div data-loading-region="" className="cc-compact-history-list" onScroll={() => setCompactHistoryTooltip(null)}>
               {compactChats.length === 0 ? (
-                <div className="cc-compact-history-empty">暂无历史任务</div>
+                !conversationsLoaded ? <LoadingState kind="tasks" label="正在读取任务" compact />
+                  : conversationsError ? <div className="cc-compact-history-empty cc-conversation-load-error" role="alert"><span>历史任务加载失败</span><button type="button" onClick={refreshConversations}>重试</button></div>
+                    : <div className="cc-compact-history-empty">暂无历史任务</div>
               ) : compactChats.map((chat) => (
                 <button
                   type="button"
@@ -3372,6 +3386,7 @@ export default function ChatListView({
 
       {!compact && <div
         ref={sidebarListRef}
+        data-loading-region=""
         className={`v3-chat-list${historySelectionMode ? ' is-history-selection-mode' : ''}`}
       >
 
@@ -3404,7 +3419,9 @@ export default function ChatListView({
           )}
         />
         {(isSearching || !collapsed.conversations) && (conversationChats.length === 0 && !isSearching ? (
-          <div className="cc-sidebar-empty cc-conversation-empty">选择一个 Agent 开始新任务</div>
+          !conversationsLoaded ? <LoadingState kind="tasks" label="正在读取任务" className="cc-conversation-loading" compact />
+            : conversationsError ? <div className="cc-sidebar-empty cc-conversation-empty cc-conversation-load-error" role="alert"><span>历史任务加载失败</span><button type="button" onClick={refreshConversations}>重试</button></div>
+              : <div className="cc-sidebar-empty cc-conversation-empty">选择一个 Agent 开始新任务</div>
         ) : (
           conversationChats.map(renderConversationRow)
         ))}

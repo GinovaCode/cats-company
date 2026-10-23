@@ -265,6 +265,7 @@ describe('ChatMessage rich file rendering', () => {
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
     const preview = panel.querySelector('.v3-file-preview-image img');
+    expect(panel.querySelector('[data-loading-kind="image"]')).not.toBeNull();
     expect(preview?.getAttribute('src')).toBe('/uploads/images/classroom.jpg');
     expect(preview?.getAttribute('alt')).toBe('课堂照片.jpg');
     expect(panel.querySelector('a[download]')?.getAttribute('href')).toBe('/uploads/images/classroom.jpg?' + new URLSearchParams({ download: '1', name: '课堂照片.jpg' }));
@@ -274,6 +275,19 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(panel.textContent).toContain('图片加载失败');
+    expect(panel.querySelector('[data-loading-kind="image"]')).toBeNull();
+  });
+
+  it('removes image loading motion once the real image is loaded', async () => {
+    await act(async () => {
+      root.render(<FilePreviewPanel file={{ type: 'image', name: 'photo.png', url: '/uploads/images/photo.png', mime_type: 'image/png' }} onClose={vi.fn()} />);
+    });
+    expect(container.querySelector('[data-loading-kind="image"]')).not.toBeNull();
+    const image = container.querySelector('.image-viewport img');
+    Object.defineProperties(image, { naturalWidth: { value: 600 }, naturalHeight: { value: 400 } });
+    await act(async () => { Simulate.load(image); });
+    expect(container.querySelector('[data-loading-kind="image"]')).toBeNull();
+    expect(container.querySelector('.image-viewport-percentage').textContent).not.toBe('—');
   });
 
   it('normalizes a disconnected media endpoint instead of showing the browser error', async () => {
@@ -1123,6 +1137,37 @@ describe('ChatMessage rich file rendering', () => {
     });
     expect(onCreateConversationShare).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
+  });
+
+  it('copies a conversation from the message menu and preserves keyboard and pending states', async () => {
+    const onCreateConversationFork = vi.fn();
+    const message = { id: 22, from_uid: 2, content: 'Conversation reply', created_at: '2026-06-09T00:00:00Z' };
+    const renderMessage = async (disabled = false) => act(async () => {
+      root.render(<ChatMessage message={message} isSelf={false} senderName="CatsCo"
+        onCreateConversationShare={vi.fn()} onCreateConversationFork={onCreateConversationFork}
+        conversationForkDisabled={disabled} />);
+    });
+    await renderMessage();
+    const trigger = container.querySelector('[aria-label="更多操作"]');
+    await act(async () => Simulate.click(trigger));
+    let items = container.querySelectorAll('[role="menuitem"]');
+    expect(Array.from(items).map(item => item.textContent)).toEqual(['制作分享图', '复制对话']);
+    expect(document.activeElement).toBe(items[0]);
+    await act(async () => Simulate.keyDown(items[0], { key: 'ArrowDown' }));
+    expect(document.activeElement).toBe(items[1]);
+    await act(async () => Simulate.click(items[1]));
+    expect(onCreateConversationFork).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    await renderMessage(true);
+    await act(async () => Simulate.click(trigger));
+    items = container.querySelectorAll('[role="menuitem"]');
+    expect(items[1].disabled).toBe(true);
+    await act(async () => items[1].click());
+    expect(onCreateConversationFork).toHaveBeenCalledTimes(1);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('opens message actions after a mobile tap and keeps buttons clickable', async () => {

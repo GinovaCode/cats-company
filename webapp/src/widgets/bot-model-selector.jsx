@@ -3,6 +3,7 @@ import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Loader2, Sett
 
 import { api } from '../api';
 import {
+  formatModelDisplayName,
   formatRelayUsagePill,
   reasoningEffortLabel,
   relayUsageTone,
@@ -83,7 +84,7 @@ function resolveModelHeaderDisplay(config, fallbackDisplay) {
   const selection = activeCloudSelection(config);
   if (!selection || selection.kind === 'local') return fallbackDisplay;
   if (selection.kind === 'custom') {
-    const model = config?.custom?.model || '自定义模型';
+    const model = formatModelDisplayName(config?.custom?.model) || '自定义模型';
     return {
       model,
       meta: '自备模型',
@@ -92,8 +93,8 @@ function resolveModelHeaderDisplay(config, fallbackDisplay) {
   }
 
   const modelID = selection.model_id || '';
-  const model = config?.models?.find((entry) => entry.id === modelID)?.label
-    || modelID || fallbackDisplay?.model || '未知模型';
+  const model = formatModelDisplayName(config?.models?.find((entry) => entry.id === modelID)?.label
+    || modelID || fallbackDisplay?.model) || '未知模型';
   const reasoningEffort = reasoningEffortLabel(selection.reasoning_effort);
   return {
     model,
@@ -556,7 +557,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const hasVision = available && model.vision === true;
                 const hasOptions = hasReasoning || hasVision;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
-                const modelLabel = model.label || model.id;
+                const modelLabel = formatModelDisplayName(model.label || model.id);
                 const defaultReasoningEffort = model.default_reasoning_effort || efforts[0] || '';
 
                 return (

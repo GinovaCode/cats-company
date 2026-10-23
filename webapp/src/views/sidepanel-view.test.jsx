@@ -249,6 +249,46 @@ describe('ChatListView sidebar sections', () => {
     Simulate.click(section);
   }
 
+  it('shows task loading until the initial request settles and keeps existing rows on refresh', async () => {
+    let finish;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await mount();
+    expect(container.querySelector('[data-loading-kind="tasks"]')).not.toBeNull();
+    expect(container.querySelector('.cc-conversation-loading [data-loading-kind="tasks"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('选择一个 Agent 开始新任务');
+    await act(async () => { finish({ conversations: [] }); });
+    expect(container.querySelector('[data-loading-kind="tasks"]')).toBeNull();
+    expect(container.textContent).toContain('选择一个 Agent 开始新任务');
+    let refresh;
+    api.getConversations.mockImplementationOnce(() => new Promise(resolve => { refresh = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event('cc:data-changed')); });
+    expect(container.querySelector('[data-loading-kind="tasks"]')).toBeNull();
+    await act(async () => { refresh({ conversations: [] }); });
+  });
+
+  it('ends initial task loading with retry when conversations fail', async () => {
+    let fail;
+    api.getConversations.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    await mount();
+    expect(container.querySelector('[data-loading-kind="tasks"]')).not.toBeNull();
+    await act(async () => { fail(new Error('offline')); });
+    expect(container.querySelector('[data-loading-kind="tasks"]')).toBeNull();
+    expect(container.textContent).toContain('历史任务加载失败');
+    expect(container.textContent).not.toContain('选择一个 Agent 开始新任务');
+    await act(async () => { container.querySelector('.cc-conversation-load-error button').click(); });
+    expect(container.querySelector('.cc-conversation-load-error')).toBeNull();
+    expect(container.textContent).toContain('选择一个 Agent 开始新任务');
+  });
+
+  it('shows conversations without waiting for unrelated sidebar data', async () => {
+    let finishAgents;
+    api.getAgents.mockImplementationOnce(() => new Promise(resolve => { finishAgents = resolve; }));
+    await mount();
+    expect(container.querySelector('[data-loading-kind="tasks"]')).toBeNull();
+    expect(container.textContent).toContain('选择一个 Agent 开始新任务');
+    await act(async () => { finishAgents({ agents: [] }); });
+  });
+
   it('keeps only tasks, contacts, and projects as top-level sections', async () => {
     await mount();
 

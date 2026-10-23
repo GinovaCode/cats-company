@@ -1,11 +1,25 @@
 import {
   formatRelayUsagePill,
+  formatModelDisplayName,
   resolveConversationModelDisplay,
   resolveCurrentModelName,
   shortCustomModelName,
 } from './relay-usage';
 
 describe('relay usage labels', () => {
+  test('uses DeepSeek brand casing only for display and preserves the reported model ID', () => {
+    const summary = { source: 'relay', model: 'deepseek-flash', remaining_percent: 100 };
+    const display = resolveConversationModelDisplay('', { isBot: true, state: 'ready', summary });
+    expect(display.model).toBe('DeepSeek-flash');
+    expect(display.title).toContain('DeepSeek-flash');
+    expect(summary.model).toBe('deepseek-flash');
+    expect(resolveCurrentModelName(summary)).toBe('deepseek-flash');
+    expect(resolveConversationModelDisplay('deepseek-flash', { isBot: false }).model).toBe('DeepSeek-flash');
+    expect(formatModelDisplayName('DeepSeek Flash')).toBe('DeepSeek Flash');
+    expect(formatModelDisplayName('deepseek-v4-flash')).toBe('DeepSeek-v4-flash');
+    expect(formatModelDisplayName('vendor/deepseek-custom')).toBe('vendor/deepseek-custom');
+  });
+
   test('identifies lifetime trial separately from the recurring shared pool', () => {
     const result = resolveConversationModelDisplay('gpt-5.6-terra', {
       isBot: true, summary: { source: 'relay', model: 'gpt-5.6-terra', remaining_percent: 0, reset_duration: 'never' },

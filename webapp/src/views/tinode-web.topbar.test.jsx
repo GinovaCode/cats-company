@@ -11,6 +11,7 @@ import {
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
+  SecondaryViewLoading,
   ProfilePopover,
   getMobileSidebarWidth,
   resolveInitialUser,
@@ -30,6 +31,22 @@ const topbarCss = readFileSync(
   resolve(process.cwd(), 'src/css/catsco-topbar.css'),
   'utf8',
 );
+
+test('uses the selected motion while secondary page code is still loading', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    for (const kind of ['apps', 'skills']) {
+      await act(async () => { root.render(<SecondaryViewLoading kind={kind} label="正在读取内容" />); });
+      expect(container.querySelector(`.cc-secondary-view-loading [data-loading-kind="${kind}"]`)).not.toBeNull();
+      expect(container.querySelector('[role="status"]')).not.toBeNull();
+    }
+  } finally {
+    await act(async () => { root.unmount(); });
+    container.remove();
+  }
+});
 const tinodeWebSource = readFileSync(
   resolve(process.cwd(), 'src/views/tinode-web.jsx'),
   'utf8',

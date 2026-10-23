@@ -130,6 +130,73 @@
   color: var(--cc-text);
 }
 
+/* Keep connection surfaces neutral while inheriting the theme's primary action. */
+.catsco-desktop-connect-overlay {
+  --cc-panel: #ffffff;
+  --cc-panel-raised: #fafafa;
+  --cc-text: #242426;
+  --cc-text-secondary: #55555b;
+  --cc-muted: #6b6b72;
+  --cc-border: #e8e8eb;
+  --cc-hover: #f1f1f3;
+  --cc-pressed: #e9e9ec;
+  --cc-focus-border: #77777f;
+  --cc-focus-ring: #77777f;
+  --cc-secondary-action-bg: #f4f4f5;
+  --cc-secondary-action-bg-hover: var(--cc-hover);
+  --cc-secondary-action-bg-active: var(--cc-pressed);
+  --cc-secondary-action-text: var(--cc-text-secondary);
+  --cc-download-card-bg: var(--cc-panel-raised);
+  --cc-download-card-hover: var(--cc-hover);
+  --cc-connect-backdrop: rgb(0 0 0 / 18%);
+  --cc-connect-shadow: 0 20px 56px rgb(0 0 0 / 16%);
+}
+
+html[data-theme='dark'] .catsco-desktop-connect-overlay,
+html[data-theme='liquid'][data-liquid-variant='green'] .catsco-desktop-connect-overlay {
+  --cc-panel: #232325;
+  --cc-panel-raised: #28282b;
+  --cc-text: #ededf0;
+  --cc-text-secondary: #bcbcc3;
+  --cc-muted: #a2a2ab;
+  --cc-border: #39393e;
+  --cc-hover: #313135;
+  --cc-pressed: #3a3a3f;
+  --cc-focus-border: #aaaab3;
+  --cc-focus-ring: #aaaab3;
+  --cc-secondary-action-bg: #2d2d31;
+  --cc-connect-backdrop: rgb(0 0 0 / 48%);
+  --cc-connect-shadow: 0 20px 56px rgb(0 0 0 / 32%);
+}
+
+html:root .oc-modal-overlay.catsco-desktop-connect-overlay {
+  background: var(--cc-connect-backdrop);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+html:root .oc-modal.catsco-desktop-connect-modal {
+  border-color: var(--cc-border);
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  box-shadow: var(--cc-connect-shadow);
+}
+
+.catsco-desktop-connect-modal .catsco-connect-summary,
+.catsco-desktop-connect-modal .catsco-download-card {
+  border-color: var(--cc-border);
+  background: var(--cc-panel-raised);
+  color: var(--cc-text);
+}
+
+.catsco-desktop-connect-modal .catsco-download-card:hover {
+  background: var(--cc-hover);
+}
+
+.catsco-desktop-connect-modal :is(.catsco-connect-description, .catsco-download-desc) {
+  color: var(--cc-muted);
+}
+
 /* Neutral secondary-interface language: state is communicated by contrast,
  * not by a theme-specific accent hue. */
 .cc-settings-secondary-surface .oc-feedback-intro-icon {
