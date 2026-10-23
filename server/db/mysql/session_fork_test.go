@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	sqldriver "database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -133,6 +134,54 @@ func TestSessionForkMySQLAnchorOutsideSourceFailsClosed(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionForkMySQLAnchorMustCloseATurn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows [][]sqldriver.Value
+	}{{
+		// The anchor is the user message that starts the next turn, so the copied
+		// range would end mid-turn.
+		name: "anchor opens a new turn",
+		rows: [][]sqldriver.Value{
+			{9, 7, "first", "text", nil, "normal", "user", nil, nil, time.Now()},
+			{10, 9, "first answer", "text", nil, "normal", "assistant", nil, 9, time.Now()},
+			{11, 7, "second", "text", nil, "normal", "user", nil, nil, time.Now()},
+		},
+	}, {
+		// The anchor stops between a question and its answer.
+		name: "anchor stops before the answer",
+		rows: [][]sqldriver.Value{
+			{9, 7, "first", "text", nil, "normal", "user", nil, nil, time.Now()},
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			anchor := int64(tc.rows[len(tc.rows)-1][0].(int))
+			mock.ExpectBegin()
+			mock.ExpectQuery("SELECT account_type FROM users").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"account_type"}).AddRow("human"))
+			mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "mid").WillReturnRows(sqlmock.NewRows(sessionForkColumns))
+			mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(6, ""))
+			mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
+			mock.ExpectQuery("SELECT .* FROM messages WHERE topic_id = \\? AND id <= \\?").WithArgs("p2p_7_9", anchor).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).AddRows(tc.rows...))
+			mock.ExpectRollback()
+			got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "mid", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body", UntilMessageID: anchor})
+			// The runtime cuts at a turn boundary, so accepting this would make the
+			// copy's visible history and its model context disagree.
+			if !errors.Is(err, store.ErrSessionForkSource) || got != nil {
+				t.Fatalf("anchor inside a turn must fail closed: %#v %v", got, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

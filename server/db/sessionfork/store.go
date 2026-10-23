@@ -161,6 +161,14 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if req.UntilMessageID > 0 && (len(messages) == 0 || messages[len(messages)-1].id != req.UntilMessageID) {
 		return nil, store.ErrSessionForkSource
 	}
+	// The anchor must be the message that closes a turn. Otherwise the copied
+	// range ends mid-turn: the runtime, which cuts at a turn boundary, would keep
+	// less than the server copied, and the copy's visible history and its model
+	// context would disagree. Requiring the last row to close a turn is the
+	// cheapest way to state that on both sides.
+	if req.UntilMessageID > 0 && countCompleteTurns(messages) <= countCompleteTurns(messages[:len(messages)-1]) {
+		return nil, store.ErrSessionForkSource
+	}
 	for _, m := range messages {
 		if m.from != req.ActorUserID && m.from != req.AgentUID {
 			return nil, store.ErrSessionForkForbidden
