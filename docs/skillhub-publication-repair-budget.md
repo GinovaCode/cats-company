@@ -57,7 +57,9 @@ prevent a new round.
 
 `validated` means only that candidate validation passed, not that publication
 occurred. `waiting_confirmation` cannot be unlocked through this interface.
-Exact human approval of a description draft is separate future work. The ledger
+Exact human approval of a description draft uses a separate
+[retained confirmation record](skillhub-publication-description-confirmation.md),
+which does not unlock this ledger or write candidate files. The ledger
 does not decide whether a reported issue is safe to repair; a future executor
 needs an explicit server-controlled format allowlist, independent of model text.
 Neither a lease nor a checkpoint authorizes editing a runtime Skill, changing

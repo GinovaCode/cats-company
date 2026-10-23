@@ -1077,12 +1077,12 @@ source probing remain test setup, not a live user publishing experience.
 ### Human publication confirmation
 
 An independently default-off `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`
-registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with six
-actions. The `repair-task` action additionally requires the default-off
-`CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED`; both its GET and POST
-require both switches. It uses the existing fixed issuer, Cloud audience and
-dedicated peer secret configuration. It is not a model/RPC tool and cannot use
-Bot/API-key or service credentials in place of the active original human's
+registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with seven
+actions. The `repair-task` and `repair-description` actions additionally require
+the default-off `CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED`; their GET
+and POST methods require both switches. It uses the existing fixed issuer, Cloud
+audience and dedicated peer secret configuration. It is not a model/RPC tool and
+cannot use Bot/API-key or service credentials in place of the active original human's
 Bearer JWT.
 
 - `POST plan` takes exactly `{schemaVersion:1,confirmVersionPublish:boolean}`.
@@ -1169,6 +1169,30 @@ Bearer JWT.
   context and report errors still apply. See
   [Human publication repair admission](skillhub-publication-repair-admission.md)
   for the full protocol, locking, projection and remaining execution boundaries.
+- `GET /repair-description` reads the retained description draft, exact text,
+  target field/entry index, confirmation key and awaiting/confirmed state.
+  It takes no body or query, creates no draft and never contacts Cloud/model.
+  `POST /repair-description` takes exactly
+  `{"schemaVersion":1,"confirmationKey":"<64 lowercase hex characters>"}`.
+  It records the original active human's explicit approval of only that stored
+  text and exact task/round/candidate/report binding. Browser-supplied text,
+  selectors, evidence, actor fields or generic approval booleans are rejected.
+
+  Both methods recheck current publication and private same-Bot task authority;
+  Bot tokens, other users and a historical report do not grant access. Identical
+  confirmation replays recover the same retained approval after a lost reply or
+  handler restart. A changed key returns 409 `publication.commit_conflict`; no
+  retained task/draft returns 404 `publication.repair_not_found` or
+  `publication.description_not_found`. A missing description adapter returns
+  503 `publication.description_unavailable`; inconsistent projections return
+  503 `publication.description_uncertain`. Shared authority/cancellation errors
+  still apply, and an uncertain reply is not evidence that approval was undone.
+
+  This does not edit any file, unlock the round ledger, consume another round,
+  call a model, start a worker or publish. Draft production is an internal
+  verified-report adapter, not a browser/model tool; the UI and candidate writer
+  are not connected yet. See
+  [Exact description draft confirmation](skillhub-publication-description-confirmation.md).
 
 Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
 if its ACK claims published. Only verified status supplies the final result. The
