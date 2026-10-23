@@ -66,9 +66,11 @@ ledger history remains readable by its original active publisher after transfer
 or cancellation, but that is not execution authority.
 
 Admission alone does not approve a description, make a format issue automatic,
-spend a round, start a worker, call a paid model or publish anything. Exact human
-draft confirmation, restricted execution with durable model-call reconciliation,
-and browser/original-chat continuation remain subsequent work. The runtime must
+spend a round, start a worker, call a paid model or publish anything.
+[Exact human draft confirmation](skillhub-publication-description-confirmation.md)
+is separately retained; it still does not execute or resume a repair. Restricted
+execution with durable model-call reconciliation and browser/original-chat
+continuation remain subsequent work. The runtime must
 still recheck the precise retained source before any repair; this API's stored
 report is not permission to read or edit live files.
 

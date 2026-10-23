@@ -133,4 +133,5 @@ func verifyHumanRepairAdmissionPostgres(t *testing.T, db *postgres.Adapter, in s
 		t.Fatal("admission published or changed receipt", err)
 	}
 	t.Log("real JWT/HTTPS/PostgreSQL repair admission: committed response loss, reconstructed handler read/replay, same zero-round task, topic rebinding rejected, changed task authority denied; synthetic Cloud report, no model/file mutation")
+	verifyHumanDescriptionConfirmationPostgres(t, db, in, actor)
 }

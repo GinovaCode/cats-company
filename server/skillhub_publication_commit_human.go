@@ -34,6 +34,7 @@ type SkillHubPublicationHumanCommitHandler struct {
 	reader        store.SkillHubPublicationCommitContextReader
 	intents       store.SkillHubPublicationCommitStore
 	repairs       store.SkillHubPublicationRepairStore
+	descriptions  store.SkillHubPublicationRepairDescriptionStore
 	cloud         publicationHumanCommitCloud
 	enabled       bool
 	repairEnabled bool
@@ -63,7 +64,8 @@ func newPublicationHumanCommitHandler(db store.Store, cloud publicationHumanComm
 	r, _ := db.(store.SkillHubPublicationCommitContextReader)
 	i, _ := db.(store.SkillHubPublicationCommitStore)
 	repairs, _ := db.(store.SkillHubPublicationRepairStore)
-	return &SkillHubPublicationHumanCommitHandler{db: db, reader: r, intents: i, repairs: repairs, cloud: cloud, enabled: enabled, limits: NewHTTPRateLimiter(), slots: make(chan struct{}, 4)}
+	descriptions, _ := db.(store.SkillHubPublicationRepairDescriptionStore)
+	return &SkillHubPublicationHumanCommitHandler{db: db, reader: r, intents: i, repairs: repairs, descriptions: descriptions, cloud: cloud, enabled: enabled, limits: NewHTTPRateLimiter(), slots: make(chan struct{}, 4)}
 }
 
 func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -100,27 +102,32 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix), "/")
-	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report" && parts[2] != "repair-context" && parts[2] != "repair-task") {
+	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report" && parts[2] != "repair-context" && parts[2] != "repair-task" && parts[2] != "repair-description") {
 		fail(404, "publication.not_found")
 		return
 	}
 	id, action := parts[1], parts[2]
-	if action == "repair-task" && !h.repairEnabled {
+	repairAction := action == "repair-task" || action == "repair-description"
+	if repairAction && !h.repairEnabled {
 		fail(404, "publication.not_found")
 		return
 	}
-	if action == "repair-task" && h.repairs == nil {
+	if repairAction && h.repairs == nil {
 		fail(503, "publication.repair_unavailable")
 		return
 	}
+	if action == "repair-description" && h.descriptions == nil {
+		fail(503, "publication.description_unavailable")
+		return
+	}
 	method := http.MethodPost
-	readOnly := action == "status" || action == "report" || action == "repair-context" || (action == "repair-task" && r.Method == http.MethodGet)
+	readOnly := action == "status" || action == "report" || action == "repair-context" || (repairAction && r.Method == http.MethodGet)
 	if readOnly {
 		method = http.MethodGet
 	}
 	if r.Method != method {
 		w.Header().Set("Allow", method)
-		if action == "repair-task" {
+		if repairAction {
 			w.Header().Set("Allow", "GET, POST")
 		}
 		fail(405, "publication.method_not_allowed")
@@ -200,10 +207,14 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 			fail(400, "publication.invalid_request")
 			return
 		}
+		if action == "repair-description" && !store.ValidSkillHubPublicationDescriptionKey(confirmationKey) {
+			fail(400, "publication.invalid_request")
+			return
+		}
 	}
 	// Repair context/admission require current ownership, unlike historical
-	// report reads. Only explicit repair-task POST can create a repair record.
-	current := !readOnly || action == "repair-context" || action == "repair-task"
+	// report reads. Draft confirmation cannot create a task or spend a round.
+	current := !readOnly || action == "repair-context" || repairAction
 	local, err := h.reader.GetSkillHubPublicationCommitContext(ctx, claims.UID, id, current)
 	if err != nil {
 		h.failure(w, err)
@@ -226,8 +237,12 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		fail(409, "publication.commit_cancelled")
 		return
 	}
-	if (action == "repair-context" || action == "repair-task") && (local.Entry.Input.BotUID <= 0 || local.Entry.Input.Entrypoint != "workspace" || local.Intent != nil) {
+	if (action == "repair-context" || repairAction) && (local.Entry.Input.BotUID <= 0 || local.Entry.Input.Entrypoint != "workspace" || local.Intent != nil) {
 		fail(409, "publication.repair_context_unavailable")
+		return
+	}
+	if action == "repair-description" {
+		h.handleRepairDescription(ctx, w, claims.UID, *local, readOnly, confirmationKey)
 		return
 	}
 	if action == "repair-task" && readOnly {
