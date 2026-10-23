@@ -101,7 +101,9 @@ func TestForgedRuntimeMetadataCannotReachRecipientFanout(t *testing.T) {
 		wantSchema string
 	}{
 		{"unlisted Bot", 7, 43, false, "xiaoba.runtime.v1"},
-		{"listed Bot", 7, 42, false, "xiaoba.runtime.v2"},
+		// A UID allowlist alone cannot make an unupgraded runtime understand the
+		// additive envelope. Without a handshake capability it remains v1.
+		{"listed but legacy Bot", 7, 42, false, "xiaoba.runtime.v1"},
 		{"missing owner", 999, 43, false, ""},
 		{"Bot owner", 42, 43, false, ""},
 		{"human recipient", 7, 8, false, ""},
@@ -137,6 +139,62 @@ func TestForgedRuntimeMetadataCannotReachRecipientFanout(t *testing.T) {
 				t.Fatal("fanout mutated source metadata used for other recipients")
 			}
 		})
+	}
+}
+
+func TestRuntimeV2RequiresAuthenticatedHandshakeCapability(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
+	hub, _ := deviceSelectionFixture(t)
+	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud", send: make(chan []byte, 8)}
+	hub.addClient(bot)
+	session := buildCatsCoSessionKey("grp_1", "group", "usr42", 7)
+	if _, err := hub.userDevices.confirmDeviceSelection(7, session, "a", "test", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := hub.messageForRecipient(7, 42, "grp_1", 0, &normalizedMessagePayload{
+		DisplayContent: "read b", StoredContent: "read b", StoredType: "text", DisplayType: "text",
+	}, 1)
+	if legacy == nil || legacy.Data == nil {
+		t.Fatal("legacy recipient message missing")
+	}
+	if runtime, _ := legacy.Data.Metadata["xiaoba_runtime"].(map[string]interface{}); runtime == nil || runtime["schema"] != "xiaoba.runtime.v1" {
+		t.Fatalf("old Bot received non-v1 runtime: %#v", runtime)
+	}
+	if _, present := legacy.Data.Metadata["catsco_identity"].(map[string]interface{})["device_target_authorizations"]; present {
+		t.Fatal("old Bot received explicit-device authorizations")
+	}
+
+	bot.setRuntimeCapabilities([]string{xiaobaDeviceTargetsCapability, "untrusted.future.capability"})
+	upgraded := hub.messageForRecipient(7, 42, "grp_1", 0, &normalizedMessagePayload{
+		DisplayContent: "read b", StoredContent: "read b", StoredType: "text", DisplayType: "text",
+	}, 2)
+	runtime, _ := upgraded.Data.Metadata["xiaoba_runtime"].(map[string]interface{})
+	if runtime == nil || runtime["schema"] != "xiaoba.runtime.v2" {
+		t.Fatalf("upgraded Bot did not receive v2 runtime: %#v", runtime)
+	}
+	identity, _ := upgraded.Data.Metadata["catsco_identity"].(map[string]interface{})
+	envelope, _ := identity["device_target_authorizations"].(map[string]interface{})
+	if envelope == nil || envelope["schema"] != "catsco.device-targets.v1" {
+		t.Fatalf("upgraded Bot did not receive explicit authorizations: %#v", identity)
+	}
+	grants, _ := envelope["grants"].([]ScopedDeviceGrant)
+	explicit := deviceGrantForID(t, grants, "b")
+	if err := validateDeviceRPCGrant(bot, &MsgDeviceRPC{TargetScope: "explicit_device", DeviceID: "b"}, explicit, DeviceGrantReadFile); err != nil {
+		t.Fatalf("declared capability could not use its explicit grant: %v", err)
+	}
+
+	bot.setRuntimeCapabilities(nil)
+	if bot.hasRuntimeCapability(xiaobaDeviceTargetsCapability) {
+		t.Fatal("empty reconnect handshake retained an old capability")
+	}
+	if xiaobaRuntimeV2EnabledForClient(bot) {
+		t.Fatal("legacy reconnect retained v2 access")
+	}
+	if err := validateDeviceRPCGrant(bot, &MsgDeviceRPC{TargetScope: "explicit_device", DeviceID: "b"}, explicit, DeviceGrantReadFile); err != nil {
+		// validateDeviceRPCGrant protects the structure. The actual RPC handlers
+		// additionally reject this now-legacy connection before dispatch.
+		t.Fatalf("capability removal changed grant structure: %v", err)
 	}
 }
 

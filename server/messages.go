@@ -562,9 +562,10 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
 	publicMetadata := metadataWithoutXiaobaRuntime(metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)))
-	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
+	explicitTargetsEnabled := xiaobaRuntimeV2EnabledForClient(h.getClient(recipientUID))
+	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata, ExplicitTargetsEnabled: &explicitTargetsEnabled}))
 	if !nativeChannelGroup {
-		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID, sourceMetadata))
+		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadataWithExplicitTargets(uid, recipientUID, topicID, explicitTargetsEnabled, sourceMetadata))
 	}
 	metadata = withArtifactContextDeliveryRef(
 		metadata,
@@ -844,6 +845,10 @@ func withSkillConnectorMetadata(metadata map[string]interface{}, connectors map[
 }
 
 func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, topicID string, sourceMetadata ...map[string]interface{}) map[string]interface{} {
+	return h.buildXiaobaRuntimeMetadataWithExplicitTargets(actorUID, recipientUID, topicID, xiaobaRuntimeV2EnabledForBot(recipientUID), sourceMetadata...)
+}
+
+func (h *Hub) buildXiaobaRuntimeMetadataWithExplicitTargets(actorUID int64, recipientUID int64, topicID string, explicitTargetsEnabled bool, sourceMetadata ...map[string]interface{}) map[string]interface{} {
 	if h == nil || h.db == nil || h.userDevices == nil || actorUID <= 0 || recipientUID <= 0 || !h.isBotUser(recipientUID) {
 		return nil
 	}
@@ -876,7 +881,7 @@ func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, top
 			"status":   status,
 		})
 	}
-	if !xiaobaRuntimeV2EnabledForBot(recipientUID) {
+	if !explicitTargetsEnabled {
 		// v1 consumers assume every entry is ready. During the compatibility
 		// phase, only advertise routable devices and keep the v1 wire shape.
 		ready := make([]map[string]interface{}, 0, len(devices))
@@ -934,12 +939,21 @@ type catscoIdentityMetadataOptions struct {
 	Replay           bool
 	SourceMetadata   map[string]interface{}
 	IdentityUsers    map[int64]*types.User
+	// ExplicitTargetsEnabled is supplied only by a live delivery path after
+	// checking the authenticated Bot connection's handshake capability. Nil
+	// preserves the historical internal-builder behavior used by non-live
+	// paths and focused registry tests.
+	ExplicitTargetsEnabled *bool
 }
 
 func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64, messageText string, options ...catscoIdentityMetadataOptions) map[string]interface{} {
 	opts := catscoIdentityMetadataOptions{}
 	if len(options) > 0 {
 		opts = options[0]
+	}
+	explicitTargetsEnabled := xiaobaRuntimeV2EnabledForBot(recipientUID)
+	if opts.ExplicitTargetsEnabled != nil {
+		explicitTargetsEnabled = *opts.ExplicitTargetsEnabled
 	}
 	topicType := topicTypeForID(topicID)
 	identity := map[string]interface{}{
@@ -1036,7 +1050,7 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 				permissions["device_owner_source"] = deviceOwnerSource
 			}
 			knownDevices, unavailableDevices := h.classifyUserDevices(deviceOwnerUID, humanToolTargetDevices(h.userDevices.list(deviceOwnerUID)))
-			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices)
+			deviceContext := h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
 			if len(deviceContext.Grants) > 0 {
 				identity["device_grants"] = deviceContext.Grants
 			}

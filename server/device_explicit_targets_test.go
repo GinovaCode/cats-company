@@ -80,6 +80,7 @@ func TestExplicitDeviceAuthorizationRequiresExactRequestScope(t *testing.T) {
 	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "")
 	hub, _ := deviceSelectionFixture(t)
 	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud"}
+	bot.setRuntimeCapabilities([]string{xiaobaDeviceTargetsCapability})
 	session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
 	pref, err := hub.userDevices.confirmDeviceSelection(7, session, "a", "test", "")
 	if err != nil {
@@ -118,6 +119,10 @@ func TestExplicitDeviceAuthorizationRequiresExactRequestScope(t *testing.T) {
 	}
 	if err := hub.authorizeOrdinaryThinToolRPC(bot, &MsgThinToolRPC{TargetScope: "explicit_device"}, 7, "b", "read_file"); err == nil {
 		t.Fatal("explicit request downgraded to unscoped compatibility")
+	}
+	bot.setRuntimeCapabilities(nil)
+	if err := hub.authorizeOrdinaryThinToolRPC(bot, &MsgThinToolRPC{TargetScope: "explicit_device", GrantID: explicitGrant.GrantID, SessionKey: session, ActorUserID: "usr7", TargetDeviceID: "b"}, 7, "b", "read_file"); err == nil {
+		t.Fatal("legacy reconnect executed an explicit grant")
 	}
 	if _, err := hub.userDevices.confirmDeviceSelection(7, session, "b", "test", pref.Revision); err != nil {
 		t.Fatal(err)
