@@ -358,7 +358,7 @@ export default function CloudArtifactsPanel({
   // set its session cookie during the open, so the application recognises the
   // visitor and knows which conversation they came from. If that request fails
   // for any reason we still open the plain URL, so the action never dead-ends.
-  const openGatewayApp = useCallback(async (app, target = 'panel') => {
+  const openGatewayApp = useCallback(async (app, target = 'panel', { keepOnLaunchFailure = false } = {}) => {
     if (!app?.id || !app?.url) return;
     // A new tab opens the application's own address. That is the address to show,
     // to bookmark, and to hand to anyone else. Identity arrives on its own: the
@@ -378,6 +378,7 @@ export default function CloudArtifactsPanel({
     let viewerURL = app.url;
     let visitor = true;
     let artifact = null;
+    let launchFailed = false;
     try {
       const launch = await api.requestArtifactLaunch({ app: app.id, ...(topicId ? { topic_id: topicId } : {}) });
       if (launch?.launch_url) { viewerURL = launch.launch_url; visitor = false; }
@@ -391,6 +392,15 @@ export default function CloudArtifactsPanel({
       }
     } catch {
       // Keep the plain URL; the application will render as a guest.
+      launchFailed = true;
+    }
+    // A refresh must not trade a working session for a guest view. Entering an
+    // application accepts the guest fallback so the action never dead-ends, but
+    // re-entering one that is already open would revoke its live binding and drop
+    // the visitor to a guest over a single flaky launch. Leave it as it was and let
+    // the caller report the failure instead.
+    if (launchFailed && keepOnLaunchFailure) {
+      throw new Error('artifact_refresh_launch_failed');
     }
     if (target === 'panel') {
       // Compatibility with applications also published to the platform registry.
@@ -445,9 +455,16 @@ export default function CloudArtifactsPanel({
     if (tab === 'gateway' && open) {
       if (gatewayRefreshing) return;
       setGatewayRefreshing(true);
+      setError('');
       try {
-        await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel');
-        loadContent().catch(() => {});
+        // Only the application is reloaded. Re-reading the catalogue here would use
+        // the `tab` captured at click time, so switching tabs mid-refresh would let a
+        // stale response overwrite the panel the user is actually looking at.
+        await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel', {
+          keepOnLaunchFailure: true,
+        });
+      } catch {
+        setError('应用刷新失败，请稍后重试（当前内容保持不变）');
       } finally {
         setGatewayRefreshing(false);
       }

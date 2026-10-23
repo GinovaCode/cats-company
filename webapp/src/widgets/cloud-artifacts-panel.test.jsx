@@ -756,6 +756,52 @@ describe('CloudArtifactsPanel', () => {
     expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
   });
 
+  test('a failed refresh keeps the open binding and the current application', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    const binding = { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_refresh_keep_123456789', topic_id: 'p2p_7_440', agent_uid: 440,
+      app_id: 'saturday-demo', app_origin: 'https://artifact.catsco.cc', expires_at: '2099-01-01T00:00:00Z' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url, open_binding: binding });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    const before = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(before).not.toBeNull();
+    api.revokeArtifactOpenBinding.mockClear();
+
+    // A refresh that cannot mint a new launch must not cost the visitor the
+    // session they already have: no revoke, no guest downgrade, frame untouched.
+    api.requestArtifactLaunch.mockRejectedValueOnce(new Error('artifact_launch_rate_limited'));
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    expect(api.revokeArtifactOpenBinding).not.toHaveBeenCalled();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBe(before);
+    expect(container.textContent).not.toContain('身份未附带');
+    expect(container.textContent).toContain('应用刷新失败');
+  });
+
+  test('refreshing an open application does not re-read the catalogue', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    // Reading the catalogue here would use the `tab` captured at click time, so a
+    // tab switch mid-refresh could let a stale response overwrite another tab.
+    const catalogueCallsBefore = api.listArtifactApps.mock.calls.length;
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    expect(api.listArtifactApps.mock.calls.length).toBe(catalogueCallsBefore);
+  });
+
   test('consumes a quick application selection once across tab changes and reopening the list', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     api.listArtifactApps.mockReset().mockResolvedValue({ apps: [app] });
