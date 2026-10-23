@@ -30,18 +30,22 @@ type publicationHumanReportCloud interface {
 // Human-only explicit confirmation. No registration as a tool/RPC; a model or
 // Bot token can neither plan nor approve. Default off, no Worker/Runtime dispatch.
 type SkillHubPublicationHumanCommitHandler struct {
-	db      store.Store
-	reader  store.SkillHubPublicationCommitContextReader
-	intents store.SkillHubPublicationCommitStore
-	cloud   publicationHumanCommitCloud
-	enabled bool
-	limits  *HTTPRateLimiter
-	slots   chan struct{}
+	db            store.Store
+	reader        store.SkillHubPublicationCommitContextReader
+	intents       store.SkillHubPublicationCommitStore
+	repairs       store.SkillHubPublicationRepairStore
+	cloud         publicationHumanCommitCloud
+	enabled       bool
+	repairEnabled bool
+	limits        *HTTPRateLimiter
+	slots         chan struct{}
 }
 
 func NewSkillHubPublicationHumanCommitHandlerFromEnv(db store.Store) *SkillHubPublicationHumanCommitHandler {
 	v := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED"))
 	h := newPublicationHumanCommitHandler(db, nil, v == "1" || strings.EqualFold(v, "true"))
+	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED"))
+	h.repairEnabled = v == "1" || strings.EqualFold(v, "true")
 	if !h.enabled {
 		return h
 	}
@@ -58,7 +62,8 @@ func NewSkillHubPublicationHumanCommitHandlerFromEnv(db store.Store) *SkillHubPu
 func newPublicationHumanCommitHandler(db store.Store, cloud publicationHumanCommitCloud, enabled bool) *SkillHubPublicationHumanCommitHandler {
 	r, _ := db.(store.SkillHubPublicationCommitContextReader)
 	i, _ := db.(store.SkillHubPublicationCommitStore)
-	return &SkillHubPublicationHumanCommitHandler{db: db, reader: r, intents: i, cloud: cloud, enabled: enabled, limits: NewHTTPRateLimiter(), slots: make(chan struct{}, 4)}
+	repairs, _ := db.(store.SkillHubPublicationRepairStore)
+	return &SkillHubPublicationHumanCommitHandler{db: db, reader: r, intents: i, repairs: repairs, cloud: cloud, enabled: enabled, limits: NewHTTPRateLimiter(), slots: make(chan struct{}, 4)}
 }
 
 func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -95,18 +100,29 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix), "/")
-	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report" && parts[2] != "repair-context") {
+	if !strings.HasPrefix(r.URL.Path, SkillHubPublicationHumanCommitPrefix) || r.URL.RawPath != "" || len(parts) != 3 || parts[0] != "entries" || !skillHubPublicationEntryID.MatchString(parts[1]) || (parts[2] != "plan" && parts[2] != "confirm" && parts[2] != "status" && parts[2] != "report" && parts[2] != "repair-context" && parts[2] != "repair-task") {
 		fail(404, "publication.not_found")
 		return
 	}
 	id, action := parts[1], parts[2]
+	if action == "repair-task" && !h.repairEnabled {
+		fail(404, "publication.not_found")
+		return
+	}
+	if action == "repair-task" && h.repairs == nil {
+		fail(503, "publication.repair_unavailable")
+		return
+	}
 	method := http.MethodPost
-	readOnly := action == "status" || action == "report" || action == "repair-context"
+	readOnly := action == "status" || action == "report" || action == "repair-context" || (action == "repair-task" && r.Method == http.MethodGet)
 	if readOnly {
 		method = http.MethodGet
 	}
 	if r.Method != method {
 		w.Header().Set("Allow", method)
+		if action == "repair-task" {
+			w.Header().Set("Allow", "GET, POST")
+		}
 		fail(405, "publication.method_not_allowed")
 		return
 	}
@@ -133,6 +149,7 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 	defer cancel()
 	var confirmVersion bool
 	var confirmationKey string
+	var repairTopic string
 	if readOnly {
 		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 			fail(400, "publication.invalid_request")
@@ -156,6 +173,9 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		if action == "plan" {
 			key = "confirmVersionPublish"
 		}
+		if action == "repair-task" {
+			key = "topicId"
+		}
 		o, err := publicationExactObject(data, "schemaVersion", key)
 		var schema int
 		if err != nil || json.Unmarshal(o["schemaVersion"], &schema) != nil || schema != 1 {
@@ -167,14 +187,23 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 				fail(400, "publication.invalid_request")
 				return
 			}
+		} else if action == "repair-task" {
+			if json.Unmarshal(o[key], &repairTopic) != nil {
+				fail(400, "publication.invalid_request")
+				return
+			}
+			if _, err := store.ParseSkillHubPublicationRepairTopic(repairTopic); err != nil {
+				fail(400, "publication.invalid_request")
+				return
+			}
 		} else if json.Unmarshal(o[key], &confirmationKey) != nil || !publicationPeerSecretPattern.MatchString(confirmationKey) {
 			fail(400, "publication.invalid_request")
 			return
 		}
 	}
-	// Preparing a repair handoff requires current ownership, unlike reading
-	// historical reports after a transfer. It is still strictly read-only.
-	current := !readOnly || action == "repair-context"
+	// Repair context/admission require current ownership, unlike historical
+	// report reads. Only explicit repair-task POST can create a repair record.
+	current := !readOnly || action == "repair-context" || action == "repair-task"
 	local, err := h.reader.GetSkillHubPublicationCommitContext(ctx, claims.UID, id, current)
 	if err != nil {
 		h.failure(w, err)
@@ -197,11 +226,15 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		fail(409, "publication.commit_cancelled")
 		return
 	}
-	if action == "repair-context" && (local.Entry.Input.BotUID <= 0 || local.Entry.Input.Entrypoint != "workspace" || local.Intent != nil) {
+	if (action == "repair-context" || action == "repair-task") && (local.Entry.Input.BotUID <= 0 || local.Entry.Input.Entrypoint != "workspace" || local.Intent != nil) {
 		fail(409, "publication.repair_context_unavailable")
 		return
 	}
-	if action == "report" || action == "repair-context" {
+	if action == "repair-task" && readOnly {
+		h.readRepairTask(ctx, w, claims.UID, *local)
+		return
+	}
+	if action == "report" || action == "repair-context" || action == "repair-task" {
 		peer, ok := h.cloud.(publicationHumanReportCloud)
 		if !ok {
 			fail(503, "publication.report_unavailable")
@@ -215,6 +248,10 @@ func (h *SkillHubPublicationHumanCommitHandler) Handle(w http.ResponseWriter, r 
 		}
 		if action == "repair-context" {
 			h.writeRepairContext(ctx, w, claims.UID, *local, out.Validation)
+			return
+		}
+		if action == "repair-task" {
+			h.admitRepairTask(ctx, w, claims.UID, *local, out.Validation, repairTopic)
 			return
 		}
 		if !h.recheck(ctx, claims.UID, id, false, receipt) {

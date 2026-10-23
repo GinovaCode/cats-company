@@ -1,23 +1,26 @@
 # Publication repair budget ledger
 
-This is internal, optional accounting for the publication repair workflow. It has
-no registered HTTP/RPC handler, worker, model tool, task event or file writer.
-Ordinary publication and existing transport retries do not call it. Only the
-PostgreSQL adapter implements the interface; there is no in-memory fallback.
+This is internal, optional accounting for the publication repair workflow. The
+separate, default-disabled human admission API can create and read a task but
+cannot claim rounds. There is no worker, RPC/model tool, task event or file
+writer. Ordinary publication and existing transport retries do not call it.
+Only PostgreSQL implements the interface; there is no in-memory fallback.
 
 ## Admission and authority
 
-A future trusted adapter must fetch and verify the exact rejected Cloud report,
-match its candidate to the retained upload receipt, verify the original human's
-explicit repair action, and verify a private `agent_task` owned by that human
-whose sole Bot is the original Bot. The topic string and evidence digests in this
-store are references, not proof of those facts. Never expose these store inputs
-directly to a browser or model.
+The human admission adapter fetches and verifies the exact rejected Cloud report,
+matches its candidate to the retained upload receipt and requires an explicit
+JWT-authenticated action by the original active human. PostgreSQL locks and
+verifies the private `agent_task`, owned by that human, with exactly two members:
+the human and original Bot. The topic string and evidence digests are references,
+not proof of report authenticity. Never expose store inputs directly to a
+browser or model. See `skillhub-publication-repair-admission.md`.
 
 The ledger binds one immutable task to each publication entry, receipt, topic and
 initial report. An identical create returns its existing history; changing facts
 conflicts. Every write locks the publication entry and rechecks the active human,
-current Bot owner, body, enabled state, cancellation and commit intent. This is
+current Bot owner, body, enabled state, cancellation, commit intent and current
+task ownership/kind/topic/membership. This is
 the same serialization point used by cancellation. Only the original active
 human can read history, including after cancellation or Bot transfer. Reading
 history grants no authority to resume.

@@ -14,11 +14,7 @@ import (
 func (h *SkillHubPublicationHumanCommitHandler) writeRepairContext(ctx context.Context, w http.ResponseWriter, actor int64, original store.SkillHubPublicationCommitContext, report PublicationValidationReport) {
 	// Recheck even an ineligible report: a peer round trip must not disclose
 	// whether repair is possible after the publisher loses current ownership.
-	latest, err := h.reader.GetSkillHubPublicationCommitContext(ctx, actor, original.Entry.ID, true)
-	if err != nil || ctx.Err() != nil || latest == nil || latest.Entry.ID != original.Entry.ID ||
-		latest.Entry.Input != original.Entry.Input || latest.Entry.IdentityHash != original.Entry.IdentityHash ||
-		latest.Entry.State != "waiting_runtime" || latest.Intent != nil || latest.Receipt == nil ||
-		original.Receipt == nil || *latest.Receipt != *original.Receipt {
+	if !h.repairAuthorityCurrent(ctx, actor, original) {
 		skillHubPublicationReadError(w, 503, "publication.authority_changed")
 		return
 	}
@@ -37,4 +33,12 @@ func (h *SkillHubPublicationHumanCommitHandler) writeRepairContext(ctx context.C
 			"automaticRepairEnabled":                  false,
 		},
 	})
+}
+
+func (h *SkillHubPublicationHumanCommitHandler) repairAuthorityCurrent(ctx context.Context, actor int64, original store.SkillHubPublicationCommitContext) bool {
+	latest, err := h.reader.GetSkillHubPublicationCommitContext(ctx, actor, original.Entry.ID, true)
+	return err == nil && ctx.Err() == nil && latest != nil && latest.Entry.ID == original.Entry.ID &&
+		latest.Entry.Input == original.Entry.Input && latest.Entry.IdentityHash == original.Entry.IdentityHash &&
+		latest.Entry.State == "waiting_runtime" && latest.Intent == nil && latest.Receipt != nil &&
+		original.Receipt != nil && *latest.Receipt == *original.Receipt
 }

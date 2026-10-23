@@ -408,6 +408,7 @@ func runPublicationCommitContract(t *testing.T, cloud bool) {
 func admitHumanCommitPostgres(t *testing.T, db *postgres.Adapter, in store.SkillHubPublicationCommitInput, actor int64) {
 	t.Helper()
 	verifyHumanRepairContextPostgres(t, db, in, actor)
+	verifyHumanRepairAdmissionPostgres(t, db, in, actor)
 	c := &humanCommitCloud{in: in, state: "delegated_pending", authorize: func(context.Context) error { return errPublicationCommitCloud }}
 	h := newPublicationHumanCommitHandler(db, c, true)
 	ts := httptest.NewTLSServer(http.HandlerFunc(h.Handle))

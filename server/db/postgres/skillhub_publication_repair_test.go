@@ -31,7 +31,17 @@ func TestSkillHubPublicationRepairMigrationMatchesStartup(t *testing.T) {
 func repairBudgetFixture(t *testing.T) (*Adapter, string, store.SkillHubPublicationUploadInput, store.SkillHubPublicationRepairInput, store.SkillHubPublicationCommitInput, int64) {
 	t.Helper()
 	db, dsn, in, c, other := commitFixture(t)
-	r := store.SkillHubPublicationRepairInput{Receipt: c.Receipt, TopicID: "grpRepairTask123",
+	group, err := db.CreateGroup("publication repair", in.Binding.ActorUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateGroupKind(group, "agent_task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddGroupMember(group, in.Binding.BotUID, "member"); err != nil {
+		t.Fatal(err)
+	}
+	r := store.SkillHubPublicationRepairInput{Receipt: c.Receipt, TopicID: fmt.Sprintf("grp_%d", group),
 		Evidence: store.SkillHubPublicationRepairEvidence{CandidateHash: c.Receipt.Query.SourceSnapshotHash,
 			ReportHash: strings.Repeat("c", 64), IssueSetHash: strings.Repeat("d", 64)}}
 	return db, dsn, in, r, c, other
@@ -106,7 +116,7 @@ func TestPostgresSkillHubPublicationRepairRecoveryBudgetAndReplay(t *testing.T) 
 		t.Fatal("duplicate task changed identity")
 	}
 	for _, mutate := range []func(*store.SkillHubPublicationRepairInput){
-		func(x *store.SkillHubPublicationRepairInput) { x.TopicID = "grpAnotherTask123" },
+		func(x *store.SkillHubPublicationRepairInput) { x.TopicID = "grp_9223372036854775807" },
 		func(x *store.SkillHubPublicationRepairInput) { x.Evidence.ReportHash = strings.Repeat("e", 64) },
 		func(x *store.SkillHubPublicationRepairInput) { x.Receipt.Query.Epoch++ },
 	} {
