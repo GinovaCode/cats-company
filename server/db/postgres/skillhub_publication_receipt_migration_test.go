@@ -70,6 +70,7 @@ func TestPostgresSkillHubPublicationReceiptMigration(t *testing.T) {
 				}
 			}
 			up, down := publicationReceiptMigration(t, "up"), publicationReceiptMigration(t, "down")
+			deliveryExec(t, db, descriptionApplicationMigration(t, "down"))
 			deliveryExec(t, db, descriptionMigration(t, "down"))
 			deliveryExec(t, db, repairBudgetMigration(t, "down"))
 			deliveryExec(t, db, commitDeliveryMigration(t, "down"))
