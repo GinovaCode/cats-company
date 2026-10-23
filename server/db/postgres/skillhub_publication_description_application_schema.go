@@ -101,8 +101,8 @@ BEGIN
         IF NEW.result->>'applicationId' IS DISTINCT FROM NEW.application_id
             OR jsonb_typeof(NEW.result->'requestBytes') IS DISTINCT FROM 'number'
             OR (NEW.result->>'requestBytes') !~ '^[1-9][0-9]{0,8}$'
-            OR CASE WHEN (NEW.result->>'requestBytes') ~ '^[1-9][0-9]{0,8}$'
-                THEN (NEW.result->>'requestBytes')::NUMERIC>78643200 ELSE true END
+            OR (CASE WHEN (NEW.result->>'requestBytes') ~ '^[1-9][0-9]{0,8}$'
+                THEN (NEW.result->>'requestBytes')::NUMERIC>78643200 ELSE true END)
             OR NEW.result->'derivation'->>'schemaVersion' IS DISTINCT FROM '1'
             OR NEW.result->'derivation'->>'algorithm' IS DISTINCT FROM 'skillhub-description-derivation-v1'
             OR NEW.result->'derivation'->>'originalRequestHash' IS DISTINCT FROM NEW.input->'receipt'->'Query'->>'RequestHash'
