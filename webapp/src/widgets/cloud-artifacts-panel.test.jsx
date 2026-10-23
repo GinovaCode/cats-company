@@ -729,6 +729,33 @@ describe('CloudArtifactsPanel', () => {
     expect(container.querySelector('.cc-workspace-fullscreen-action')).toBeNull();
   });
 
+  test('refreshing an open application reloads the frame instead of only the catalogue', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    const before = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(before).not.toBeNull();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+
+    // Re-assigning the same `src` keeps the existing document, so a republished
+    // application would keep showing its first response. Refresh has to remount
+    // the frame and re-mint the launch binding, like entering the app again.
+    api.requestArtifactLaunch.mockClear();
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    const after = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+    expect(after.getAttribute('src')).toBe(app.url);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+  });
+
   test('consumes a quick application selection once across tab changes and reopening the list', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     api.listArtifactApps.mockReset().mockResolvedValue({ apps: [app] });

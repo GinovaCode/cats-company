@@ -220,6 +220,11 @@ export default function CloudArtifactsPanel({
   const gatewayBindingControllerRef = useRef(null);
   const gatewayOpenRef = useRef(null);
   const gatewayOpenSequenceRef = useRef(0);
+  // Bumped on every (re)open, and used as the frame's React key. Re-assigning the
+  // same `src` leaves the existing document in place, so a republished application
+  // would keep showing what it served the first time; remounting fetches it anew.
+  const gatewayReloadKeyRef = useRef(0);
+  const [gatewayRefreshing, setGatewayRefreshing] = useState(false);
   const retireGatewayOpen = useCallback(() => {
     ++gatewayOpenSequenceRef.current;
     gatewayBindingControllerRef.current?.abort();
@@ -413,6 +418,7 @@ export default function CloudArtifactsPanel({
     const bindingController = new AbortController();
     gatewayBindingControllerRef.current = bindingController;
     onGatewayFrameChange?.(null);
+    gatewayReloadKeyRef.current += 1;
     setGatewayPreview({
       ...app,
       viewerURL,
@@ -427,6 +433,28 @@ export default function CloudArtifactsPanel({
         ? '点击标注将创建新任务，评论会作为新任务的第一条消息。'
         : '会话绑定不可用，标注已禁用，请在原会话重新打开应用'));
   }, [agentUid, onGatewayFrameChange, onStartAnnotation, topicId, retireGatewayOpen]);
+
+  // The refresh action in the toolbar. While an application is open, "refresh"
+  // has to mean "show me what the application serves now" — re-reading the
+  // catalogue leaves the frame untouched, so a republished application would keep
+  // displaying the document it loaded first. Reopening remounts the frame (via its
+  // key) and re-mints the launch binding, which is what a fresh entry into the
+  // application does too. When no application is open, it refreshes the list.
+  const handleRefresh = useCallback(async () => {
+    const open = gatewayPreview;
+    if (tab === 'gateway' && open) {
+      if (gatewayRefreshing) return;
+      setGatewayRefreshing(true);
+      try {
+        await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel');
+        loadContent().catch(() => {});
+      } finally {
+        setGatewayRefreshing(false);
+      }
+      return;
+    }
+    await loadContent();
+  }, [gatewayPreview, gatewayRefreshing, loadContent, openGatewayApp, tab]);
 
   useEffect(() => () => {
     retireGatewayOpen();
@@ -1012,8 +1040,14 @@ export default function CloudArtifactsPanel({
                 <Pencil size={18} aria-hidden="true" />
               </button>
             )}
-            <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新当前栏目" title="刷新">
-              <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
+            <button
+              type="button"
+              onClick={() => handleRefresh()}
+              disabled={loading || gatewayRefreshing}
+              aria-label="刷新当前栏目"
+              title={tab === 'gateway' && gatewayPreview ? '重新加载应用' : '刷新'}
+            >
+              <RefreshCw size={18} className={loading || gatewayRefreshing ? 'is-spinning' : ''} />
             </button>
             <button type="button" onClick={onClose} aria-label="关闭云文件" title="关闭">
               <X size={18} />
@@ -1174,6 +1208,7 @@ export default function CloudArtifactsPanel({
               )}
               <iframe
                 className="cloud-artifacts-gateway-frame"
+                key={gatewayReloadKeyRef.current}
                 src={gatewayPreview.viewerURL || gatewayPreview.url}
                 title={gatewayPreview.title || gatewayPreview.id}
                 onLoad={(event) => onGatewayFrameChange?.({
