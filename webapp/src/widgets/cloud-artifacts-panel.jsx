@@ -31,6 +31,7 @@ import { useFeedback } from '../components/feedback-system';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
+import LoadingState from './loading-state';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const FILTER_POPOVER_GAP = 8;
@@ -1029,7 +1030,7 @@ export default function CloudArtifactsPanel({
           </div>
         </header>
 
-        <div className="cloud-artifacts-body">
+        <div data-loading-region="" className={`cloud-artifacts-body${loading && visibleCount === 0 ? ' is-loading' : ''}`}>
           {artifactTabSelected && tab !== 'deleted' && (
             <div className="cloud-artifacts-context-note">
               <div className="cloud-artifacts-context-copy">
@@ -1085,11 +1086,10 @@ export default function CloudArtifactsPanel({
             </div>
           )}
           {loading && visibleCount === 0 && (
-            <div className="cloud-artifacts-status" role="status" aria-live="polite">
-              {tab === 'files'
-                ? '正在读取文件…'
-                : tab === 'gateway' ? '正在读取应用…' : '正在读取成果…'}
-            </div>
+            <LoadingState
+              kind={tab === 'files' ? 'document' : 'apps'}
+              label={tab === 'files' ? '正在读取文件' : tab === 'gateway' ? '正在读取应用' : '正在读取成果'}
+            />
           )}
           {!loading && error && (
             <div className="cloud-artifacts-status error" role="alert">

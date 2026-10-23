@@ -433,6 +433,45 @@ describe('CloudArtifactsPanel', () => {
     expect(await openFilters()).toBeNull();
   });
 
+  test('shows document motion while files load and replaces it with the file list', async () => {
+    let resolveFiles;
+    api.getTopicFiles.mockImplementationOnce(() => new Promise(resolve => { resolveFiles = resolve; }));
+    await renderPanel({ initialTab: 'files' });
+
+    expect(container.querySelector('.cloud-artifacts-body.is-loading [data-loading-kind="document"]')).not.toBeNull();
+    expect(container.querySelector('.cc-loading-state[role="status"]')?.textContent).toContain('正在读取文件');
+    await act(async () => {
+      resolveFiles({ files: [historicalFile], has_more: false });
+    });
+
+    expect(container.querySelector('.cloud-artifacts-body.is-loading')).toBeNull();
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+    expect(container.textContent).toContain(historicalFile.name);
+  });
+
+  test('replaces file motion with an actionable error and retries', async () => {
+    let rejectFiles;
+    api.getTopicFiles.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectFiles = reject; }));
+    await renderPanel({ initialTab: 'files' });
+    await act(async () => { rejectFiles(new Error('offline')); });
+
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+    expect(container.querySelector('.cloud-artifacts-body.is-loading')).toBeNull();
+    const error = container.querySelector('[role="alert"]');
+    expect(error).not.toBeNull();
+    await act(async () => { error.querySelector('button').click(); });
+    expect(container.textContent).toContain(historicalFile.name);
+  });
+
+  test('shows stacked windows while gateway applications load', async () => {
+    let resolveApps;
+    api.listArtifactApps.mockImplementationOnce(() => new Promise(resolve => { resolveApps = resolve; }));
+    await renderPanel({ initialTab: 'gateway' });
+    expect(container.querySelector('.cloud-artifacts-body.is-loading [data-loading-kind="apps"]')).not.toBeNull();
+    await act(async () => { resolveApps({ apps: [] }); });
+    expect(container.querySelector('.cc-loading-state')).toBeNull();
+  });
+
   test('loads conversation files without an Agent sender filter and opens the preview', async () => {
     await renderPanel({ initialTab: 'files' });
 

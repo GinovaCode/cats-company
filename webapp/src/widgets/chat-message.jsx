@@ -21,6 +21,7 @@ import MobilePdfPreview from './mobile-pdf-preview';
 import HTMLFilePreview from './html-file-preview';
 import FileAnnotationEditor from './file-annotation-editor';
 import ImageViewport from './image-viewport';
+import LoadingState from './loading-state';
 import FileAnnotationCard from './file-annotation-card';
 import { fileAnnotationPreviewFile } from '../utils/file-annotations';
 import '../styles/file-annotations.css';
@@ -1117,7 +1118,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1336,6 +1337,18 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     onCreateConversationShare?.();
   };
 
+  const handleCreateConversationForkClick = (event) => {
+    event.stopPropagation();
+    if (conversationForkDisabled) return;
+    setMoreActionsOpen(false);
+    moreActionsTriggerRef.current?.focus({ preventScroll: true });
+    onCreateConversationFork?.();
+  };
+
+  useEffect(() => {
+    if (moreActionsOpen) moreActionsMenuRef.current?.querySelector('button:not([disabled])')?.focus({ preventScroll: true });
+  }, [moreActionsOpen]);
+
   const handleMessageClick = () => {
     if (!window.matchMedia?.('(max-width: 768px)').matches) return;
     setMessageActionsOpen(true);
@@ -1553,7 +1566,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <Pencil size={14} />
               </button>
             )}
-            {onCreateConversationShare && (
+            {(onCreateConversationShare || onCreateConversationFork) && (
               <div className="v3-message-more-actions">
                 <button
                   ref={moreActionsTriggerRef}
@@ -1576,15 +1589,34 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                     role="menu"
                     aria-label="消息更多操作"
                     onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Tab') { setMoreActionsOpen(false); return; }
+                      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+                      event.preventDefault();
+                      const items = Array.from(event.currentTarget.querySelectorAll('button:not([disabled])'));
+                      const index = items.indexOf(document.activeElement);
+                      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+                        : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+                      items[next]?.focus();
+                    }}
                   >
-                    <button
+                    {onCreateConversationShare && <button
                       type="button"
                       role="menuitem"
                       onClick={handleCreateConversationShareClick}
                     >
                       <ImageDown size={15} aria-hidden="true" />
                       <span>制作分享图</span>
-                    </button>
+                    </button>}
+                    {onCreateConversationFork && <button
+                      type="button"
+                      role="menuitem"
+                      disabled={conversationForkDisabled}
+                      onClick={handleCreateConversationForkClick}
+                    >
+                      <Copy size={15} aria-hidden="true" />
+                      <span>复制对话</span>
+                    </button>}
                   </div>
                 )}
               </div>
@@ -1614,6 +1646,8 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&
     prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
+    prevProps.onCreateConversationFork === nextProps.onCreateConversationFork &&
+    prevProps.conversationForkDisabled === nextProps.conversationForkDisabled &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.executionState === nextProps.executionState &&
     prevProps.executionNote === nextProps.executionNote &&
@@ -3450,9 +3484,9 @@ export function FilePreviewPanel({
           </div>
           {shareNotice && <span className="oc-visually-hidden" role="status" aria-live="polite">{shareNotice}</span>}
         </div>
-        <div ref={fileContentRef} className="v3-file-preview-body">
+        <div ref={fileContentRef} data-loading-region="" className="v3-file-preview-body">
           {isRemoteArtifact ? (
-            <div className="v3-remote-artifact-preview">
+            <div data-loading-region="" className="v3-remote-artifact-preview">
               {[
                 {
                   key: currentRemoteArtifactKey,
@@ -3477,6 +3511,7 @@ export function FilePreviewPanel({
                   src={frameEntry.descriptor?.isSameOriginRemoteArtifact
                     ? artifactFrameURLWithBridgeNonce(frameEntry.descriptor.url, frameEntry.bridgeNonce)
                     : frameEntry.descriptor.url}
+                  data-loading-content={frameEntry.current ? '' : undefined}
                   className={frameEntry.current ? 'v3-file-preview-frame' : 'v3-file-preview-frame-pending'}
                   title={frameEntry.current ? 'Cloud Artifact Preview' : 'Cloud Artifact Refresh Check'}
                   sandbox={frameEntry.descriptor?.isSameOriginRemoteArtifact ? HTML_PREVIEW_SANDBOX : REMOTE_ARTIFACT_PREVIEW_SANDBOX}
@@ -3500,7 +3535,7 @@ export function FilePreviewPanel({
                 />
               ))}
               {remoteFrameState === 'loading' && (
-                <div className="v3-remote-artifact-preview-state" role="status">正在加载云端生成物...</div>
+                <div className="v3-remote-artifact-preview-state"><LoadingState kind="apps" label="正在加载云端生成物" /></div>
               )}
               {remoteFrameState === 'error' && (
                 <div className="v3-remote-artifact-preview-state error" role="alert">
@@ -3545,7 +3580,7 @@ export function FilePreviewPanel({
               <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
             )
           ) : loadingText ? (
-            <div className="v3-file-preview-state">加载中...</div>
+            <LoadingState kind="document" label="正在打开文件" className="v3-file-preview-state" />
           ) : previewError ? (
             <div className="v3-file-preview-state error">{previewError}</div>
           ) : fileAnnotationMode && isMarkdown ? (

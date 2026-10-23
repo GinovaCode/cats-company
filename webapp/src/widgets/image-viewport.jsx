@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { Expand, Maximize2, Minimize2, Minus, Plus, Scan } from 'lucide-react';
 import { imageFitScale, imagePointAt, imageScrollAt, imageViewGeometry } from '../utils/image-viewport';
 import '../styles/image-viewport.css';
+import LoadingState from './loading-state';
 
 const editable = target => target?.closest?.('input, textarea, select, [contenteditable="true"]');
 const midpoint = points => ({ x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 });
@@ -184,19 +185,21 @@ export default function ImageViewport({ src, alt = '图片预览', annotation = 
       <button type="button" aria-label="图片原尺寸" title="原尺寸（100%）" disabled={!ready} onClick={() => zoomTo(1)}><Maximize2 size={17} /><span>原尺寸</span></button>
       <button type="button" aria-label={expanded ? '退出图片全屏' : '图片全屏'} title={expanded ? '退出全屏' : '全屏'} onClick={toggleExpanded}>{expanded ? <Minimize2 size={17} /> : <Expand size={17} />}</button>
     </div>
-    <div ref={scrollerRef} className={`image-viewport-scroller${panning ? ' is-panning' : ''}${annotation ? ' is-annotating' : ''}`}
+    <div ref={scrollerRef} data-loading-region="" className={`image-viewport-scroller${panning ? ' is-panning' : ''}${annotation ? ' is-annotating' : ''}`}
       role="region" aria-label="图片查看区域" tabIndex={0}
       onClick={event => event.stopPropagation()}
       onPointerDownCapture={down} onPointerMoveCapture={move} onPointerUpCapture={end} onPointerCancelCapture={end}
       onDoubleClick={event => { if (!annotation && event.pointerType !== 'touch') zoomTo(scale > fitScale * 1.1 ? fitScale : Math.max(1, fitScale * 2), anchorFor(event), scale > fitScale * 1.1); }}>
-      <div className="image-viewport-stage" style={{ width: geometry.stageWidth || '100%', height: geometry.stageHeight || '100%' }}>
+      <div data-loading-content="" className="image-viewport-stage" style={{ width: geometry.stageWidth || '100%', height: geometry.stageHeight || '100%' }}>
         <img ref={imgRef} src={src} alt={alt} draggable={false} className={imageClassName}
           data-file-annotation-surface={annotationSurface || undefined}
           style={{ width: ready ? geometry.width : undefined, height: ready ? geometry.height : undefined, maxWidth: ready ? 'none' : '100%', maxHeight: ready ? 'none' : '100%' }}
           onLoad={event => { setImage({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }); setFailed(false); }}
           onError={event => { setFailed(true); onError?.(event); }} />
       </div>
-      {!ready && <p className="image-viewport-status" role={failed ? 'alert' : 'status'}>{failed ? '图片加载失败，请下载原文件查看。' : '正在加载图片…'}</p>}
+      {!ready && (failed
+        ? <p className="image-viewport-status" role="alert">图片加载失败，请下载原文件查看。</p>
+        : <LoadingState kind="image" label="正在加载图片" className="image-viewport-loading" />)}
     </div>
   </div>;
 }

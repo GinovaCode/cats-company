@@ -274,6 +274,20 @@ describe('DesktopConnectModal', () => {
     expect(window.localStorage.getItem('catsco_preferred_desktop_device:v1:38')).toBe('ck123');
   });
 
+  test('shows connection motion only while waiting for the desktop confirmation', async () => {
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    let fail;
+    api.createDesktopConnectSession.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    await act(async () => { root.render(<DesktopConnectModal userId="38" onClose={vi.fn()} />); });
+    expect(container.querySelector('[data-loading-kind="connect"]')).toBeNull();
+    await act(async () => { container.querySelector('.catsco-connect-actions .oc-btn-primary').click(); });
+    expect(container.querySelector('[data-loading-kind="connect"]')).not.toBeNull();
+    expect(container.querySelector('.catsco-connect-actions .oc-btn-primary').disabled).toBe(true);
+    await act(async () => { fail(new Error('offline')); });
+    expect(container.querySelector('[data-loading-kind="connect"]')).toBeNull();
+    expect(container.querySelector('.catsco-connect-actions .oc-btn-primary').disabled).toBe(false);
+  });
+
   test('completes a legacy claimed connection after the user chooses among multiple desktops', async () => {
     vi.useFakeTimers();
     const onConnected = vi.fn();

@@ -1841,6 +1841,20 @@ body {
   overflow-y: auto;
 }
 
+.cloud-artifacts-body.is-loading {
+  display: flex;
+  flex-direction: column;
+}
+
+.cloud-artifacts-body.is-loading > .cloud-artifacts-context-note {
+  flex: 0 0 auto;
+}
+
+.cloud-artifacts-body.is-loading > .cc-loading-state {
+  flex: 1 0 160px;
+  min-height: 160px;
+}
+
 .cloud-artifacts-context-note {
   margin-bottom: 10px;
   padding: 0 2px;

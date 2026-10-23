@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Cloud, Download, Laptop, Loader2, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import PwaDownloadLink from './pwa-download-link';
+import LoadingState from './loading-state';
 import {
   FALLBACK_RELEASE_VERSION,
   auditDescription,
@@ -485,9 +486,9 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
   const hasAudit = visibleDeviceAuditEvents(audit).length > 0;
 
   return (
-    <div className="oc-modal-overlay" onClick={onClose}>
+    <div className="oc-modal-overlay catsco-desktop-connect-overlay" onClick={onClose}>
       <div
-        className="oc-modal catsco-download-modal cc-settings-secondary-surface"
+        className="oc-modal catsco-download-modal catsco-desktop-connect-modal cc-settings-secondary-surface"
         role="dialog"
         aria-modal="true"
         aria-labelledby="catsco-desktop-modal-title"
@@ -503,7 +504,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
           </button>
         </div>
 
-        <div className="catsco-connect-body">
+        <div data-loading-region="" className="catsco-connect-body">
           <section className="catsco-onboarding-replay" aria-labelledby="catsco-onboarding-replay-title">
             <button
               type="button"
@@ -520,7 +521,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
           </section>
 
           <div className="catsco-connect-summary">
-            {connectionReady ? <CheckCircle2 size={20} color="#0BA36D" /> : busy ? <Loader2 className="catsco-spin" size={20} /> : <Laptop size={20} />}
+            {connectionReady ? <CheckCircle2 size={20} color="#0BA36D" /> : <Laptop size={20} />}
             <div className="catsco-connect-copy">
               <div className="catsco-connect-title-row">
                 <strong>
@@ -573,6 +574,8 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
               已连接到本地 CatsCo 桌面助手，正在为你打开对话。
             </div>
           )}
+
+          {busy && !connectionReady && <LoadingState kind="connect" className="catsco-connect-motion" label="正在连接电脑" compact />}
 
           <div className="catsco-connect-actions">
             <button className="oc-btn oc-btn-primary" type="button" onClick={startConnect} disabled={busy}>

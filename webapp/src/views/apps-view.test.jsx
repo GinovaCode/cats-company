@@ -69,31 +69,31 @@ describe('AppsView', () => {
     expect(isNewApplication({ id: 'missing-url' })).toBe(false);
   });
 
-  test('delays skeletons for slow initial loading and replaces them with real cards', async () => {
+  test('delays the loading motion for slow initial loading and replaces it with real cards', async () => {
     vi.useFakeTimers();
     let finish;
     const agents = { bots: [{ uid: 42, relation: 'owner' }] };
     mocks.getMyBots.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     expect(container.querySelector('.cc-apps-page').getAttribute('aria-busy')).toBe('true');
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     await act(async () => { vi.advanceTimersByTime(149); });
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     await act(async () => { vi.advanceTimersByTime(1); });
-    expect(container.querySelectorAll('.cc-app-card-skeleton')).toHaveLength(6);
-    expect(container.querySelector('.cc-apps-skeleton-grid').getAttribute('aria-hidden')).toBe('true');
-    expect(container.querySelector('.cc-apps-skeleton-grid button')).toBeNull();
+    expect(container.querySelectorAll('.cc-load-stack-sheet')).toHaveLength(3);
+    expect(container.querySelector('[data-loading-kind="apps"]').getAttribute('aria-hidden')).toBe('true');
+    expect(container.querySelector('.cc-loading-state button')).toBeNull();
     await act(async () => { finish(agents); });
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     expect(titles()).toHaveLength(1);
     expect(container.querySelector('.cc-apps-page').getAttribute('aria-busy')).toBe('false');
   });
 
-  test('never flashes skeletons on a fast load', async () => {
+  test('never flashes the loading motion on a fast load', async () => {
     vi.useFakeTimers();
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     await act(async () => { vi.advanceTimersByTime(200); });
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     expect(titles()).toHaveLength(2);
   });
 
@@ -109,7 +109,7 @@ describe('AppsView', () => {
     await act(async () => { vi.advanceTimersByTime(200); });
     expect(titles()).toEqual([cards[0]]);
     expect(container.querySelector('.cc-apps-results')).toBe(grid);
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     expect(container.querySelector('.cc-apps-refresh .is-spinning')).toBeTruthy();
     await act(async () => { finishes.forEach((finish) => finish({ apps: [{ id: 'updated', title: 'Updated application', url: 'https://artifact.catsco.cc/updated/' }] })); });
     expect(titles()).toEqual(['Updated application']);
@@ -117,15 +117,15 @@ describe('AppsView', () => {
     expect(container.querySelector('.cc-apps-refresh .is-spinning')).toBeNull();
   });
 
-  test('replaces initial skeletons with retry on failure and keeps existing cards on a failed refresh', async () => {
+  test('replaces the initial loading motion with retry on failure and keeps existing cards on a failed refresh', async () => {
     vi.useFakeTimers();
     let reject;
     mocks.getMyBots.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
     await act(async () => { root.render(<AppsView user={{ uid: 7 }} />); });
     await act(async () => { vi.advanceTimersByTime(150); });
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeTruthy();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeTruthy();
     await act(async () => { reject(new Error('offline')); });
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeTruthy();
     await act(async () => { container.querySelector('[role="alert"] button').click(); });
     const cards = titles();
@@ -429,7 +429,7 @@ describe('AppsView', () => {
     expect(container.querySelector('[aria-label="选择 Agent"]').textContent).toBe('中国传统文化分析顾问');
     expect(container.querySelector('.cc-apps-scope [aria-pressed="true"]').textContent).toBe('我可管理');
     expect(container.querySelector('[aria-label="共享应用"]').scrollTop).toBe(360);
-    expect(container.querySelector('.cc-app-card-skeleton')).toBeNull();
+    expect(container.querySelector('[data-loading-kind="apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="共享应用"]').getAttribute('aria-busy')).toBe('true');
     await act(async () => { rejectRefresh(new Error('offline')); });
     expect(titles()).toEqual(['Saturday 演示应用']);

@@ -40,6 +40,10 @@ export function shortCustomModelName(model) {
   return text.length > 24 ? `${text.slice(0, 24)}...` : text;
 }
 
+export function formatModelDisplayName(model) {
+  return String(model || '').trim().replace(/^deepseek(?=$|[-\s/:])/i, 'DeepSeek');
+}
+
 export function resolveCurrentModelName(summary, defaultModel = 'MiniMax-M2.7') {
   const reportedModel = String(summary?.model || '').trim();
   if (summary?.source === 'custom' || summary?.status === 'custom') {
@@ -51,7 +55,7 @@ export function resolveCurrentModelName(summary, defaultModel = 'MiniMax-M2.7') 
 export function resolveConversationModelDisplay(currentModelName, agentModelState) {
   if (agentModelState?.state === 'hidden') return null;
 
-  const accountModel = String(currentModelName || '').trim() || '模型未知';
+  const accountModel = formatModelDisplayName(currentModelName) || '模型未知';
   if (!agentModelState?.isBot) {
     return {
       model: accountModel,
@@ -72,7 +76,7 @@ export function resolveConversationModelDisplay(currentModelName, agentModelStat
     };
   }
 
-  const model = resolveCurrentModelName(summary, '模型未知');
+  const model = formatModelDisplayName(resolveCurrentModelName(summary, '模型未知'));
   const custom = summary.source === 'custom' || summary.status === 'custom';
   const reasoningEffort = reasoningEffortLabel(summary.reasoning_effort);
   const quota = formatRelayUsagePill(summary, {

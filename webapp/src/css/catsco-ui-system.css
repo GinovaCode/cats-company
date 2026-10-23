@@ -1907,9 +1907,14 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-chat-list > .cc-conversation-section,
 .v3-chat-list > .cc-conversation-item,
+.v3-chat-list > .cc-conversation-loading,
 .v3-chat-list > .cc-conversation-empty {
   order: 30;
 }
+
+.cc-conversation-loading { flex-shrink: 0; }
+.cc-conversation-load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.cc-conversation-load-error button { padding: 4px 8px; border: 1px solid var(--cc-border); border-radius: 4px; background: transparent; color: var(--cc-text-secondary); font: inherit; cursor: pointer; }
 
 .v3-chat-list > .cc-contacts-section,
 .v3-chat-list > .cc-contact-item,

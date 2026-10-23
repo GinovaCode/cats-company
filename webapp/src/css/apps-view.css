@@ -132,8 +132,12 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-apps-page {
 }
 
 .cc-apps-initial-loading {
+  display: grid;
+  place-items: center;
   min-height: 444px;
 }
+
+.cc-apps-initial-loading .cc-loading-state { animation-delay: 0ms; }
 
 .cc-apps-loading-announcement {
   position: absolute;
@@ -145,59 +149,7 @@ html[data-theme="liquid"]:not([data-liquid-variant="green"]) .cc-apps-page {
   white-space: nowrap;
 }
 
-.cc-apps-skeleton-grid {
-  height: 444px;
-  grid-template-rows: repeat(2, 214px);
-  overflow: hidden;
-}
-
-.cc-app-card.cc-app-card-skeleton {
-  display: grid;
-  grid-template-rows: 66px 46px 24px;
-  column-gap: 28px;
-  row-gap: 8px;
-  min-width: 0;
-  padding: 26px 24px 22px;
-  box-shadow: none;
-  pointer-events: none;
-}
-
-.cc-app-skeleton-heading {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.cc-app-skeleton-block {
-  display: block;
-  height: 12px;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--cc-text) 8%, transparent);
-  animation: cc-app-skeleton-breathe 1800ms ease-in-out infinite;
-}
-
-.cc-app-skeleton-avatar {
-  width: 52px;
-  height: 52px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-}
-
-.cc-app-skeleton-copy { flex: 1; min-width: 0; }
-.cc-app-skeleton-title { width: 76%; height: 17px; margin-bottom: 10px; }
-.cc-app-skeleton-agent { width: 46%; }
-.cc-app-skeleton-description { display: grid; align-content: center; gap: 10px; }
-.cc-app-skeleton-description > :last-child { width: 82%; }
-.cc-app-skeleton-tags { display: flex; align-items: center; gap: 7px; }
-.cc-app-skeleton-tags > span { width: 52px; height: 22px; border-radius: 7px; }
-.cc-app-skeleton-tags > :last-child { width: 68px; }
-
 .cc-apps-results { animation: cc-app-results-appear 180ms ease-out; }
-
-@keyframes cc-app-skeleton-breathe {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
-}
 
 @keyframes cc-app-results-appear {
   from { opacity: 0; }
@@ -760,13 +712,6 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
     row-gap: 16px;
   }
 
-  .cc-app-card.cc-app-card-skeleton {
-    padding: 23px 20px 20px;
-    row-gap: 16px;
-  }
-
-  .cc-app-card-skeleton:nth-child(n + 3) { display: none; }
-
   .cc-apps-viewer-header {
     gap: 8px;
   }
@@ -778,7 +723,6 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cc-app-skeleton-block,
   .cc-apps-results { animation: none; }
 
   .cc-app-card:hover {

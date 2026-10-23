@@ -845,14 +845,14 @@ html[data-theme="liquid"][data-liquid-variant="green"] :is(
 html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card-primary,
 html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred {
   border-color: var(--cc-border) !important;
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: var(--cc-download-card-bg, rgba(255, 255, 255, 0.08)) !important;
   color: var(--cc-text) !important;
 }
 
 html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card-primary:hover,
 html[data-theme="liquid"][data-liquid-variant="green"] .catsco-download-modal .catsco-download-card.catsco-device-card.is-preferred:hover {
   border-color: var(--cc-border) !important;
-  background: rgba(255, 255, 255, 0.12) !important;
+  background: var(--cc-download-card-hover, rgba(255, 255, 255, 0.12)) !important;
   color: var(--cc-text) !important;
 }
 

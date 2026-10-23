@@ -11,7 +11,8 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
-import { ConversationForkAction, ConversationForkNotice } from '../widgets/conversation-fork';
+import HistoryLoadingState from '../widgets/history-loading-state';
+import { ConversationForkNotice } from '../widgets/conversation-fork';
 import { canForkConversation, forkComposerNotice } from '../utils/conversation-fork';
 import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel';
 import { useConversationFork } from '../utils/use-conversation-fork';
@@ -5060,6 +5061,9 @@ export default function MessagesView({
     topic, userId: user.uid, agents: availableAgents,
     group: String(groupInfo?.id) === String(groupId) ? groupInfo : null, members,
   });
+  const createConversationFork = useCallback(() => {
+    void conversationFork.create({ newRequest: true });
+  }, [conversationFork.create]);
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
     && ((isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID)
@@ -6717,11 +6721,7 @@ export default function MessagesView({
           left: `${previewDockPoint.left}px`, right: 'auto', top: `${previewDockPoint.top}px`, bottom: 'auto',
           transform: 'none',
         } : undefined}>
-          {React.isValidElement(topBar) ? React.cloneElement(topBar, {
-            conversationActions: <ConversationForkAction key={topic} eligible={forkEligible}
-              busy={conversationFork.busy} pending={conversationFork.operation?.state === 'pending'} onCreate={conversationFork.create} />,
-          }) : <>{topBar}<ConversationForkAction key={topic} eligible={forkEligible}
-            busy={conversationFork.busy} pending={conversationFork.operation?.state === 'pending'} onCreate={conversationFork.create} /></>}
+          {topBar}
           <ConversationForkNotice fork={conversationFork} canCreate={forkEligible} />
           <PublicationRepairPanel key={`${user.uid}:${topic}`} userUid={user.uid} topic={topic} isGroup={isGroup} groupId={groupId} />
           {cloudWorkerPending && activeCloudWorker && !cloudWorkerUpdateVisible && (
@@ -6751,7 +6751,8 @@ export default function MessagesView({
             </button>
           )}
           <div
-            className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}${conversationShareMode ? ' is-conversation-share-mode' : ''}`}
+            data-loading-region=""
+            className={`v3-timeline${!historyLoaded ? ' is-history-loading' : ''}${isDragActive ? ' is-drag-active' : ''}${conversationShareMode ? ' is-conversation-share-mode' : ''}`}
             id={previewContextId}
             role={previewExpanded && previewContextOpen ? 'region' : undefined}
             aria-label={previewExpanded && previewContextOpen ? '对话上下文' : undefined}
@@ -6774,7 +6775,7 @@ export default function MessagesView({
                 </button>
               </header>
             )}
-            <div className="v3-timeline-inner">
+            <div className="v3-timeline-inner" data-loading-content="">
               {conversationShareMode && (
                 <section className="cc-conversation-share-toolbar" aria-label="对话分享图选择">
                   <div className="cc-conversation-share-toolbar-copy">
@@ -6807,15 +6808,12 @@ export default function MessagesView({
                   )}
                 </section>
               )}
-              <div className="v3-date-divider">
+              {historyLoaded && <div className="v3-date-divider">
                 <span>聊天记录</span>
-              </div>
+              </div>}
 
         {!historyLoaded && (
-          <div className="v3-history-state" role="status" aria-live="polite">
-            <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
-            <span>正在加载聊天记录...</span>
-          </div>
+          <HistoryLoadingState />
         )}
 
         {historyLoaded && historyError && messages.length === 0 && (
@@ -6969,6 +6967,8 @@ export default function MessagesView({
                 onCreateConversationShare={candidate && !conversationShareMode
                   ? () => startConversationShareFromMessage(candidate)
                   : undefined}
+                onCreateConversationFork={forkEligible && !conversationShareMode ? createConversationFork : undefined}
+                conversationForkDisabled={conversationFork.busy || conversationFork.operation?.state === 'pending'}
                 showThinking={showThinking}
                 isConsecutive={showThinking || liquidConversation
                   ? group.isConsecutive

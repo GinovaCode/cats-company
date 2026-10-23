@@ -39,6 +39,7 @@ import ArtifactFullscreenViewer from './artifact-fullscreen-viewer';
 import KnowledgeWikiView from './knowledge-wiki-view';
 import { ARTIFACT_VIEWER_PATH } from '../artifact-preview-coordinator';
 import Avatar from '../widgets/avatar';
+import LoadingState from '../widgets/loading-state';
 
 import BotModelSelector, {
   describeModelApplyError,
@@ -129,7 +130,8 @@ const GroupSettings = lazy(() => import('../widgets/group-settings'));
 const WorkflowRichMediaDemo = lazy(() => import('./workflow-rich-media-demo'));
 const WorkspaceOnboardingCard = lazy(() => import('../widgets/workspace-onboarding-card'));
 
-function SecondaryViewLoading({ label }) {
+export function SecondaryViewLoading({ label, kind }) {
+  if (kind) return <LoadingState kind={kind} label={label} className="cc-secondary-view-loading" />;
   return <div className="v3-empty-state" role="status" aria-live="polite">正在加载{label}…</div>;
 }
 
@@ -1876,13 +1878,13 @@ function TinodeWebApp({ location }) {
             : <PanelLeftOpen size={18} aria-hidden="true" />}
         </button>
         <div className="v3-main-body">
-          <div className="v3-main-content">
+          <div data-loading-region="" className="v3-main-content">
             {activeView === 'apps' ? (
-              <Suspense fallback={<SecondaryViewLoading label=" 应用" />}>
+              <Suspense fallback={<SecondaryViewLoading kind="apps" label="正在读取应用" />}>
                 <AppsView key={user?.uid} user={user} topicId={activeTopic?.topicId || ''} viewStateRef={appsViewStateRef} />
               </Suspense>
             ) : activeView === 'skillhub' ? (
-              <Suspense fallback={<SecondaryViewLoading label=" SkillHub" />}>
+              <Suspense fallback={<SecondaryViewLoading kind="skills" label="正在读取能力" />}>
                 <SkillHubView
                   key={user?.uid}
                   user={user}
