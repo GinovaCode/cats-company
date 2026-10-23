@@ -22,6 +22,8 @@ func (a *Adapter) CreateSchema() error {
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createConversationTaskRunsTable,
+		createConversationTaskStatusOutboxTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
 		createArtifactRuntimeRunsTable,
@@ -133,12 +135,14 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusesTimestampPrecision,
 		migrateConversationTaskStatusesCreatedAtPrecision,
 		migrateConversationTaskStatusesUpdatedAtPrecision,
+		migrateConversationTaskStatusesAddLedgerUpdatedAt,
 		migrateConversationTaskStatusSourcesExpiresAtPrecision,
 		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
 		migrateConversationTaskStatusSourcesBackfillEventUpdatedAt,
 		migrateConversationTaskStatusSourcesEventUpdatedAtNotNull,
 		migrateConversationTaskStatusSourcesCreatedAtPrecision,
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
+		backfillConversationTaskRuns,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
 		migrateServiceAgentsAddOwnership,
@@ -1433,6 +1437,10 @@ ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_act
 
 const migrateChannelAgentAccessLookupIndex = `
 ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_lookup (channel, channel_app_id, channel_user_id, status);
+`
+
+const migrateConversationTaskStatusesAddLedgerUpdatedAt = `
+ALTER TABLE conversation_task_statuses ADD COLUMN ledger_updated_at TIMESTAMP(6) NULL DEFAULT NULL;
 `
 
 // Migration: upgrade task-status timestamps to fractional-second precision.
