@@ -1077,10 +1077,13 @@ source probing remain test setup, not a live user publishing experience.
 ### Human publication confirmation
 
 An independently default-off `CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED`
-registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with five
-actions. It uses the existing fixed issuer, Cloud audience and dedicated peer
-secret configuration. It is not a model/RPC tool and cannot use Bot/API-key or
-service credentials in place of the active original human's Bearer JWT.
+registers `/api/skillhub/publications/commit/entries/{entryRequestId}/` with six
+actions. The `repair-task` action additionally requires the default-off
+`CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED`; both its GET and POST
+require both switches. It uses the existing fixed issuer, Cloud audience and
+dedicated peer secret configuration. It is not a model/RPC tool and cannot use
+Bot/API-key or service credentials in place of the active original human's
+Bearer JWT.
 
 - `POST plan` takes exactly `{schemaVersion:1,confirmVersionPublish:boolean}`.
   The server loads the original retained receipt, checks current Bot ownership,
@@ -1135,6 +1138,37 @@ service credentials in place of the active original human's Bearer JWT.
   endpoint creates no conversation, task, intent, file change or model charge.
   It shares the existing default-off human route gate, rate limits, deadline
   and concurrency slots; no new rollout flag is enabled.
+- `GET /repair-task` restores an existing repair task's safe projection with no
+  body or query. It does not create a task, call Cloud or spend a repair round.
+  `POST /repair-task` records explicit human admission with exactly
+  `{"schemaVersion":1,"topicId":"grp_123"}`. Only a canonical task topic
+  reference is accepted; the browser cannot supply report/candidate hashes,
+  repair policy, a lease or model output. The server reads the pinned Cloud
+  report, requires a complete rejection bound to the original retained receipt
+  and candidate, and rechecks current entry/source/receipt/authority after peer
+  IO. PostgreSQL atomically verifies the original active publisher, current Bot
+  authority, uncancelled workspace entry, no commit intent, and a private
+  `agent_task` topic containing exactly the original human and Bot.
+
+  Both methods require current publication authority, unlike historical report
+  access. Successful replies expose only schema/entry/Bot/topic/task identifiers,
+  state, rounds used, the three-round limit and `automaticRepairEnabled:false`.
+  Identical POST replays return the same retained task without spending a round;
+  changed topic or evidence conflicts rather than rebinding or resetting it.
+  Admission does not start a worker/model, edit files, approve a description or
+  publish. The browser handoff is not yet wired to this action.
+
+  With the repair gate disabled, this action returns 404
+  `publication.not_found`; a missing repair store returns 503
+  `publication.repair_unavailable`. GET with no retained task returns 404
+  `publication.repair_not_found`. POST requires complete rejection evidence
+  (409 `publication.complete_rejection_required`); changed admission inputs
+  return 409 `publication.commit_conflict`. Uncertain task creation/projection
+  returns 503 `publication.repair_uncertain`, not proof that no task was saved;
+  recover with GET or an identical POST. Existing authority, cancellation,
+  context and report errors still apply. See
+  [Human publication repair admission](skillhub-publication-repair-admission.md)
+  for the full protocol, locking, projection and remaining execution boundaries.
 
 Authorization returns 202 `commit_accepted` with `executionState:unknown`, even
 if its ACK claims published. Only verified status supplies the final result. The
