@@ -114,7 +114,10 @@ func TestPostgresSkillHubPublicationDescriptionApplicationRecoveryAndReplay(t *t
 		t.Fatal("read retained result", err)
 	}
 	changed := result
-	changed.Derivation.DerivedRequestHash = strings.Repeat("a", 64)
+	changed.RequestBytes++
+	if err := changed.ValidateFor(*a); err != nil {
+		t.Fatal("replacement fixture must be valid before testing retained-result conflict", err)
+	}
 	if _, err := db.CompleteSkillHubPublicationDescriptionApplication(ctx, actor, *a, changed); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
 		t.Fatal("result replaced", err)
 	}
