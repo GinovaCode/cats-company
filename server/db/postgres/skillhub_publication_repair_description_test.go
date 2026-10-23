@@ -20,19 +20,6 @@ func descriptionMigration(t *testing.T, direction string) string {
 	}
 	return string(b)
 }
-func descriptionApplicationMigration(t *testing.T, direction string) string {
-	t.Helper()
-	b, err := os.ReadFile("../migrations/postgres/000053_skillhub_publication_description_application." + direction + ".sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-func TestSkillHubPublicationDescriptionApplicationMigrationMatchesStartup(t *testing.T) {
-	if strings.Join(strings.Fields(descriptionApplicationMigration(t, "up")), " ") != strings.Join(strings.Fields(createSkillHubPublicationDescriptionApplicationTable), " ") {
-		t.Fatal("000053 differs from startup")
-	}
-}
 func TestSkillHubPublicationDescriptionMigrationMatchesStartup(t *testing.T) {
 	if strings.Join(strings.Fields(descriptionMigration(t, "up")), " ") != strings.Join(strings.Fields(createSkillHubPublicationDescriptionTables), " ") {
 		t.Fatal("000052 differs from startup")
@@ -319,7 +306,7 @@ func TestPostgresSkillHubPublicationDescriptionCancellationRace(t *testing.T) {
 func TestPostgresSkillHubPublicationDescriptionMigrationLifecycle(t *testing.T) {
 	t.Parallel()
 	db, _, _, _, _, _ := repairBudgetFixture(t)
-	for _, q := range []string{descriptionApplicationMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "up"), descriptionMigration(t, "up"), descriptionApplicationMigration(t, "up")} {
+	for _, q := range []string{descriptionApplicationMigration(t, "down"), descriptionApplicationMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "up"), descriptionMigration(t, "up"), descriptionApplicationMigration(t, "up"), descriptionApplicationMigration(t, "up")} {
 		deliveryExec(t, db, q)
 	}
 	if err := db.CreateSchema(); err != nil {

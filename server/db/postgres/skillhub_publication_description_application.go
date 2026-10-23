@@ -116,6 +116,9 @@ func (a *Adapter) PrepareSkillHubPublicationDescriptionApplication(ctx context.C
 }
 
 func (a *Adapter) GetSkillHubPublicationDescriptionApplication(ctx context.Context, actor int64, id string) (*store.SkillHubPublicationDescriptionApplication, error) {
+	// This is a current-authority checkpoint between external calls, not a
+	// historical status read. Keep the same entry/task locks as prepare/complete
+	// so cancellation and membership changes serialize with this check.
 	return a.descriptionApplication(ctx, actor, id, false)
 }
 

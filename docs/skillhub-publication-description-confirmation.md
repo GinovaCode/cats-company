@@ -79,8 +79,10 @@ The task still has its one `waiting_confirmation` checkpoint, while the draft
 projection independently says `confirmed`. Future restricted application must
 consume the exact retained approval, revalidate live source/current authority,
 write only a private candidate copy and checkpoint its outcome without replaying
-model work. That application/resumption, durable model-call reconciliation and
-browser/original-chat continuation are not implemented by this contract.
+model work. The separate [description application contract](skillhub-publication-description-application.md)
+now retains a durable application identity/result and an internal coordinator;
+production derivation/retention adapters and resumption, durable model-call
+reconciliation and browser/original-chat continuation remain unimplemented.
 
 ## Verification
 
