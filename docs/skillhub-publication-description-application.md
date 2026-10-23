@@ -50,6 +50,23 @@ history API must be separate and must not serve as an execution checkpoint.
 
 ## Required adapter behavior
 
+The CatsCo trusted Cloud client is implemented in
+`server/skillhub_publication_description_derivation_client.go`. It is a
+contract-only adapter and is not registered as a production executor. The
+environment switch is `CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED`;
+when it is false or absent, calls fail closed without network I/O. Enabling the
+client requires a pinned HTTPS endpoint/audience, a dedicated
+`pubderive_` bearer secret and a bounded timeout. The client sends only the
+application/task/hash/proposal bindings, never cookies, Origin or source bytes,
+and rejects duplicate or unknown response JSON fields. It accepts a response
+only when the application, task, original hashes, proposal digest, derivation
+algorithm/schema and changed derived hashes all match the retained application.
+
+This adapter currently returns Cloud's durable derivation receipt metadata to
+the coordinator. It does not expose the retained private bytes or wire a
+publication continuation; a separately authenticated Cloud read/recovery
+contract is still required before a later step can consume the derived copy.
+
 The coordinator executes prepare, `VerifySource`, current-authority get,
 `DeriveAndRetain`, `VerifySource` again, and complete. Context cancellation is
 checked before dispatch and before completion. A previously accepted result is
