@@ -941,8 +941,9 @@ type catscoIdentityMetadataOptions struct {
 	IdentityUsers    map[int64]*types.User
 	// ExplicitTargetsEnabled is supplied only by a live delivery path after
 	// checking the authenticated Bot connection's handshake capability. Nil
-	// preserves the historical internal-builder behavior used by non-live
-	// paths and focused registry tests.
+	// retains a gate-only, fail-open fallback for focused registry tests, not
+	// live delivery. TestLiveDeviceMetadataCallersRequireNegotiation prevents
+	// production callers from omitting this decision (except inert replay).
 	ExplicitTargetsEnabled *bool
 }
 

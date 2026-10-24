@@ -12,15 +12,18 @@ the legacy grant list remains selected-only.
 Directory/selection follow-up: the server supports two rollout states. By
 default it emits the legacy `xiaoba.runtime.v1` envelope with only routable
 devices, so older XiaoBa clients keep working. Set
-`CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` only after the upgraded CLI/Bot pair is
-available; v2 then includes all known desktop devices, including unavailable
-ones, with explicit status. v1 consumers must not be sent the v2 envelope.
+`CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1` enables compatible negotiation, not forced
+upgrades. Only authenticated Bot connections declaring `device-targets.v1` in
+`hi.runtime_capabilities` receive v2, including unavailable desktop devices with
+explicit status. Undeclared/old clients continue receiving v1 even with the flag
+enabled. v1 consumers must not be sent the v2 envelope.
 
 For a canary rollout, leave `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=0` and set
 `CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS` to the comma-separated numeric UIDs of
 upgraded cloud Bots. Entries must be positive decimal UIDs (for example,
 `42,43`), not names, `usr`-prefixed IDs or wildcards. The global flag, when
-enabled, opts in all Bots regardless of the canary list. Both production and
+enabled, allows negotiation for all Bots regardless of the canary list; each
+connection still needs the handshake capability. Both production and
 test Compose stacks pass these runtime flags through with disabled defaults.
 Keep the server-side environment values out of source control.
 
@@ -420,11 +423,13 @@ storage/queues. This is not a supported-release binary or full-model matrix.
 | Baseline | New | Both read the test marker |
 | New | New | Both read the test marker |
 | New compatibility defaults | Baseline | v1 metadata and legacy target checks preserve the old client path |
-| New strict settings | Baseline | v2 metadata requires the new parser; legacy unscoped requests are denied with device_authorization_required |
+| New compatible v2 rollout | Baseline/undeclared | Stays on v1 with selected-device/default authority; no explicit-device envelope |
+| Separate strict grant enforcement | Baseline unscoped requests | May be denied with device_authorization_required; this setting is not enabled by compatible v2 rollout |
 
 Agent-host (agent_self) execution stayed local for both Bot versions with either
-server. Strict enforcement is intentionally opt-in: upgrade cloud Bots and
-desktop Connectors first, validate a canary, then enable both settings together.
+server. Strict enforcement is a separate opt-in decision, not part of enabling
+compatible v2 negotiation. Validate upgraded peers in a canary while leaving
+`CATSCO_DEVICE_GRANT_ENFORCEMENT` unchanged.
 Updating only desktop Connectors cannot fix an old Bot parser/grant limitation.
 
 ### Regression qualification (2026-10-20)
@@ -474,11 +479,14 @@ deployment were performed by this audit.
    Broader Skill and expiry workflows are not implied by narrow tool probes.
 3. Confirm cloud chat and agent-host tools still work independently of desktop
    access. Test desktop/local-Bot compatibility and Connector login/logout.
-4. Inventory affected cloud Bots and explicitly coordinate their upgrades. Start
-   with one approved canary by listing its numeric UID in
-   `CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS` while global v2 remains disabled; follow
-   the canary sequence above. Only after all upgraded Bots pass acceptance may
-   operators replace the list with `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1`.
+4. Deploy capability negotiation and the paired client first. Start with one
+   approved canary by listing its numeric UID in
+   `CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS` while global v2 remains disabled, and
+   verify its authenticated `hi.runtime_capabilities` includes
+   `device-targets.v1`. The UID list alone is insufficient. After canary
+   acceptance, operators may enable global compatible negotiation with
+   `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1`: undeclared Bots still use v1, and
+   unavailable/custom servers do not have to be forcibly upgraded first.
    `CATSCO_DEVICE_GRANT_ENFORCEMENT=required` remains a separate later decision
    and is not required for the per-Bot metadata canary.
 5. Once strict mode is enabled, missing grants require upgrading the Bot and a
@@ -508,15 +516,17 @@ Legacy Bots therefore never receive another device's executable grant in that
 field, regardless of directory or heartbeat order. Consumers must match grants
 by exact `deviceId`, never infer the default from array position.
 
-Only with `CATSCO_XIAOBA_RUNTIME_V2_ENABLED=1`, native same-account turns also
+Only when the global flag or Bot UID canary allows v2 **and** the authenticated
+Bot connection declares `device-targets.v1`, native same-account turns also
 receive `catsco_identity.device_target_authorizations`, schema
 `catsco.device-targets.v1`, whose `grants` array contains independent short-lived
 `targetScope: "explicit_device"` capabilities for routable devices. This is an
 intentional authorization expansion in the opt-in v2 protocol, not automatic
 natural-language target resolution by the server. Keep the flag off until the
-paired cloud runtime has been deployed and verified; the default compatibility
-state emits no such envelope. Disabling v2 also rejects previously issued
-explicit grants. Merely receiving the directory does not authorize execution.
+paired cloud runtime has been deployed and verified. An undeclared connection
+always stays on v1 and receives no such envelope, even when global compatible
+negotiation is enabled. Disabling v2 also rejects previously issued explicit
+grants. Merely receiving the directory does not authorize execution.
 
 The paired runtime resolves an exact device name/ID for explicit requests and
 sends `target_scope: "explicit_device"` plus that exact device ID. Both
@@ -540,3 +550,38 @@ do not enable global strict-enforcement flags or constitute a production rollout
 The earlier single-selected-device descriptions in this document record the earlier
 implementation/acceptance and are superseded by this section for native
 same-account explicit targets.
+
+## Authenticated capability negotiation (2026-10-24)
+
+This section supersedes earlier rollout statements that treated a UID flag
+alone as sufficient to enable v2. The compatible rollout requires both:
+
+1. The global v2 gate or numeric Bot UID canary permits the Bot.
+2. That currently authenticated Bot connection's `hi.runtime_capabilities`
+   contains the exact capability `device-targets.v1` (paired XiaoBa-CLI #568).
+
+Absent either condition, the Bot keeps `xiaoba.runtime.v1` and the selected
+default's legacy grant. Ordinary chat and existing default-device operations
+retain their existing enforcement policy. Do not change
+`CATSCO_DEVICE_GRANT_ENFORCEMENT` as part of this rollout. A legacy Bot cannot
+perform new explicit cross-device operations; update that runtime to add the
+capability rather than synthesizing grants or weakening checks.
+
+Capabilities are whitelisted, connection-local, replaced on every `hi`, and
+never restored from persisted chat metadata. A reconnect/handshake without
+the capability removes v2 access. Both Device RPC and Thin Tool RPC reject
+previously issued explicit grants on that downgraded connection before
+dispatch, while the old default-device path remains available.
+
+Before enabling a canary, confirm the deployed server revision contains this
+negotiation, the cloud Bot release declares the capability, and both device
+Connectors are connected. Verify fresh live-turn metadata (v2 plus explicit
+envelope for upgraded peers; v1 without it for legacy peers), default A,
+explicit B without changing the default, multi-device results, and offline
+no-fallback. If only the default works, check the actual server gate and
+current authenticated handshake, not just a package version or device directory.
+
+The source-level guard `TestLiveDeviceMetadataCallersRequireNegotiation` checks
+that live identity builders supply the negotiated decision (or explicitly
+omit device access for replay). Gate-only convenience builders remain for
+registry tests and must not be used by new production delivery paths.

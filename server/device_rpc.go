@@ -342,6 +342,8 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	if grant.TargetScope == "explicit_device" && !xiaobaRuntimeV2EnabledForClient(client) {
+		ownerUID := parseFormattedUID(firstNonEmpty(grant.OwnerUserID, grant.ActorUserID))
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "denied", "explicit device authorization requires a negotiated client upgrade", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "explicit device authorization requires a negotiated client upgrade", map[string]interface{}{"request_id": requestID})
 		return
 	}
