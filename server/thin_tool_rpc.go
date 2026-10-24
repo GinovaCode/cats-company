@@ -562,6 +562,9 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	if !ok {
 		return fmt.Errorf("device grant is not active")
 	}
+	if grant.TargetScope == "explicit_device" && !xiaobaRuntimeV2EnabledForClient(client) {
+		return &thinToolRPCAuthorizationError{code: "device_target_upgrade_required", message: "explicit device targeting requires an upgraded cloud Bot"}
+	}
 	if grant.Source != "catscompany" || parseFormattedUID(grant.ActorUserID) <= 0 ||
 		grant.AgentID != formatUID(client.uid) || grant.OwnerUserID != formatUID(ownerUID) ||
 		grant.SessionKey != buildCatsCoSessionKey(grant.TopicID, grant.TopicType, grant.AgentID, parseFormattedUID(grant.ActorUserID)) ||

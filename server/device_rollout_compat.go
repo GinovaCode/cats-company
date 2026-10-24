@@ -4,7 +4,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/openchat/openchat/server/store/types"
 )
+
+const xiaobaDeviceTargetsCapability = "device-targets.v1"
 
 // Multi-device metadata and grant enforcement are rolled out independently.
 // The defaults keep older cloud Bots and XiaoBa clients functional while the
@@ -38,6 +42,19 @@ func xiaobaRuntimeV2EnabledForBot(botUID int64) bool {
 		}
 	}
 	return false
+}
+
+// xiaobaRuntimeV2EnabledForClient is the compatibility boundary for the
+// additive multi-device protocol. The operator controls the rollout gate, but
+// the currently connected, authenticated Bot must opt in before it receives or
+// can consume explicit-device capabilities. Older clients omit the handshake
+// field and therefore remain on the selected-device v1 path even after a
+// global compatible rollout is enabled.
+func xiaobaRuntimeV2EnabledForClient(client *Client) bool {
+	return client != nil &&
+		client.accountType == types.AccountBot &&
+		xiaobaRuntimeV2EnabledForBot(client.uid) &&
+		client.hasRuntimeCapability(xiaobaDeviceTargetsCapability)
 }
 
 func deviceGrantEnforcementRequired() bool {

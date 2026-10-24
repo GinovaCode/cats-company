@@ -118,28 +118,57 @@ type presenceEvent struct {
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub                  *Hub
-	conn                 *websocket.Conn
-	uid                  int64
-	remoteAddr           string
-	displayName          string
-	accountType          types.AccountType
-	bodyID               string
-	installationID       string
-	connectionID         string
-	deviceOwnerUID       int64
-	deviceID             string
-	deviceBodyID         string
-	deviceInstallationID string
-	deviceConnector      *DeviceConnectorClaims
-	wikiAgentUID         int64
-	botRuntimeCredential *botRuntimeCredentialClaims
-	messagingAttention   messagingClientAttention
-	messagingAttentionMu sync.RWMutex
-	attentionSyncMu      sync.Mutex
-	send                 chan []byte
-	sendMu               sync.RWMutex
-	sendClosed           bool
+	hub                   *Hub
+	conn                  *websocket.Conn
+	uid                   int64
+	remoteAddr            string
+	displayName           string
+	accountType           types.AccountType
+	bodyID                string
+	installationID        string
+	connectionID          string
+	deviceOwnerUID        int64
+	deviceID              string
+	deviceBodyID          string
+	deviceInstallationID  string
+	deviceConnector       *DeviceConnectorClaims
+	wikiAgentUID          int64
+	botRuntimeCredential  *botRuntimeCredentialClaims
+	runtimeCapabilities   map[string]struct{}
+	runtimeCapabilitiesMu sync.RWMutex
+	messagingAttention    messagingClientAttention
+	messagingAttentionMu  sync.RWMutex
+	attentionSyncMu       sync.Mutex
+	send                  chan []byte
+	sendMu                sync.RWMutex
+	sendClosed            bool
+}
+
+func (c *Client) setRuntimeCapabilities(values []string) {
+	if c == nil {
+		return
+	}
+	capabilities := make(map[string]struct{}, 1)
+	for _, value := range values {
+		// Capability names are a closed, server-owned vocabulary. Do not retain
+		// arbitrary client strings in this long-lived WebSocket object.
+		if strings.TrimSpace(value) == xiaobaDeviceTargetsCapability {
+			capabilities[xiaobaDeviceTargetsCapability] = struct{}{}
+		}
+	}
+	c.runtimeCapabilitiesMu.Lock()
+	c.runtimeCapabilities = capabilities
+	c.runtimeCapabilitiesMu.Unlock()
+}
+
+func (c *Client) hasRuntimeCapability(capability string) bool {
+	if c == nil || capability == "" {
+		return false
+	}
+	c.runtimeCapabilitiesMu.RLock()
+	_, ok := c.runtimeCapabilities[capability]
+	c.runtimeCapabilitiesMu.RUnlock()
+	return ok
 }
 
 // NewHub creates a new Hub.
@@ -1421,6 +1450,10 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	// This replaces the complete capability set on every handshake. A
+	// reconnect into an older runtime therefore cannot retain an opt-in made by
+	// a previous connection.
+	client.setRuntimeCapabilities(msg.RuntimeCapabilities)
 	h.setClientMessagingAttention(client, messagingClientAttention{
 		SubscriptionID: msg.PushSubscriptionID,
 		ActiveTopic:    msg.ActiveTopic,
@@ -2589,11 +2622,12 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 		out := msg
 		if msg != nil && msg.Data != nil && senderUID > 0 {
+			explicitTargetsEnabled := xiaobaRuntimeV2EnabledForClient(h.getClient(m.UserID))
 			metadata := withCatscoIdentityMetadata(
 				msg.Data.Metadata,
-				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
+				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata, ExplicitTargetsEnabled: &explicitTargetsEnabled}),
 			)
-			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata))
+			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadataWithExplicitTargets(senderUID, m.UserID, msg.Data.Topic, explicitTargetsEnabled, msg.Data.Metadata))
 			metadata = withGatewayAnnotationAgentContext(
 				metadata,
 				h.gatewayAnnotationAgentContext(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata),
