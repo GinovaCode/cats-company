@@ -262,3 +262,53 @@ and mismatched receipt, plus rounds 2/3 with unchanged or changed original sourc
 All three suites and thirteen subcases must pass. The runner fails on any skip
 or missing case and is a required CI dependency. These are real cross-repository handler contracts with
 synthetic CatsCo authority/store and socket; not deployed or paid-model E2E.
+
+## Derived-copy report verification
+
+`PublicationDescriptionDerivationClient.ReadValidationReport` calls Cloud's
+service-only `/api/skills/publication-descriptions/internal/validate` view.
+It requires the derivation peer configuration and the independent default-off
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_VALIDATION_ENABLED` switch. The octet
+read switch remains independent. The URL comes only from the constructor's
+validated HTTPS peer host; no browser/model/application can supply a target URL.
+The copied HTTP client rejects redirects, carries no cookie jar, requests
+identity encoding and bounds the JSON response to 64 KiB. Failures return fixed
+errors without peer response text or private package details.
+
+The request binds the exact completed current application, original task and
+request/candidate, exact confirmed proposal, complete derivation receipt and
+derived byte count. The response has exactly six fields: schemaVersion,
+applicationId, taskId, derivedBytes, receipt and validation. Every identity,
+receipt and byte count must match. The report decoder rejects missing, null,
+duplicate, unknown or incorrectly typed fields at each level; complete passed
+reports must bind the DERIVED candidate and retained limits fingerprint.
+Original rejected reports, truncated reports and private paths are refused.
+
+`validateConfirmedPublicationDescription` is an internal read-only coordinator
+using only the existing current-authority application Get. It checks current
+application/confirmation/result, live original Runtime source, identical
+application again, the trusted peer report, live source again and the final
+identical current application. All application pointers and report issue slices /
+entry-index pointers are isolated across ports and from returned results.
+There is no production HTTP/RPC/model tool, worker or executor registration.
+
+Cloud's worker proves the derived copy against its exact retained original
+candidate/report/proposal, then returns a fresh standard report ID after
+rechecking its source. This lane retains no report, clears no confirmation,
+changes no round/application/task, and makes no model or publication call.
+The returned internal report is point-in-time evidence, not authority for a
+later state transition. Controlled continuation must durably bind an accepted
+report and recheck current authority/source at that transition; a retry must
+not allocate a fresh repair budget or repeat an uncertain paid call. General
+private-candidate ancestry and round-2/3 derivation remain follow-up work.
+
+The strict `scripts/test-publication-description-validation-paired.mjs` runner
+pins Cloud PR53 merge `4d661ac7ae07fb5c923f186be548f14ba0673c11` and requires
+one suite/four cases with zero skips: exact derived report and repeated reads,
+cancelled source, changed copy and disabled gate. It runs the real Cloud HTTPS
+handler/validator/worker/derivation and CatsCo client/coordinator with verified
+TLS. Cloud retention, CatsCo authority and Runtime source checks remain
+synthetic; this is not a deployed, paid-model or PostgreSQL-combined E2E.
+Because Cloud is private and CatsCo is public, the cross-repository CI lives in
+Cloud rather than giving CatsCo's PR CI a private-repository credential. The
+CatsCo Linux race gate includes the new client and coordinator tests.
