@@ -75,10 +75,9 @@ allows `skill.json`, but this derivation adapter returns a distinct unsupported
 input error for that selector before sending a request. It does not imply that
 `skill.json` can currently be transformed.
 
-This adapter currently returns Cloud's durable derivation receipt metadata to
-the coordinator. It does not expose the retained private bytes or wire a
-publication continuation; a separately authenticated Cloud read/recovery
-contract is still required before a later step can consume the derived copy.
+`DeriveAndRetain` returns Cloud's durable derivation receipt metadata to the
+application coordinator. The separate read/recovery lane below can retrieve
+that same copy; neither operation wires a publication continuation.
 
 The coordinator executes prepare, `VerifySource`, current-authority get,
 `DeriveAndRetain`, `VerifySource` again, and complete. Context cancellation is
@@ -113,7 +112,9 @@ adapter's responsibility. Never bypass cancellation to recover an execution.
 
 This step never clears `waiting_confirmation`, changes an immutable repair-round
 result, resets/spends the three-round budget, or retries an uncertain paid model
-call. Production transports, durable private-copy retention, model-call
+call. Cloud now implements durable private-copy retention and private recovery;
+the CatsCo peer client implements both contracts. Production registration,
+live Runtime source-verification wiring, model-call
 idempotency/reconciliation, controlled continuation and the two publication
 entry points still need separate implementation. Chinese presentation text and
 author-managed images remain later work.
@@ -125,3 +126,54 @@ metadata is synthetic: these are database contracts, not real Cloud retention or
 model/file repair E2E. Tests without `CATS_PG_TEST_DSN` skip locally; CI's required
 publication job runs all `TestPostgresSkillHubPublication*` tests against real
 PostgreSQL, including the concurrency/recovery subset under the race detector.
+
+## Private byte recovery
+
+`ReadRetainedCopy` uses the same constructor-validated HTTPS peer, dedicated
+`pubderive_` credential, forced redirect rejection and isolated cookie policy.
+It has an additional default-off switch:
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED`. Both this switch and the
+derivation client switch must be enabled. The read URL is derived from the
+validated peer origin; no caller can provide a recovery URL.
+
+The request contains exactly the original application/task/request/candidate
+bindings, confirmed proposal, complete immutable derivation receipt and exact
+stored byte count. It never uploads source bytes. The client requires a completed
+application with a valid identity, proposal digest and receipt; it does not call
+derive as a fallback. It requests identity encoding and accepts only HTTP 200,
+one exact `application/octet-stream` content type, no content/transfer encoding,
+and the exact Content-Length. A bounded read must match both byte count and
+the retained derived request SHA-256. Truncated, corrupted, oversized, redirected,
+cancelled or timed-out responses return no private bytes. Peer response bodies
+are never included in errors. Cloud must independently validate retained source
+state, deterministic rederivation and integrity; a hash is not authority.
+
+`readConfirmedPublicationDescription` is an internal read-only coordinator,
+not a production HTTP/RPC route, worker, executor or model tool. Its store port
+exposes only the existing current-authority `Get` checkpoint. In order it does:
+
+1. Current-authority get of a completed immutable application.
+2. Live source verification under the original Runtime capture fence.
+3. Current-authority get, requiring the same full application/result.
+4. Private peer copy read with the exact retained application.
+5. Independent byte count/SHA-256 check and ownership of the returned buffer.
+6. Live source verification again, then a final identical current-authority get.
+
+The store rechecks the original active human, current Bot/Owner/body and private
+same-Bot task, current round/confirmation, and cancel/commit intents on every get.
+The coordinator passes isolated snapshots to its ports; a mutable port/store
+object cannot silently replace the baseline application across awaits. Every
+failure returns no copy. Reads do not prepare/complete an application, mutate
+source or task state, change the three-round budget, publish, or call a model.
+
+These checks prove only a point-in-time copy. No database lock spans a network
+operation, and the returned internal object is not authority to execute, edit,
+publish or spend quota. A future controlled continuation must recheck authority
+and source at its own state transition. Missing adapters fail closed.
+
+The added TLS wire tests use synthetic retained peer bytes and validated
+application fixtures; coordinator tests use a synthetic authority store/source
+port. They cover exact bindings, client recreation, default-off configuration,
+cookie/redirect isolation, partial/changed/encoded responses, timeout/cancel,
+authority/source changes at each checkpoint and snapshot isolation. These are
+not a live Cloud/CatsCo/Runtime or paid-model repair E2E.
