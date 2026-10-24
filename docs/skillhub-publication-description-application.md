@@ -55,12 +55,25 @@ The CatsCo trusted Cloud client is implemented in
 contract-only adapter and is not registered as a production executor. The
 environment switch is `CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED`;
 when it is false or absent, calls fail closed without network I/O. Enabling the
-client requires a pinned HTTPS endpoint/audience, a dedicated
+client requires a configured HTTPS endpoint whose host matches the configured
+audience, a dedicated
 `pubderive_` bearer secret and a bounded timeout. The client sends only the
 application/task/hash/proposal bindings, never cookies, Origin or source bytes,
-and rejects duplicate or unknown response JSON fields. It accepts a response
-only when the application, task, original hashes, proposal digest, derivation
-algorithm/schema and changed derived hashes all match the retained application.
+copies any injected HTTP client rather than mutating it, and forcibly refuses
+redirects (including when an injected client has a permissive redirect callback).
+It rejects duplicate or unknown response JSON fields. It binds both configured
+issuer and audience to the retained upload receipt and accepts a response only
+when the application identity, task, original hashes, proposal digest, top-level
+and receipt-derived hashes, derivation algorithm/schema, replay marker and
+derived byte bounds all match the retained application. Proposal digest JSON
+quoting matches Cloud's `JSON.stringify` behavior, including `<`, `>`, `&`, and
+Unicode line separators.
+
+Cloud's current derivation implementation supports a description selector only
+in `SKILL.md` with an exact zero-based entry index. The broader draft record also
+allows `skill.json`, but this derivation adapter returns a distinct unsupported
+input error for that selector before sending a request. It does not imply that
+`skill.json` can currently be transformed.
 
 This adapter currently returns Cloud's durable derivation receipt metadata to
 the coordinator. It does not expose the retained private bytes or wire a

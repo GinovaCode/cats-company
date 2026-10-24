@@ -22,9 +22,11 @@ import (
 const publicationDescriptionDerivationPath = "/api/skills/publication-descriptions/internal/derive"
 
 var (
-	ErrSkillHubPublicationDescriptionDerivationDisabled = errors.New("skillhub publication description derivation is disabled")
-	ErrSkillHubPublicationDescriptionDerivationConfig   = errors.New("invalid skillhub publication description derivation configuration")
-	ErrSkillHubPublicationDescriptionDerivationPeer     = errors.New("skillhub publication description derivation peer rejected the request")
+	ErrSkillHubPublicationDescriptionDerivationDisabled    = errors.New("skillhub publication description derivation is disabled")
+	ErrSkillHubPublicationDescriptionDerivationConfig      = errors.New("invalid skillhub publication description derivation configuration")
+	ErrSkillHubPublicationDescriptionDerivationPeer        = errors.New("skillhub publication description derivation peer rejected the request")
+	ErrSkillHubPublicationDescriptionDerivationInput       = errors.New("invalid skillhub publication description derivation application")
+	ErrSkillHubPublicationDescriptionDerivationUnsupported = errors.New("skillhub publication description derivation supports only SKILL.md")
 )
 
 // PublicationDescriptionDerivationClientConfig is deliberately separate from
@@ -44,14 +46,20 @@ type PublicationDescriptionDerivationClient struct {
 	enabled  bool
 	endpoint *url.URL
 	secret   string
+	issuer   string
+	audience string
 	client   *http.Client
 }
 
 func NewPublicationDescriptionDerivationClient(cfg PublicationDescriptionDerivationClientConfig) (*PublicationDescriptionDerivationClient, error) {
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{}
+	// Copy the client so timeout/redirect policy cannot mutate a shared caller.
+	client := &http.Client{}
+	if cfg.HTTPClient != nil {
+		*client = *cfg.HTTPClient
 	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// This service-to-service request must not inherit browser/session cookies.
+	client.Jar = nil
 	if !cfg.Enabled {
 		return &PublicationDescriptionDerivationClient{client: client}, nil
 	}
@@ -65,24 +73,27 @@ func NewPublicationDescriptionDerivationClient(cfg PublicationDescriptionDerivat
 	if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.Host == "" || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != publicationDescriptionDerivationPath {
 		return nil, ErrSkillHubPublicationDescriptionDerivationConfig
 	}
-	issuer, err := url.Parse(strings.TrimSpace(cfg.Issuer))
-	if err != nil || issuer.Scheme != "https" || issuer.User != nil || issuer.Host == "" || issuer.RawQuery != "" || issuer.Fragment != "" {
+	if !store.ValidSkillHubPublicationOrigin(cfg.Issuer) || !store.ValidSkillHubPublicationOrigin(cfg.Audience) {
 		return nil, ErrSkillHubPublicationDescriptionDerivationConfig
 	}
-	audience, err := url.Parse(strings.TrimSpace(cfg.Audience))
-	if err != nil || audience.Scheme != "https" || audience.User != nil || audience.Host == "" || audience.RawQuery != "" || audience.Fragment != "" || endpoint.Host != audience.Host {
+	audience, err := url.Parse(cfg.Audience)
+	if err != nil || endpoint.Host != audience.Host {
 		return nil, ErrSkillHubPublicationDescriptionDerivationConfig
 	}
 	client.Timeout = cfg.Timeout
-	return &PublicationDescriptionDerivationClient{enabled: true, endpoint: endpoint, secret: cfg.PeerSecret, client: client}, nil
+	return &PublicationDescriptionDerivationClient{enabled: true, endpoint: endpoint, secret: cfg.PeerSecret, issuer: cfg.Issuer, audience: cfg.Audience, client: client}, nil
 }
 
 func NewPublicationDescriptionDerivationClientFromEnv() (*PublicationDescriptionDerivationClient, error) {
-	enabled := strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED")), "true") || os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED") == "1"
+	rawEnabled := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ENABLED"))
+	enabled := strings.EqualFold(rawEnabled, "true") || rawEnabled == "1"
+	if !enabled {
+		return NewPublicationDescriptionDerivationClient(PublicationDescriptionDerivationClientConfig{})
+	}
 	timeout := 15 * time.Second
 	if raw := strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_TIMEOUT_MS")); raw != "" {
 		ms, err := strconv.Atoi(raw)
-		if err != nil {
+		if err != nil || ms < 1000 || ms > 60000 {
 			return nil, ErrSkillHubPublicationDescriptionDerivationConfig
 		}
 		timeout = time.Duration(ms) * time.Millisecond
@@ -105,8 +116,14 @@ func (c *PublicationDescriptionDerivationClient) DeriveAndRetain(ctx context.Con
 		return store.SkillHubPublicationDescriptionApplicationResult{}, err
 	}
 	proposal := app.Input.Draft.Proposal
-	if app.ID == "" || app.Input.Receipt.Validate() != nil || app.Input.Draft.Evidence.Validate() != nil || proposal.Validate() != nil || proposal.RelativePath != "SKILL.md" || proposal.EntryIndex == nil {
-		return store.SkillHubPublicationDescriptionApplicationResult{}, ErrSkillHubPublicationDescriptionDerivationConfig
+	identity, identityErr := app.Input.IdentityHash()
+	if identityErr != nil || app.IdentityHash != identity || app.ID != "pubdesc_"+identity || app.Input.Receipt.Query.Issuer != c.issuer || app.Input.Receipt.Query.Audience != c.audience {
+		return store.SkillHubPublicationDescriptionApplicationResult{}, ErrSkillHubPublicationDescriptionDerivationInput
+	}
+	// Cloud's current deterministic transformation implements SKILL.md only.
+	// Draft admission also supports skill.json, but that is not a derivation.
+	if proposal.RelativePath != "SKILL.md" || proposal.EntryIndex == nil {
+		return store.SkillHubPublicationDescriptionApplicationResult{}, ErrSkillHubPublicationDescriptionDerivationUnsupported
 	}
 	request := struct {
 		SchemaVersion int    `json:"schemaVersion"`
@@ -152,7 +169,7 @@ func (c *PublicationDescriptionDerivationClient) DeriveAndRetain(ctx context.Con
 		return store.SkillHubPublicationDescriptionApplicationResult{}, fmt.Errorf("%w: status %d", ErrSkillHubPublicationDescriptionDerivationPeer, resp.StatusCode)
 	}
 	var out cloudPublicationDescriptionDerivationResponse
-	if err := decodeUniqueJSON(raw, &out); err != nil || out.ApplicationID != app.ID || out.TaskID != app.Input.Receipt.TaskID || out.DerivedBytes < 1 || out.DerivedBytes > store.SkillHubPublicationCaptureMaxBytes || out.Receipt.OriginalRequestHash != app.Input.Receipt.Query.RequestHash || out.Receipt.OriginalCandidateHash != app.Input.Draft.Evidence.CandidateHash || out.Receipt.DerivedRequestHash == out.Receipt.OriginalRequestHash || out.Receipt.DerivedCandidateHash == out.Receipt.OriginalCandidateHash || out.Receipt.ProposalDigest != publicationDescriptionProposalDigest(proposal) {
+	if err := decodeUniqueJSON(raw, &out); err != nil || out.Replayed == nil || out.ApplicationID != app.ID || out.TaskID != app.Input.Receipt.TaskID || out.DerivedBytes < 1 || out.DerivedBytes > store.SkillHubPublicationCaptureMaxBytes || out.DerivedRequestHash != out.Receipt.DerivedRequestHash || out.DerivedCandidateHash != out.Receipt.DerivedCandidateHash || out.Receipt.OriginalRequestHash != app.Input.Receipt.Query.RequestHash || out.Receipt.OriginalCandidateHash != app.Input.Draft.Evidence.CandidateHash || out.Receipt.DerivedRequestHash == out.Receipt.OriginalRequestHash || out.Receipt.DerivedCandidateHash == out.Receipt.OriginalCandidateHash || out.Receipt.ProposalDigest != publicationDescriptionProposalDigest(proposal) {
 		return store.SkillHubPublicationDescriptionApplicationResult{}, ErrSkillHubPublicationDescriptionDerivationPeer
 	}
 	result := store.SkillHubPublicationDescriptionApplicationResult{ApplicationID: out.ApplicationID, RequestBytes: out.DerivedBytes, Derivation: out.Receipt}
@@ -169,15 +186,54 @@ type cloudPublicationDescriptionDerivationResponse struct {
 	DerivedRequestHash   string                                                `json:"derivedRequestHash"`
 	DerivedCandidateHash string                                                `json:"derivedCandidateHash"`
 	Receipt              store.SkillHubPublicationDescriptionDerivationReceipt `json:"receipt"`
-	Replayed             bool                                                  `json:"replayed"`
+	// Either replay state is valid for the same immutable application identity.
+	Replayed *bool `json:"replayed"`
 }
 
 func publicationDescriptionProposalDigest(p store.SkillHubPublicationDescriptionProposal) string {
+	entryIndex := "null"
+	if p.EntryIndex != nil {
+		entryIndex = strconv.FormatInt(*p.EntryIndex, 10)
+	}
 	return publicationDescriptionSHA256Hex("skillhub-description-derivation-v1:proposal\x00{" +
-		`"entryIndex":` + strconv.FormatInt(*p.EntryIndex, 10) + `,"field":` + jsonString(p.Field) + `,"relativePath":` + jsonString(p.RelativePath) + `,"text":` + jsonString(p.Text) + "}")
+		`"entryIndex":` + entryIndex + `,"field":` + cloudDescriptionJSONString(p.Field) + `,"relativePath":` + cloudDescriptionJSONString(p.RelativePath) + `,"text":` + cloudDescriptionJSONString(p.Text) + "}")
 }
 
-func jsonString(s string) string { b, _ := json.Marshal(s); return string(b) }
+// Match Cloud JSON.stringify, including literal <>& and U+2028/U+2029.
+// Go's JSON encoder escapes the latter even with SetEscapeHTML(false).
+// Proposal validation guarantees valid UTF-8 before network dispatch.
+func cloudDescriptionJSONString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"', '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				const digits = "0123456789abcdef"
+				b.WriteString(`\u00`)
+				b.WriteByte(digits[r>>4])
+				b.WriteByte(digits[r&15])
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
 func publicationDescriptionSHA256Hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
