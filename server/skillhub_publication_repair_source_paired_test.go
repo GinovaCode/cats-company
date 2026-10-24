@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -185,6 +186,40 @@ func TestSkillHubPublicationRepairSourcePairedReplay(t *testing.T) {
 				t.Fatal("verification rewrote capture/entry")
 			}
 		})
+	}
+}
+
+func TestSkillHubPublicationRepairSourcePairedLaterRounds(t *testing.T) {
+	for _, round := range []int{2, 3} {
+		for _, changed := range []bool{false, true} {
+			name := fmt.Sprintf("round-%d", round)
+			if changed {
+				name += "-source-changed"
+			}
+			t.Run(name, func(t *testing.T) {
+				r := startRepairSourcePairedRuntime(t, "normal")
+				f, s := repairSourcePairedFixture(t, r, true)
+				s.app = repairSourceApplicationAtRound(t, s.app, round)
+				original := s.capture
+				if s.app.Input.Draft.Evidence.CandidateHash == original.Input.SourceSnapshotHash {
+					t.Fatal("fixture has no private-copy progress")
+				}
+				if changed {
+					r.action(t, "change")
+				}
+				err := repairSourcePairedCall(t, f, s, r)
+				if changed {
+					if !errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+						t.Fatal("changed original source accepted in later round", err)
+					}
+				} else if err != nil {
+					t.Fatal("unchanged original source rejected in later round", err)
+				}
+				if s.capture != original || s.creates != 1 {
+					t.Fatal("later round replaced original capture/entry")
+				}
+			})
+		}
 	}
 }
 

@@ -87,7 +87,6 @@ func (h *Hub) publicationDescriptionSourceVerifier(actor int64) func(context.Con
 func validPublicationRepairSourceApplication(app store.SkillHubPublicationDescriptionApplication) bool {
 	identity, err := app.Input.IdentityHash()
 	if err != nil || app.IdentityHash != identity || app.ID != "pubdesc_"+identity || app.CreatedAt.IsZero() ||
-		app.Input.Draft.Evidence.CandidateHash != app.Input.Receipt.Query.SourceSnapshotHash ||
 		(app.Result == nil) != (app.AppliedAt == nil) {
 		return false
 	}
@@ -180,6 +179,10 @@ func (w *publicationRepairSourceTransport) verify(parent context.Context, actor 
 	}
 	capture := *captured
 	q := app.Input.Receipt.Query
+	// Verify the unchanged ORIGINAL source against its original capture in every
+	// repair round. Draft.Evidence may identify a later independent repair copy;
+	// it is bound by the current application Get, not a replacement capture.
+	// This proof does not verify that copy's bytes or authorize continuation.
 	old := capture.Input.Binding
 	if capture.Input.Validate() != nil || capture.Input.EntryID != id || capture.CapturedAt.IsZero() ||
 		capture.Input.RequestBytes > publicationCaptureRuntimeMaxBytes || capture.Input.Revision != q.Revision ||

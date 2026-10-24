@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -119,6 +120,77 @@ func repairSourceApplication(t *testing.T, app store.SkillHubPublicationDescript
 	}
 	if !validPublicationRepairSourceApplication(app) {
 		t.Fatal("invalid application fixture")
+	}
+	return app
+}
+
+// Construct a real store-valid current-round application. The task's initial
+// receipt/evidence stay immutable; each rejected round advances private-copy
+// evidence into the next lease. Nothing writes the Runtime's original source.
+func repairSourceApplicationAtRound(t *testing.T, input store.SkillHubPublicationDescriptionApplication, round int) store.SkillHubPublicationDescriptionApplication {
+	t.Helper()
+	app := snapshotPublicationDescriptionApplication(input)
+	if round < 1 || round > store.SkillHubPublicationRepairMaxRounds || app.Input.Draft.Round != 1 {
+		t.Fatal("round fixture requires the original round-1 application")
+	}
+	initial := store.SkillHubPublicationRepairInput{Receipt: app.Input.Receipt, TopicID: "grp_123", Evidence: app.Input.Draft.Evidence}
+	taskHash, err := initial.IdentityHash()
+	if err != nil || taskHash != app.Input.Draft.TaskIdentityHash {
+		t.Fatal("invalid initial task binding", err)
+	}
+	task := store.SkillHubPublicationRepairTask{ID: app.Input.Draft.TaskID, Input: initial, IdentityHash: taskHash, CreatedAt: app.CreatedAt.Add(-time.Second)}
+	evidence := initial.Evidence
+	var roundHash string
+	for n := 1; n <= round; n++ {
+		in := store.SkillHubPublicationRepairRoundInput{RequestID: fmt.Sprintf("source-check-round-%d", n), Evidence: evidence}
+		roundHash, err = in.IdentityHash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease := store.SkillHubPublicationRepairLease{EntryID: initial.Receipt.Query.EntryID, TaskID: task.ID, Round: n, Input: in,
+			WorkerID: "source-check-worker", Token: strings.Repeat("e", 32), Generation: int64(n), Until: app.CreatedAt.Add(time.Minute)}
+		if err := lease.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		result := &store.SkillHubPublicationRepairResult{Outcome: "waiting_confirmation", Evidence: evidence}
+		if n < round {
+			next := store.SkillHubPublicationRepairEvidence{
+				CandidateHash: publicationDescriptionSHA256Hex(fmt.Sprintf("private-candidate-after-%d", n)),
+				ReportHash:    publicationDescriptionSHA256Hex(fmt.Sprintf("private-report-after-%d", n)),
+				IssueSetHash:  publicationDescriptionSHA256Hex(fmt.Sprintf("remaining-issues-after-%d", n))}
+			result = &store.SkillHubPublicationRepairResult{Outcome: "rejected", Evidence: next}
+			evidence = next
+		}
+		if err := result.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		task.Rounds = append(task.Rounds, store.SkillHubPublicationRepairRound{Lease: lease, Result: result})
+		if n < round && task.State() != "queued" {
+			t.Fatal("fixture did not advance repair evidence")
+		}
+	}
+	app.Input.Draft.Round, app.Input.Draft.RoundIdentityHash, app.Input.Draft.Evidence = round, roundHash, evidence
+	app.Input.ConfirmationKey, err = app.Input.Draft.IdentityHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.IdentityHash, err = app.Input.IdentityHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.ID = "pubdesc_" + app.IdentityHash
+	if app.Result != nil {
+		app.Result.ApplicationID = app.ID
+		app.Result.Derivation.OriginalCandidateHash = evidence.CandidateHash
+	}
+	confirmed := app.CreatedAt.Add(-time.Millisecond)
+	draft := store.SkillHubPublicationDescriptionDraft{EntryID: initial.Receipt.Query.EntryID, Input: app.Input.Draft,
+		ConfirmationKey: app.Input.ConfirmationKey, CreatedAt: confirmed.Add(-time.Millisecond), ConfirmedAt: &confirmed}
+	if task.State() != "waiting_confirmation" {
+		t.Fatal("fixture did not retain confirmation state")
+	}
+	if err := app.ValidateFor(task, draft); err != nil {
+		t.Fatal("real store validator rejected current-round application", err)
 	}
 	return app
 }
@@ -254,6 +326,79 @@ func TestSkillHubPublicationRepairSourceTransportPrivateEvidence(t *testing.T) {
 	f.h.handleThinToolRPCResult(f.runtime, repairSourceReply(req))
 	deliveryAckStatus(t, f.runtime, http.StatusNotFound)
 	assertRepairSourceIdle(t, f)
+}
+
+func TestSkillHubPublicationRepairSourceTransportLaterRounds(t *testing.T) {
+	for _, round := range []int{2, 3} {
+		for _, mode := range []string{"prepared", "completed", "forged-capture", "unretained-evidence"} {
+			t.Run(fmt.Sprintf("round-%d/%s", round, mode), func(t *testing.T) {
+				f, s := newRepairSourceFixture(t)
+				base := s.app
+				if mode == "completed" {
+					base = repairSourceApplication(t, completedDescriptionApplication(t, "https://hub.example", []byte("retained-private-copy")))
+				}
+				s.app = repairSourceApplicationAtRound(t, base, round)
+				q := s.app.Input.Receipt.Query
+				s.capture.Input.RequestHash, s.capture.Input.SourceSnapshotHash, s.capture.Input.RequestBytes = q.RequestHash, q.SourceSnapshotHash, q.RequestBytes
+				candidate := s.app.Input.Draft.Evidence.CandidateHash
+				if candidate == q.SourceSnapshotHash {
+					t.Fatal("fixture did not advance the private candidate")
+				}
+				before, capture := snapshotPublicationDescriptionApplication(s.app), s.capture
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if mode == "unretained-evidence" {
+					unretained := snapshotPublicationDescriptionApplication(s.app)
+					unretained.Input.Draft.Evidence.CandidateHash = publicationDescriptionSHA256Hex("unretained-private-copy")
+					var err error
+					unretained.Input.ConfirmationKey, err = unretained.Input.Draft.IdentityHash()
+					if err != nil {
+						t.Fatal(err)
+					}
+					unretained.IdentityHash, err = unretained.Input.IdentityHash()
+					if err != nil {
+						t.Fatal(err)
+					}
+					unretained.ID = "pubdesc_" + unretained.IdentityHash
+					if !validPublicationRepairSourceApplication(unretained) {
+						t.Fatal("fixture failed before authoritative application checkpoint")
+					}
+					if err := f.h.verifyPublicationDescriptionSource(ctx, 7, unretained); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
+						t.Fatal("unretained candidate bypassed authoritative application checkpoint", err)
+					}
+					if len(f.runtime.send) != 0 || !reflect.DeepEqual(s.app, before) || s.capture != capture || s.creates != 1 {
+						t.Fatal("unretained candidate dispatched or changed retained state")
+					}
+					assertRepairSourceIdle(t, f)
+					return
+				}
+				req, done := startRepairSourceCall(t, f, ctx, s.app)
+				if req.Payload["expected_capture"].(map[string]interface{})["sourceSnapshotHash"] != q.SourceSnapshotHash {
+					t.Fatal("replaced original source with private-copy evidence")
+				}
+				reply := repairSourceReply(req)
+				if mode == "forged-capture" {
+					reply.Result.(map[string]interface{})["sourceSnapshotHash"] = candidate
+				}
+				f.h.handleThinToolRPCResult(f.runtime, reply)
+				err := waitRepairSource(t, done)
+				status := http.StatusOK
+				if mode == "forged-capture" {
+					if !errors.Is(err, store.ErrSkillHubPublicationInvalid) {
+						t.Fatal("accepted private candidate as Runtime source proof", err)
+					}
+					status = http.StatusUnprocessableEntity
+				} else if err != nil {
+					t.Fatal("rejected store-valid later round", err)
+				}
+				deliveryAckStatus(t, f.runtime, status)
+				if !reflect.DeepEqual(s.app, before) || s.capture != capture || s.creates != 1 {
+					t.Fatal("source check mutated the application, capture or budget")
+				}
+				assertRepairSourceIdle(t, f)
+			})
+		}
+	}
 }
 
 func TestSkillHubPublicationRepairSourceTransportDefaultOffReserved(t *testing.T) {

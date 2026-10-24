@@ -201,10 +201,28 @@ clients cannot supply proof. No production switch is enabled by this change.
 The service checks the complete current application/confirmation/result and
 immutable original entry, then the current human/Bot/Owner, enabled body,
 installation, device, local route, connection generation and capability. It
-reads the existing durable capture and requires the exact receipt bound to the
-confirmed application's original candidate. A newer connection generation on
+reads the existing durable capture and requires the exact original receipt in
+the confirmed application. A newer connection generation on
 the same body/installation is allowed before dispatch; changing the route during
 the operation fails closed. The original entry and capture are never rewritten.
+
+This lane is not round-1-only. It proves that the **original live source** still
+matches that original receipt in every round. Repair produces independent
+private candidates; it does not overwrite the live source. The current draft's
+`Evidence.CandidateHash` may therefore differ from the original receipt's
+`Query.SourceSnapshotHash` in rounds 2 and 3. Requiring equality would wrongly
+reject a valid later-round application. Current-authority application Get binds
+the exact confirmed draft/round/evidence; it does not replace the original
+capture or turn candidate hashes into authority.
+
+Success here is only original-source freshness, never proof of the current
+repair candidate's bytes or its ancestry. That separate private-candidate chain,
+per-round report/retention verification and controlled continuation remain
+follow-up work before enabling the full repair loop. The current deterministic
+Cloud description-derivation endpoint is still bound to its retained original
+candidate, so this change does not claim round-2/3 Cloud derivation works. No
+new per-round capture, source overwrite, automatic continuation or budget reset
+is introduced. Changing the original source still fails in every round.
 
 The reserved request uses `pubrepairsource_` and sends exactly `entry_id`,
 `bot_uid`, `local_skill_id`, `workspace_generation` and `expected_capture`.
@@ -234,10 +252,13 @@ Upstream error messages are never forwarded.
 Verification includes coordinator-port composition, changed authority/capture,
 wrong socket, duplicate/late result, cancellation including the last fence,
 backpressure, database blocking, caller snapshot isolation and legal reconnect.
+Store-valid round-2/3 applications cover prepared/completed checks, forged capture
+replies and caller evidence that is not retained by the authoritative application.
 `node scripts/test-publication-repair-source-paired.mjs` additionally requires
 XiaoBa merge `062c7cf1b11fa49fdc44466c1cbfe80b041d11c4` and runs real Runtime
 handler/storage checks for normal/malformed metadata, restart, changed/removed
 source, disabled capability, owner switch, transient Bot switch, missing capture
-and mismatched receipt. The runner fails on any skip or missing case and is a
-required CI dependency. These are real cross-repository handler contracts with
+and mismatched receipt, plus rounds 2/3 with unchanged or changed original source.
+All three suites and thirteen subcases must pass. The runner fails on any skip
+or missing case and is a required CI dependency. These are real cross-repository handler contracts with
 synthetic CatsCo authority/store and socket; not deployed or paid-model E2E.
