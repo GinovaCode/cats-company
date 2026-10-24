@@ -33,22 +33,24 @@ var (
 // the HTTP server configuration. A client is created, but never registered as
 // a publication executor, unless a future rollout explicitly wires it in.
 type PublicationDescriptionDerivationClientConfig struct {
-	Enabled    bool
-	URL        string
-	Issuer     string
-	Audience   string
-	PeerSecret string
-	Timeout    time.Duration
-	HTTPClient *http.Client
+	Enabled     bool
+	ReadEnabled bool
+	URL         string
+	Issuer      string
+	Audience    string
+	PeerSecret  string
+	Timeout     time.Duration
+	HTTPClient  *http.Client
 }
 
 type PublicationDescriptionDerivationClient struct {
-	enabled  bool
-	endpoint *url.URL
-	secret   string
-	issuer   string
-	audience string
-	client   *http.Client
+	enabled     bool
+	readEnabled bool
+	endpoint    *url.URL
+	secret      string
+	issuer      string
+	audience    string
+	client      *http.Client
 }
 
 func NewPublicationDescriptionDerivationClient(cfg PublicationDescriptionDerivationClientConfig) (*PublicationDescriptionDerivationClient, error) {
@@ -81,7 +83,7 @@ func NewPublicationDescriptionDerivationClient(cfg PublicationDescriptionDerivat
 		return nil, ErrSkillHubPublicationDescriptionDerivationConfig
 	}
 	client.Timeout = cfg.Timeout
-	return &PublicationDescriptionDerivationClient{enabled: true, endpoint: endpoint, secret: cfg.PeerSecret, issuer: cfg.Issuer, audience: cfg.Audience, client: client}, nil
+	return &PublicationDescriptionDerivationClient{enabled: true, readEnabled: cfg.ReadEnabled, endpoint: endpoint, secret: cfg.PeerSecret, issuer: cfg.Issuer, audience: cfg.Audience, client: client}, nil
 }
 
 func NewPublicationDescriptionDerivationClientFromEnv() (*PublicationDescriptionDerivationClient, error) {
@@ -99,12 +101,13 @@ func NewPublicationDescriptionDerivationClientFromEnv() (*PublicationDescription
 		timeout = time.Duration(ms) * time.Millisecond
 	}
 	return NewPublicationDescriptionDerivationClient(PublicationDescriptionDerivationClientConfig{
-		Enabled:    enabled,
-		URL:        strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_URL")),
-		Issuer:     strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER")),
-		Audience:   strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE")),
-		PeerSecret: strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_PEER_SECRET")),
-		Timeout:    timeout,
+		Enabled:     enabled,
+		ReadEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED")) == "1",
+		URL:         strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_URL")),
+		Issuer:      strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER")),
+		Audience:    strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE")),
+		PeerSecret:  strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_PEER_SECRET")),
+		Timeout:     timeout,
 	})
 }
 
