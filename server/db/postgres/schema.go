@@ -20,6 +20,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationDeviceSelectionsTable,
 		createMessagesTable,
 		createMessageSearchDocument,
+		createMessageSearchGrams,
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,

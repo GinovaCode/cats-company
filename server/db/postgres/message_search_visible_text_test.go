@@ -12,21 +12,37 @@ import (
 )
 
 func TestPostgresMessageSearchVisibleText(t *testing.T) {
+	testPostgresMessageSearchVisibleText(t, false)
+}
+
+func TestPostgresMessageSearchNativeIndex(t *testing.T) {
+	testPostgresMessageSearchVisibleText(t, true)
+}
+
+func testPostgresMessageSearchVisibleText(t *testing.T, native bool) {
 	dsn := os.Getenv("CATS_PG_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set CATS_PG_TEST_DSN for database integration")
 	}
 	db := messageSearchSchemaTestAdapter(t, dsn)
 	db.db.SetMaxOpenConns(1)
+	indexDDL := createMessageSearchIndex
+	searchSQL := postgresMessageSearchQuery
+	prerequisiteDDL := createMessageSearchExtension
+	if native {
+		indexDDL = createMessageSearchGramIndex
+		searchSQL = postgresMessageSearchGramQuery
+		prerequisiteDDL = createMessageSearchGrams
+	}
 	// Private-schema tables exercise the production query and expression index.
 	for _, statement := range []string{
 		`CREATE TEMP TABLE users(id bigint PRIMARY KEY, account_type text, display_name text, username text)`,
 		`CREATE TEMP TABLE topics(id text PRIMARY KEY, type text, name text)`,
 		`CREATE TEMP TABLE messages(id bigint PRIMARY KEY, topic_id text, from_uid bigint, content text, msg_type text, created_at timestamptz DEFAULT now(), content_blocks jsonb)`,
 		`CREATE INDEX ON messages(topic_id,created_at)`,
-		createMessageSearchExtension,
+		prerequisiteDDL,
 		createMessageSearchDocument,
-		createMessageSearchIndex,
+		indexDDL,
 		`CREATE TEMP TABLE group_members(group_id bigint, user_id bigint)`,
 		`CREATE TEMP TABLE "groups"(id bigint PRIMARY KEY, name text, group_kind text)`,
 		`CREATE TEMP TABLE bot_config(user_id bigint, owner_id bigint)`,
@@ -42,7 +58,9 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.ensureMessageSearchIndex(); err != nil {
+	if native {
+		db.messageSearchGramIndexReady.Store(true)
+	} else if err := db.ensureMessageSearchIndex(); err != nil {
 		t.Fatal(err)
 	}
 	fixtures := []struct{ content, blocks string }{
@@ -185,7 +203,7 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 					t.Fatal(err)
 				}
 				wantRows.Close()
-				rows, err := db.db.Query(postgresMessageSearchQuery, 1, scope, "rankprobe", 7, offset)
+				rows, err := db.db.Query(searchSQL, 1, scope, "rankprobe", 7, offset)
 				if err != nil {
 					t.Fatal(err)
 				}

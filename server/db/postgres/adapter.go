@@ -35,11 +35,12 @@ func DefaultPoolConfig() PoolConfig {
 
 // Adapter is the PostgreSQL database adapter.
 type Adapter struct {
-	db                      *sql.DB
-	dsn                     string
-	poolConfig              PoolConfig
-	healthWatch             poolhealth.Tracker
-	messageSearchIndexReady atomic.Bool
+	db                          *sql.DB
+	dsn                         string
+	poolConfig                  PoolConfig
+	healthWatch                 poolhealth.Tracker
+	messageSearchIndexReady     atomic.Bool
+	messageSearchGramIndexReady atomic.Bool
 }
 
 var _ store.Store = (*Adapter)(nil)

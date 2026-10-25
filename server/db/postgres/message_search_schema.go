@@ -13,6 +13,7 @@ import (
 // invalid index left by an interrupted concurrent build before retrying it.
 func (a *Adapter) ensureMessageSearchIndex() error {
 	a.messageSearchIndexReady.Store(false)
+	a.messageSearchGramIndexReady.Store(false)
 	ctx := context.Background()
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
@@ -27,42 +28,18 @@ func (a *Adapter) ensureMessageSearchIndex() error {
 		if _, err := conn.ExecContext(ctx, createMessageSearchExtension); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && (pgErr.Code == "42501" || pgErr.Code == "0A000") {
-				// Managed databases may reserve extension installation for their
-				// administrator. Search must remain available without this index.
-				log.Printf("message search trigram index unavailable: %v; using history search; ask a database administrator to install pg_trgm in public, then restart", err)
-				return nil
+				// Use the built-in GIN array operator class when managed databases
+				// reserve extension installation for an administrator.
+				log.Printf("pg_trgm installation unavailable: %v; using built-in message search gram index", err)
+				err = ensureMessageSearchIndexDDL(ctx, conn, "idx_messages_search_grams_gin", createMessageSearchGramIndex)
+				a.messageSearchGramIndexReady.Store(err == nil)
+				return err
 			}
 			return fmt.Errorf("install message search extension: %w", err)
 		}
 	}
-	const lock = `SELECT pg_advisory_lock(hashtextextended(current_schema() || '.message-search-index', 0))`
-	const unlock = `SELECT pg_advisory_unlock(hashtextextended(current_schema() || '.message-search-index', 0))`
-	if _, err := conn.ExecContext(ctx, lock); err != nil {
-		return err
-	}
-	defer conn.ExecContext(ctx, unlock)
-	var exists, valid bool
-	if err := conn.QueryRowContext(ctx, `SELECT count(*) > 0, COALESCE(bool_and(indisvalid), false)
-		FROM pg_index WHERE indexrelid = to_regclass('idx_messages_search_document_trgm')
-	`).Scan(&exists, &valid); err != nil {
-		return err
-	}
-	if exists && !valid {
-		if _, err := conn.ExecContext(ctx, `DROP INDEX CONCURRENTLY IF EXISTS idx_messages_search_document_trgm`); err != nil {
-			return fmt.Errorf("drop interrupted search index: %w", err)
-		}
-	}
-	if _, err := conn.ExecContext(ctx, createMessageSearchIndex); err != nil {
-		return err
-	}
-	if !valid {
-		// Expression statistics let a custom plan distinguish a rare term from
-		// one present throughout history immediately after the initial build.
-		_, err = conn.ExecContext(ctx, `ANALYZE messages`)
-	}
-	if err == nil {
-		a.messageSearchIndexReady.Store(true)
-	}
+	err = ensureMessageSearchIndexDDL(ctx, conn, "idx_messages_search_document_trgm", createMessageSearchIndex)
+	a.messageSearchIndexReady.Store(err == nil)
 	return err
 }
 
