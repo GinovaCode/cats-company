@@ -98,7 +98,22 @@ func decodePublicationValidationReport(data []byte) (*PublicationCloudValidation
 	if _, err = decodePublicationCloudReceipt(o["receipt"]); err != nil {
 		return nil, errPublicationCommitCloud
 	}
-	p, err := publicationExactObject(o["validation"], "schemaVersion", "ruleVersion", "profile", "reportId", "outcome", "coverage", "candidateHash", "limitsFingerprint", "issues", "truncated", "nextAction")
+	var out PublicationCloudValidationReport
+	if json.Unmarshal(data, &out) != nil || out.SchemaVersion != 1 {
+		return nil, errPublicationCommitCloud
+	}
+	report, err := decodePublicationValidationReportBody(o["validation"], out.Receipt.SourceSnapshotHash)
+	if err != nil {
+		return nil, err
+	}
+	out.Validation = *report
+	return &out, nil
+}
+
+// Shared strict report decoder for original and independently derived candidates.
+// Callers bind candidateHash using their own retained, authority-checked receipt.
+func decodePublicationValidationReportBody(data []byte, candidateHash string) (*PublicationValidationReport, error) {
+	p, err := publicationExactObject(data, "schemaVersion", "ruleVersion", "profile", "reportId", "outcome", "coverage", "candidateHash", "limitsFingerprint", "issues", "truncated", "nextAction")
 	if err != nil {
 		return nil, errPublicationCommitCloud
 	}
@@ -129,8 +144,8 @@ func decodePublicationValidationReport(data []byte) (*PublicationCloudValidation
 			return nil, errPublicationCommitCloud
 		}
 	}
-	var out PublicationCloudValidationReport
-	if json.Unmarshal(data, &out) != nil || out.SchemaVersion != 1 || !validPublicationValidationReport(out.Validation, out.Receipt.SourceSnapshotHash) {
+	var out PublicationValidationReport
+	if json.Unmarshal(data, &out) != nil || !validPublicationValidationReport(out, candidateHash) {
 		return nil, errPublicationCommitCloud
 	}
 	return &out, nil
