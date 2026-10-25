@@ -19,6 +19,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationNotificationMutesTable,
 		createConversationDeviceSelectionsTable,
 		createMessagesTable,
+		createMessageSearchDocument,
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
@@ -199,6 +200,11 @@ func (a *Adapter) CreateSchema() error {
 		if _, err := a.db.Exec(statement); err != nil {
 			return fmt.Errorf("postgres schema statement failed: %w", err)
 		}
+	}
+	// CONCURRENTLY must be a standalone statement outside a transaction. It
+	// lets an existing deployment continue writing while the index is built.
+	if err := a.ensureMessageSearchIndex(); err != nil {
+		return fmt.Errorf("message search index: %w", err)
 	}
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err

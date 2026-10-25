@@ -52,6 +52,41 @@ OC_DB_DRIVER=postgres
 OC_DB_DSN=postgres://catsco:***@postgres.internal:5432/catsco?sslmode=prefer
 ```
 
+## Message search index rollout
+
+PostgreSQL message search uses `pg_trgm` in `public` and a GIN expression index
+on `message_search_document_v1(msg_type, content, content_blocks)`. The document
+contains visible text and attachment names; existing permission and exact field
+checks still decide which results can be returned. Inserts, edits, and deletes
+maintain the expression index automatically, without a message-table backfill.
+
+Startup installs the document function and builds the index with `CREATE INDEX
+CONCURRENTLY`, serialized per schema. It retries an invalid index left by an
+interrupted build. Concurrent creation permits existing writers to continue, but
+it still reads historical messages and consumes CPU, I/O, and disk. A large
+history can take longer than the normal container readiness window. Prebuild the
+index on the existing deployment before rolling out the new image in that case,
+using server-local database credentials and these reviewed migration files in
+order:
+
+1. `server/db/migrations/postgres/000056_message_search_document.up.sql`
+2. `server/db/migrations/postgres/000057_message_search_index.up.sql`
+
+The second file must run as a standalone statement outside a transaction. The
+database role must be allowed to install `pg_trgm`; an administrator can install
+it in `public` beforehand. Confirm `pg_index.indisvalid` for
+`idx_messages_search_document_trgm` and run `ANALYZE messages` after the first
+build. Startup reuses the valid index. Rollback drops the index before the
+function (000057 down, then 000056 down); it preserves message history and the
+shared extension.
+
+Search uses a read-only transaction with `SET LOCAL plan_cache_mode =
+force_custom_plan` so PostgreSQL can choose between the trigram index for rare
+terms and ordered topic history for common terms. The setting ends with the
+transaction. Patterns without extractable trigrams, including many two-character
+or punctuation-only searches, can still scan readable histories and retain the
+eight-second request budget.
+
 ## Required server files
 
 For a MySQL deployment, the DBA must first review and persist the

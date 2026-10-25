@@ -15,6 +15,8 @@ import (
 // topic before the final merge preserves ordering and avoids scanning every match.
 // Keep sender and content filters inside the lateral lookup, before its limit.
 // CASE defers full block-schema validation until the visible fields match.
+// The immutable document and trigram index prefilter rare/absent substrings;
+// the predicates below remain authoritative for visibility and exact matching.
 const postgresMessageSearchQuery = `
 WITH readable_topics AS MATERIALIZED (
   SELECT t.id, COALESCE(g.name, t.name, '') AS topic_name
@@ -106,6 +108,8 @@ SELECT m.id, m.topic_id,
 FROM normalized_messages m
 JOIN users sender ON sender.id = m.from_uid
 WHERE m.topic_id = readable.id AND sender.account_type IN ('human', 'bot')
+AND message_search_document_v1(m.msg_type, m.content, m.content_blocks)
+    LIKE '%' || replace(replace(replace(lower($3), '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!'
 AND CASE WHEN (
   ($2 <> 'artifact' AND m.msg_type = 'text'
     AND (
@@ -170,10 +174,22 @@ LIMIT ($4::int + $5::int)
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT $4 OFFSET $5`
 
+// Force a value-specific plan inside the search transaction. A generic plan
+// cannot estimate substring selectivity and may scan/sort all common-term hits.
+const postgresMessageSearchPlanMode = `SET LOCAL plan_cache_mode = force_custom_plan`
+
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
 func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
-	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.QueryContext(ctx, postgresMessageSearchQuery, viewerUID, searchType, query, pageSize, offset)
+	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin message search: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, postgresMessageSearchPlanMode); err != nil {
+		return nil, fmt.Errorf("plan message search: %w", err)
+	}
+	results, err := store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
+		rows, err := tx.QueryContext(ctx, postgresMessageSearchQuery, viewerUID, searchType, query, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
@@ -187,6 +203,13 @@ func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, se
 		}
 		return page, scanned, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("finish message search: %w", err)
+	}
+	return results, nil
 }
 
 func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit int) ([]*store.MessageSearchResult, int, error) {
