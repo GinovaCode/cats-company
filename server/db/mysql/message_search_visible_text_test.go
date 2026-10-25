@@ -70,9 +70,12 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 	}
 	// MySQL cannot reopen a temporary table under multiple aliases/UNION arms.
 	// Only fixture table names change; production predicates run verbatim.
-	query := strings.NewReplacer("JOIN users viewer", "JOIN search_viewer viewer", "JOIN users sender", "JOIN search_sender sender", "JOIN users peer", "JOIN search_peer peer").Replace(mysqlMessageSearchQuery)
-	query = strings.Replace(query, "JOIN search_viewer viewer", "JOIN search_group_viewer viewer", 1)
-	query = strings.Replace(query, "JOIN topics t", "JOIN search_group_topics t", 1)
+	fixtureQuery := func(statement string) string {
+		statement = strings.NewReplacer("JOIN users viewer", "JOIN search_viewer viewer", "JOIN users sender", "JOIN search_sender sender", "JOIN users peer", "JOIN search_peer peer").Replace(statement)
+		statement = strings.Replace(statement, "JOIN search_viewer viewer", "JOIN search_group_viewer viewer", 1)
+		return strings.Replace(statement, "JOIN topics t", "JOIN search_group_topics t", 1)
+	}
+	query := fixtureQuery(mysqlMessageSearchQuery)
 	searchAs := func(viewerUID int64, needle, scope string, limit int) ([]*store.MessageSearchResult, error) {
 		return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
 			rows, err := db.db.Query(query, scope, needle, viewerUID, pageSize+offset, pageSize, offset)
@@ -260,5 +263,8 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 				}
 			}
 		}
+	})
+	t.Run("database execution limit stops the statement", func(t *testing.T) {
+		testMySQLMessageSearchExecutionLimit(t, db, dsn, fixtureQuery)
 	})
 }

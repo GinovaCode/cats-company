@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,6 +141,17 @@ func TestHandleSearchMessagesUnavailableAndStoreError(t *testing.T) {
 
 		if rec.Code != http.StatusNotImplemented {
 			t.Fatalf("status=%d body=%s, want 501", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("database timeout returns service unavailable before client deadline", func(t *testing.T) {
+		db := &messageSearchTestStore{err: fmt.Errorf("database execution limit: %w", context.DeadlineExceeded)}
+		handler := NewMessageHandler(db, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/messages/search?q=hello", nil)
+		rec := httptest.NewRecorder()
+		handler.HandleSearchMessages(rec, req)
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "搜索超时") {
+			t.Fatalf("status=%d body=%s, want JSON timeout with 503", rec.Code, rec.Body.String())
 		}
 	})
 

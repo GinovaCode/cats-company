@@ -3,11 +3,19 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+// Leave time for MySQL's timeout error to reach the handler's eight-second budget.
+const mysqlMessageSearchMaxExecutionTime = 7500 * time.Millisecond
+const mysqlMessageSearchExecutionHint = "MAX_EXECUTION_TIME(7500)"
 
 // UNION ALL computes permissions once. The lateral lookup keeps only each
 // topic's newest pageSize+offset hits before globally merging the same window.
@@ -46,7 +54,7 @@ readable_topics AS (
     )
   )
 )
-SELECT m.id, m.topic_id, readable.topic_name,
+SELECT /*+ ` + mysqlMessageSearchExecutionHint + ` */ m.id, m.topic_id, readable.topic_name,
        m.from_uid, m.sender_name, m.content, m.msg_type, m.created_at, m.content_blocks
 FROM readable_topics readable
 CROSS JOIN search_params search
@@ -189,20 +197,52 @@ LIMIT ?
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT ? OFFSET ?`
 
+// mysqlMessageSearchQueryForContext also bounds execution inside MySQL. The
+// driver closes its connection on context cancellation, which does not stop an
+// executing statement on the server. Recompute the remaining budget per page.
+func mysqlMessageSearchQueryForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	budget := mysqlMessageSearchMaxExecutionTime
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < budget {
+			budget = remaining
+		}
+	}
+	// MySQL interprets zero as unlimited. Round a sub-millisecond budget up to
+	// one rather than accidentally disabling the server-side limit.
+	milliseconds := max(int64(1), budget.Milliseconds())
+	hint := fmt.Sprintf("MAX_EXECUTION_TIME(%d)", milliseconds)
+	return strings.Replace(mysqlMessageSearchQuery, mysqlMessageSearchExecutionHint, hint, 1), nil
+}
+
+func mysqlMessageSearchError(err error) error {
+	var mysqlErr *mysqldriver.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 3024 {
+		return fmt.Errorf("message search execution limit: %w: %w", context.DeadlineExceeded, err)
+	}
+	return err
+}
+
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
 func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
 	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.QueryContext(ctx, mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize+offset, pageSize, offset)
+		statement, err := mysqlMessageSearchQueryForContext(ctx)
 		if err != nil {
-			return nil, 0, fmt.Errorf("search messages: %w", err)
+			return nil, 0, err
+		}
+		rows, err := a.db.QueryContext(ctx, statement, searchType, query, viewerUID, pageSize+offset, pageSize, offset)
+		if err != nil {
+			return nil, 0, fmt.Errorf("search messages: %w", mysqlMessageSearchError(err))
 		}
 		page, scanned, scanErr := scanMySQLMessageSearch(rows, query, searchType, remaining)
 		closeErr := rows.Close()
 		if scanErr != nil {
-			return nil, scanned, scanErr
+			return nil, scanned, mysqlMessageSearchError(scanErr)
 		}
 		if closeErr != nil {
-			return nil, scanned, fmt.Errorf("close message search rows: %w", closeErr)
+			return nil, scanned, fmt.Errorf("close message search rows: %w", mysqlMessageSearchError(closeErr))
 		}
 		return page, scanned, nil
 	})

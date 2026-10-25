@@ -57,7 +57,7 @@ func (h *MessageHandler) HandleSearchMessages(w http.ResponseWriter, r *http.Req
 		if r.Context().Err() != nil {
 			return
 		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "搜索超时，请稍后重试"})
 			return
 		}
