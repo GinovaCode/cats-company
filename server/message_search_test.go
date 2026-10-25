@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -15,6 +16,7 @@ import (
 
 type messageSearchTestStore struct {
 	store.Store
+	ctx        context.Context
 	results    []*store.MessageSearchResult
 	err        error
 	calls      int
@@ -24,7 +26,8 @@ type messageSearchTestStore struct {
 	limit      int
 }
 
-func (s *messageSearchTestStore) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
+func (s *messageSearchTestStore) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
+	s.ctx = ctx
 	s.calls++
 	s.viewerUID = viewerUID
 	s.query = query
@@ -92,6 +95,12 @@ func TestHandleSearchMessagesUsesAuthenticatedViewerAndDefaults(t *testing.T) {
 	}
 	if db.calls != 1 || db.viewerUID != 42 || db.query != "Hello" || db.searchType != store.MessageSearchAll || db.limit != defaultMessageSearchLimit {
 		t.Fatalf("unexpected search call: calls=%d uid=%d query=%q type=%q limit=%d", db.calls, db.viewerUID, db.query, db.searchType, db.limit)
+	}
+	if deadline, ok := db.ctx.Deadline(); !ok || time.Until(deadline) > messageSearchTimeout {
+		t.Fatal("search did not receive a bounded request context")
+	}
+	if !errors.Is(db.ctx.Err(), context.Canceled) {
+		t.Fatal("handler did not release its search context")
 	}
 	var body struct {
 		Results []store.MessageSearchResult `json:"results"`

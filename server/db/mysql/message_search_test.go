@@ -7,6 +7,8 @@ import (
 
 func TestMySQLMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 	required := []string{
+		"readable_topics AS (",
+		"STRAIGHT_JOIN messages ON messages.topic_id = readable.id",
 		"gm.user_id = viewer.id",
 		"gm.user_id IS NOT NULL",
 		"viewer.account_type <> 'human'",
@@ -16,7 +18,7 @@ func TestMySQLMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"f.to_user_id = peer.id",
 		"f.status = 'accepted'",
 		"sender.account_type IN ('human', 'bot')",
-		"SELECT ? AS search_type, LOWER(?) AS needle",
+		"SELECT ? AS search_type, LOWER(?) AS needle, ? AS viewer_uid",
 		"JSON_SCHEMA_VALID(",
 		"JSON_KEYS(JSON_EXTRACT(",
 		"BINARY LOWER(typed_key.block_key) IN (",

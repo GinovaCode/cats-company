@@ -1,14 +1,19 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 )
 
 const (
+	messageSearchTimeout      = 8 * time.Second
 	defaultMessageSearchLimit = 20
 	maxMessageSearchLimit     = 100
 	defaultMessageAroundLimit = 50
@@ -45,8 +50,18 @@ func (h *MessageHandler) HandleSearchMessages(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "message search unavailable"})
 		return
 	}
-	results, err := searchDB.SearchMessages(UIDFromContext(r.Context()), query, searchType, limit)
+	ctx, cancel := context.WithTimeout(r.Context(), messageSearchTimeout)
+	defer cancel()
+	results, err := searchDB.SearchMessages(ctx, UIDFromContext(r.Context()), query, searchType, limit)
 	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "搜索超时，请稍后重试"})
+			return
+		}
+		log.Printf("message search failed for uid=%d: %v", UIDFromContext(r.Context()), err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to search messages"})
 		return
 	}

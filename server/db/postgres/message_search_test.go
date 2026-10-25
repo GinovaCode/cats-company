@@ -19,6 +19,9 @@ func TestJSONBytesSupportsDriverRepresentations(t *testing.T) {
 
 func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 	required := []string{
+		"WITH readable_topics AS MATERIALIZED",
+		"CROSS JOIN LATERAL (",
+		"SELECT * FROM messages WHERE topic_id = readable.id OFFSET 0",
 		"gm.user_id = viewer.id",
 		"gm.user_id IS NOT NULL",
 		"viewer.account_type <> 'human'",

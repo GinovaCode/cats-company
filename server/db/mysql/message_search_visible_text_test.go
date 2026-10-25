@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -21,9 +22,11 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 	db.db.SetMaxOpenConns(1)
 	for _, statement := range []string{
 		`CREATE TEMPORARY TABLE search_viewer(id bigint PRIMARY KEY, account_type text, display_name text, username text)`,
+		`CREATE TEMPORARY TABLE search_group_viewer LIKE search_viewer`,
 		`CREATE TEMPORARY TABLE search_sender LIKE search_viewer`,
 		`CREATE TEMPORARY TABLE search_peer LIKE search_viewer`,
 		`CREATE TEMPORARY TABLE topics(id varchar(64) PRIMARY KEY, type text, name text)`,
+		`CREATE TEMPORARY TABLE search_group_topics LIKE topics`,
 		`CREATE TEMPORARY TABLE messages(id bigint PRIMARY KEY, topic_id varchar(64), from_uid bigint, content longtext, msg_type text, created_at timestamp DEFAULT CURRENT_TIMESTAMP, content_blocks json)`,
 		`CREATE TEMPORARY TABLE group_members(group_id bigint, user_id bigint)`,
 		"CREATE TEMPORARY TABLE `groups`(id bigint PRIMARY KEY, name text, group_kind text)",
@@ -31,9 +34,11 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 		`CREATE TEMPORARY TABLE friends(from_user_id bigint, to_user_id bigint, status text)`,
 		`CREATE TEMPORARY TABLE conversation_titles(user_id bigint, topic_id varchar(64), title text)`,
 		`INSERT INTO search_viewer VALUES (1,'human','Viewer','viewer'),(2,'bot','Agent','agent'),(3,'human','Outsider','outsider')`,
+		`INSERT INTO search_group_viewer SELECT * FROM search_viewer`,
 		`INSERT INTO search_sender SELECT * FROM search_viewer`,
 		`INSERT INTO search_peer SELECT * FROM search_viewer`,
 		`INSERT INTO topics VALUES ('grp_1','group','Visible'),('grp_2','group','Private')`,
+		`INSERT INTO search_group_topics SELECT * FROM topics`,
 		`INSERT INTO group_members VALUES(1,1),(2,3)`,
 		"INSERT INTO `groups` VALUES(1,'Visible','standard'),(2,'Private','standard')",
 	} {
@@ -63,18 +68,23 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 	if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type) VALUES (20,'grp_2',3,'部署成功','text')`); err != nil {
 		t.Fatal(err)
 	}
-	// MySQL cannot reopen a temporary table under multiple aliases. Only the three
-	// user-table names change; the production search predicates run verbatim.
+	// MySQL cannot reopen a temporary table under multiple aliases/UNION arms.
+	// Only fixture table names change; production predicates run verbatim.
 	query := strings.NewReplacer("JOIN users viewer", "JOIN search_viewer viewer", "JOIN users sender", "JOIN search_sender sender", "JOIN users peer", "JOIN search_peer peer").Replace(mysqlMessageSearchQuery)
-	search := func(needle, scope string, limit int) ([]*store.MessageSearchResult, error) {
+	query = strings.Replace(query, "JOIN search_viewer viewer", "JOIN search_group_viewer viewer", 1)
+	query = strings.Replace(query, "JOIN topics t", "JOIN search_group_topics t", 1)
+	searchAs := func(viewerUID int64, needle, scope string, limit int) ([]*store.MessageSearchResult, error) {
 		return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-			rows, err := db.db.Query(query, scope, needle, 1, pageSize, offset)
+			rows, err := db.db.Query(query, scope, needle, viewerUID, pageSize, offset)
 			if err != nil {
 				return nil, 0, err
 			}
 			defer rows.Close()
 			return scanMySQLMessageSearch(rows, needle, scope, remaining)
 		})
+	}
+	search := func(needle, scope string, limit int) ([]*store.MessageSearchResult, error) {
+		return searchAs(1, needle, scope, limit)
 	}
 	for _, scope := range []string{store.MessageSearchAll, store.MessageSearchMessage} {
 		t.Run(scope, func(t *testing.T) {
@@ -131,5 +141,42 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 	results, err = search("部署", store.MessageSearchMessage, 20)
 	if err != nil || len(results) != 7 {
 		t.Fatalf("valid older hits were crowded out: count=%d err=%v", len(results), err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO search_viewer VALUES (4,'bot','Owned Agent','owned'),(5,'bot','Other Agent','other'),(6,'human','Friend','friend')`,
+		`INSERT INTO search_group_viewer SELECT * FROM search_viewer WHERE id >= 4`,
+		`INSERT INTO search_peer SELECT * FROM search_viewer WHERE id >= 4`,
+		`INSERT INTO search_sender SELECT * FROM search_viewer WHERE id >= 4`,
+		`INSERT INTO bot_config VALUES (4,1),(5,3)`,
+		`INSERT INTO friends VALUES (1,6,'accepted')`,
+		`INSERT INTO topics VALUES ('p2p_1_4','p2p','Owned'),('p2p_1_5','p2p','Other'),('p2p_1_6','p2p','Friend'),('grp_3','group','Managed')`,
+		`INSERT INTO search_group_topics VALUES ('grp_3','group','Managed')`,
+		"INSERT INTO `groups` VALUES (3,'Managed','channel_managed')",
+		`INSERT INTO group_members VALUES (3,1),(3,4)`,
+		`INSERT INTO conversation_titles VALUES (1,'p2p_1_4','My task')`,
+		`INSERT INTO messages (id,topic_id,from_uid,content,msg_type) VALUES (40,'p2p_1_4',4,'accessprobe','text'),(41,'p2p_1_5',5,'accessprobe','text'),(42,'p2p_1_6',6,'accessprobe','text'),(43,'grp_3',4,'accessprobe','text')`,
+	} {
+		if _, err := db.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		uid int64
+		ids string
+	}{{1, "[42 40]"}, {4, "[43 40]"}, {5, "[41]"}, {3, "[]"}} {
+		results, err := searchAs(tc.uid, "accessprobe", store.MessageSearchAll, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []int64
+		for _, result := range results {
+			ids = append(ids, result.MessageID)
+			if tc.uid == 1 && result.MessageID == 40 && result.TopicName != "My task" {
+				t.Fatalf("custom title lost: %+v", result)
+			}
+		}
+		if fmt.Sprint(ids) != tc.ids {
+			t.Fatalf("viewer %d: ids=%v want %s", tc.uid, ids, tc.ids)
+		}
 	}
 }

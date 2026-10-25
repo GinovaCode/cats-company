@@ -237,7 +237,7 @@ func TestPostgresStoreContract(t *testing.T) {
 			}
 			wantIDs[messageID] = true
 		}
-		results, searchErr := db.SearchMessages(ownerID, "report", store.MessageSearchArtifact, 10)
+		results, searchErr := db.SearchMessages(context.Background(), ownerID, "report", store.MessageSearchArtifact, 10)
 		if searchErr != nil {
 			t.Fatalf("search legacy file messages: %v", searchErr)
 		}
@@ -357,21 +357,21 @@ func TestPostgresStoreContract(t *testing.T) {
 				scanned, results, wantID)
 		}
 
-		bodyResults, searchErr := db.SearchMessages(ownerID, "malformed-body-981274", store.MessageSearchMessage, 10)
+		bodyResults, searchErr := db.SearchMessages(context.Background(), ownerID, "malformed-body-981274", store.MessageSearchMessage, 10)
 		if searchErr != nil {
 			t.Fatalf("search non-array body candidate: %v", searchErr)
 		}
 		if len(bodyResults) != 0 {
 			t.Fatalf("non-array body blocks must fail closed: %#v", bodyResults)
 		}
-		nullResults, searchErr := db.SearchMessages(ownerID, "json-null-981274", store.MessageSearchMessage, 10)
+		nullResults, searchErr := db.SearchMessages(context.Background(), ownerID, "json-null-981274", store.MessageSearchMessage, 10)
 		if searchErr != nil {
 			t.Fatalf("search JSON-null body candidate: %v", searchErr)
 		}
 		if len(nullResults) != 1 || nullResults[0].MessageID != nullBlocksID {
 			t.Fatalf("JSON-null blocks must behave as no blocks: %#v", nullResults)
 		}
-		futureFieldResults, searchErr := db.SearchMessages(ownerID, "future-field-981274", store.MessageSearchMessage, 10)
+		futureFieldResults, searchErr := db.SearchMessages(context.Background(), ownerID, "future-field-981274", store.MessageSearchMessage, 10)
 		if searchErr != nil {
 			t.Fatalf("search future content-block field: %v", searchErr)
 		}

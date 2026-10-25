@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -8,12 +9,39 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// UNION ALL materializes readable topics once; STRAIGHT_JOIN keeps that small
+// relation ahead of message history so JSON predicates stay permission-scoped.
 const mysqlMessageSearchQuery = `
 WITH search_params AS (
-  SELECT ? AS search_type, LOWER(?) AS needle
+  SELECT ? AS search_type, LOWER(?) AS needle, ? AS viewer_uid
+),
+readable_topics AS (
+  SELECT t.id, COALESCE(g.name, t.name, '') AS topic_name
+  FROM search_params search
+  JOIN users viewer ON viewer.id = search.viewer_uid
+  JOIN group_members gm ON gm.user_id = viewer.id
+  JOIN ` + "`groups`" + ` g ON g.id = gm.group_id
+  JOIN topics t ON t.type = 'group' AND t.id = CONCAT('grp_', gm.group_id)
+  WHERE gm.user_id IS NOT NULL
+    AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed')
+  UNION ALL
+  SELECT t.id, COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '')
+  FROM search_params search
+  JOIN users viewer ON viewer.id = search.viewer_uid
+  JOIN users peer ON peer.id <> viewer.id
+  JOIN topics t ON t.type = 'p2p'
+    AND t.id = CONCAT('p2p_', LEAST(viewer.id, peer.id), '_', GREATEST(viewer.id, peer.id))
+  LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
+  LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
+  WHERE peer.id IS NOT NULL AND (
+    viewer.account_type = 'bot' OR peer.account_type <> 'bot' OR peer_bot.owner_id = viewer.id OR EXISTS (
+      SELECT 1 FROM friends f
+      WHERE f.from_user_id = viewer.id AND f.to_user_id = peer.id AND f.status = 'accepted'
+    )
+  )
 ),
 normalized_messages AS (
-  SELECT messages.*,
+  SELECT messages.*, readable.topic_name,
          CASE
            WHEN msg_type <> 'file' OR NOT JSON_VALID(content) THEN JSON_OBJECT()
            WHEN JSON_TYPE(content) = 'STRING' AND JSON_VALID(JSON_UNQUOTE(content))
@@ -49,7 +77,8 @@ normalized_messages AS (
              )
            )
          END AS search_blocks_valid
-  FROM messages
+  FROM readable_topics readable
+  STRAIGHT_JOIN messages ON messages.topic_id = readable.id
 ),
 searchable_messages AS (
   SELECT normalized_messages.*,
@@ -60,35 +89,13 @@ searchable_messages AS (
          END AS search_legacy_fields
   FROM normalized_messages
 )
-SELECT m.id, m.topic_id,
-       CASE WHEN t.type = 'group' THEN COALESCE(g.name, t.name, '')
-            ELSE COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '') END AS topic_name,
+SELECT m.id, m.topic_id, m.topic_name,
        m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
        m.content, m.msg_type, m.created_at, m.content_blocks
 FROM searchable_messages m
 CROSS JOIN search_params search
-JOIN topics t ON t.id = m.topic_id
-JOIN users viewer ON viewer.id = ?
 JOIN users sender ON sender.id = m.from_uid
-LEFT JOIN group_members gm ON t.type = 'group'
-  AND t.id = CONCAT('grp_', gm.group_id) AND gm.user_id = viewer.id
-LEFT JOIN ` + "`groups`" + ` g ON g.id = gm.group_id
-LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
-  AND t.id = CONCAT('p2p_', LEAST(viewer.id, peer.id), '_', GREATEST(viewer.id, peer.id))
-LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
-LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
 WHERE sender.account_type IN ('human', 'bot')
-AND (
-  (t.type = 'group' AND gm.user_id IS NOT NULL
-    AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed'))
-  OR
-  (t.type = 'p2p' AND peer.id IS NOT NULL AND (
-    viewer.account_type = 'bot' OR peer.account_type <> 'bot' OR peer_bot.owner_id = viewer.id OR EXISTS (
-      SELECT 1 FROM friends f
-      WHERE f.from_user_id = viewer.id AND f.to_user_id = peer.id AND f.status = 'accepted'
-    )
-  ))
-)
 AND (
   (search.search_type <> 'artifact' AND m.msg_type = 'text' AND m.search_blocks_valid
     AND (
@@ -176,9 +183,9 @@ ORDER BY m.created_at DESC, m.id DESC
 LIMIT ? OFFSET ?`
 
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
-func (a *Adapter) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
+func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
 	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.Query(mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize, offset)
+		rows, err := a.db.QueryContext(ctx, mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
