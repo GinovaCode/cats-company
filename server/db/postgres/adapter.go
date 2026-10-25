@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -34,10 +35,11 @@ func DefaultPoolConfig() PoolConfig {
 
 // Adapter is the PostgreSQL database adapter.
 type Adapter struct {
-	db          *sql.DB
-	dsn         string
-	poolConfig  PoolConfig
-	healthWatch poolhealth.Tracker
+	db                      *sql.DB
+	dsn                     string
+	poolConfig              PoolConfig
+	healthWatch             poolhealth.Tracker
+	messageSearchIndexReady atomic.Bool
 }
 
 var _ store.Store = (*Adapter)(nil)

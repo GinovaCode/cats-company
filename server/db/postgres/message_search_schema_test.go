@@ -3,12 +3,45 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		code     string
+		fallback bool
+	}{{"42501", true}, {"0A000", true}, {"53300", false}, {"XX000", false}} {
+		t.Run(tc.code, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			mock.ExpectExec(createMessageSearchExtension).WillReturnError(&pgconn.PgError{Code: tc.code})
+			a := &Adapter{db: db}
+			a.messageSearchIndexReady.Store(true)
+			err = a.ensureMessageSearchIndex()
+			if (err == nil) != tc.fallback {
+				t.Fatalf("extension error %s: err=%v want fallback=%v", tc.code, err, tc.fallback)
+			}
+			if a.messageSearchIndexReady.Load() {
+				t.Fatal("failed extension installation left indexed search enabled")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func messageSearchSchemaTestAdapter(t *testing.T, dsn string) *Adapter {
 	t.Helper()
@@ -32,7 +65,7 @@ func messageSearchSchemaTestAdapter(t *testing.T, dsn string) *Adapter {
 
 func TestPostgresMessageSearchIndexMigration(t *testing.T) {
 	for name, want := range map[string]string{
-		"000056_message_search_document.up.sql": createMessageSearchDocument,
+		"000056_message_search_document.up.sql": createMessageSearchExtension + createMessageSearchDocument,
 		"000057_message_search_index.up.sql":    createMessageSearchIndex,
 	} {
 		data, err := os.ReadFile(filepath.Join("..", "migrations", "postgres", name))
@@ -53,7 +86,7 @@ func TestPostgresMessageSearchIndexMigration(t *testing.T) {
 	for _, statement := range []string{
 		`CREATE TABLE messages(id bigint PRIMARY KEY, msg_type varchar(16),content text,content_blocks jsonb)`,
 		`INSERT INTO messages VALUES(1,'text','historical course2md',NULL)`,
-		createMessageSearchDocument, createMessageSearchIndex,
+		createMessageSearchExtension, createMessageSearchDocument, createMessageSearchIndex,
 		createMessageSearchDocument, createMessageSearchIndex,
 	} {
 		if _, err := db.db.Exec(statement); err != nil {
@@ -101,6 +134,98 @@ func TestPostgresMessageSearchIndexMigration(t *testing.T) {
 	}
 	if err := db.db.QueryRow(`SELECT count(*) FROM messages`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("down migration changed history: count=%d err=%v", count, err)
+	}
+}
+
+func TestPostgresMessageSearchWithoutExtensionPrivileges(t *testing.T) {
+	dsn := os.Getenv("CATS_PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CATS_PG_TEST_DSN for restricted-role startup")
+	}
+	base := &Adapter{}
+	if err := base.Open(dsn); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { base.Close() })
+	name := fmt.Sprintf("cats_search_restricted_%d", time.Now().UnixNano())
+	// A separate database is necessary: pg_trgm is shared across schemas, and
+	// an extension installed by another test would hide the privilege failure.
+	if _, err := base.db.Exec(`CREATE ROLE ` + quoteIdent(name)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { base.db.Exec(`DROP ROLE ` + quoteIdent(name)) })
+	if _, err := base.db.Exec(`CREATE DATABASE ` + quoteIdent(name)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { base.db.Exec(`DROP DATABASE ` + quoteIdent(name) + ` WITH (FORCE)`) })
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Path = "/" + name
+	dbDSN := dsnWithSearchPath(t, parsed.String(), "app")
+	admin := &Adapter{}
+	if err := admin.Open(dbDSN); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Close() })
+	if _, err := admin.db.Exec(`CREATE SCHEMA app AUTHORIZATION ` + quoteIdent(name)); err != nil {
+		t.Fatal(err)
+	}
+	db := &Adapter{}
+	if err := db.Open(dbDSN); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	db.db.SetMaxOpenConns(1)
+	if _, err := db.db.Exec(`SET ROLE ` + quoteIdent(name)); err != nil {
+		t.Fatal(err)
+	}
+	var canInstall bool
+	if err := db.db.QueryRow(`SELECT has_database_privilege(current_user,current_database(),'CREATE')`).Scan(&canInstall); err != nil || canInstall {
+		t.Fatalf("test role unexpectedly able to install extensions: allowed=%v err=%v", canInstall, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := db.CreateSchema(); err != nil {
+			t.Fatalf("restricted-role startup %d: %v", attempt, err)
+		}
+		if db.messageSearchIndexReady.Load() {
+			t.Fatal("missing extension must select the fallback query")
+		}
+	}
+	uid, err := db.CreateUser(&types.User{Username: "searchviewer", AccountType: types.AccountHuman, PassHash: []byte("hash")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, err := db.CreateGroup("Search fallback", uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageID, err := db.SaveMessage(fmt.Sprintf("grp_%d", groupID), uid, "visible course2md", "text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearch := func() {
+		t.Helper()
+		results, err := db.SearchMessages(context.Background(), uid, "course2md", "message", 20)
+		if err != nil || len(results) != 1 || results[0].MessageID != messageID {
+			t.Fatalf("search after startup: results=%+v err=%v", results, err)
+		}
+	}
+	assertSearch()
+	// The DBA can install the extension without granting the app more rights.
+	// The next startup must build the index and enable the accelerated query.
+	if _, err := admin.db.Exec(createMessageSearchExtension); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := db.CreateSchema(); err != nil {
+			t.Fatal(err)
+		}
+		if !db.messageSearchIndexReady.Load() {
+			t.Fatal("preinstalled extension must enable the index for a restricted role")
+		}
+		assertSearch()
 	}
 }
 

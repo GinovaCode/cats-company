@@ -24,6 +24,7 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 		`CREATE TEMP TABLE topics(id text PRIMARY KEY, type text, name text)`,
 		`CREATE TEMP TABLE messages(id bigint PRIMARY KEY, topic_id text, from_uid bigint, content text, msg_type text, created_at timestamptz DEFAULT now(), content_blocks jsonb)`,
 		`CREATE INDEX ON messages(topic_id,created_at)`,
+		createMessageSearchExtension,
 		createMessageSearchDocument,
 		createMessageSearchIndex,
 		`CREATE TEMP TABLE group_members(group_id bigint, user_id bigint)`,
@@ -40,6 +41,9 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 		if _, err := db.db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := db.ensureMessageSearchIndex(); err != nil {
+		t.Fatal(err)
 	}
 	fixtures := []struct{ content, blocks string }{
 		{"部署成功", `null`},

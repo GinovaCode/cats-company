@@ -17,7 +17,7 @@ import (
 // CASE defers full block-schema validation until the visible fields match.
 // The immutable document and trigram index prefilter rare/absent substrings;
 // the predicates below remain authoritative for visibility and exact matching.
-const postgresMessageSearchQuery = `
+const postgresMessageSearchQueryPrefix = `
 WITH readable_topics AS MATERIALIZED (
   SELECT t.id, COALESCE(g.name, t.name, '') AS topic_name
   FROM users viewer
@@ -108,9 +108,13 @@ SELECT m.id, m.topic_id,
 FROM normalized_messages m
 JOIN users sender ON sender.id = m.from_uid
 WHERE m.topic_id = readable.id AND sender.account_type IN ('human', 'bot')
-AND message_search_document_v1(m.msg_type, m.content, m.content_blocks)
+`
+
+const postgresMessageSearchIndexPrefilter = `AND message_search_document_v1(m.msg_type, m.content, m.content_blocks)
     LIKE '%' || replace(replace(replace(lower($3), '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!'
-AND CASE WHEN (
+`
+
+const postgresMessageSearchQuerySuffix = `AND CASE WHEN (
   ($2 <> 'artifact' AND m.msg_type = 'text'
     AND (
       EXISTS (
@@ -174,6 +178,12 @@ LIMIT ($4::int + $5::int)
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT $4 OFFSET $5`
 
+const postgresMessageSearchQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchIndexPrefilter + postgresMessageSearchQuerySuffix
+
+// Omit the document predicate when the index could not be installed. Evaluating
+// the document for every history row would add work to the previous query.
+const postgresMessageSearchFallbackQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchQuerySuffix
+
 // Force a value-specific plan inside the search transaction. A generic plan
 // cannot estimate substring selectivity and may scan/sort all common-term hits.
 const postgresMessageSearchPlanMode = `SET LOCAL plan_cache_mode = force_custom_plan`
@@ -188,8 +198,12 @@ func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, se
 	if _, err := tx.ExecContext(ctx, postgresMessageSearchPlanMode); err != nil {
 		return nil, fmt.Errorf("plan message search: %w", err)
 	}
+	searchSQL := postgresMessageSearchFallbackQuery
+	if a.messageSearchIndexReady.Load() {
+		searchSQL = postgresMessageSearchQuery
+	}
 	results, err := store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := tx.QueryContext(ctx, postgresMessageSearchQuery, viewerUID, searchType, query, pageSize, offset)
+		rows, err := tx.QueryContext(ctx, searchSQL, viewerUID, searchType, query, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
