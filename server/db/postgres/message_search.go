@@ -178,6 +178,12 @@ LIMIT ($4::int + $5::int)
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT $4 OFFSET $5`
 
+const postgresMessageSearchGramPrefilter = `AND message_search_grams_v1(message_search_document_v1(m.msg_type, m.content, m.content_blocks))
+    @> message_search_grams_v1(lower($3))
+`
+
+const postgresMessageSearchGramQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchGramPrefilter + postgresMessageSearchIndexPrefilter + postgresMessageSearchQuerySuffix
+
 const postgresMessageSearchQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchIndexPrefilter + postgresMessageSearchQuerySuffix
 
 // Omit the document predicate when the index could not be installed. Evaluating
@@ -201,6 +207,13 @@ func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, se
 	searchSQL := postgresMessageSearchFallbackQuery
 	if a.messageSearchIndexReady.Load() {
 		searchSQL = postgresMessageSearchQuery
+	} else if a.messageSearchGramIndexReady.Load() {
+		searchSQL = postgresMessageSearchQuery
+		// Two ASCII characters have no byte triple. Use the document filter
+		// directly instead of evaluating an empty-array containment predicate.
+		if len(query) >= 3 {
+			searchSQL = postgresMessageSearchGramQuery
+		}
 	}
 	results, err := store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
 		rows, err := tx.QueryContext(ctx, searchSQL, viewerUID, searchType, query, pageSize, offset)

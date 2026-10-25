@@ -239,7 +239,7 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
           CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
         run: |
-          go test ./server/db/postgres ./server/db/mysql -run '^Test(Postgres|MySQL)MessageSearch(VisibleText|IndexMigration|WithoutExtensionPrivileges)$' -count=1 -v
+          go test ./server/db/postgres ./server/db/mysql -run '^Test(Postgres|MySQL)MessageSearch(VisibleText|NativeIndex|IndexMigration|GramMigration|GramContainment|WithoutExtensionPrivileges)$' -count=1 -v
           go test ./server/db/postgres ./server/db/mysql -run '^Test(PostgresConversationTaskRun|MySQLConversationTask)' -count=1 -v
           go test -race ./server -run '^TestConversationTaskStatus(Delivery|History|Postgres)' -count=1 -v
 

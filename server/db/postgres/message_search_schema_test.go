@@ -28,14 +28,20 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 			defer db.Close()
 			mock.ExpectQuery("SELECT EXISTS .*pg_extension").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 			mock.ExpectExec(createMessageSearchExtension).WillReturnError(&pgconn.PgError{Code: tc.code})
+			if tc.fallback {
+				mock.ExpectExec("SELECT pg_advisory_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectQuery("SELECT count.*pg_index").WithArgs("idx_messages_search_grams_gin").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(true, true))
+				mock.ExpectExec("CREATE INDEX CONCURRENTLY").WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec("SELECT pg_advisory_unlock").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
 			a := &Adapter{db: db}
 			a.messageSearchIndexReady.Store(true)
 			err = a.ensureMessageSearchIndex()
 			if (err == nil) != tc.fallback {
 				t.Fatalf("extension error %s: err=%v want fallback=%v", tc.code, err, tc.fallback)
 			}
-			if a.messageSearchIndexReady.Load() {
-				t.Fatal("failed extension installation left indexed search enabled")
+			if a.messageSearchIndexReady.Load() || a.messageSearchGramIndexReady.Load() != tc.fallback {
+				t.Fatal("extension error did not select the expected index implementation")
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)
@@ -91,8 +97,10 @@ func messageSearchSchemaTestAdapter(t *testing.T, dsn string) *Adapter {
 
 func TestPostgresMessageSearchIndexMigration(t *testing.T) {
 	for name, want := range map[string]string{
-		"000056_message_search_document.up.sql": createMessageSearchExtension + createMessageSearchDocument,
-		"000057_message_search_index.up.sql":    createMessageSearchIndex,
+		"000056_message_search_document.up.sql":   createMessageSearchExtension + createMessageSearchDocument,
+		"000057_message_search_index.up.sql":      createMessageSearchIndex,
+		"000058_message_search_grams.up.sql":      createMessageSearchGrams,
+		"000059_message_search_gram_index.up.sql": createMessageSearchGramIndex,
 	} {
 		data, err := os.ReadFile(filepath.Join("..", "migrations", "postgres", name))
 		if err != nil {
@@ -215,8 +223,8 @@ func TestPostgresMessageSearchWithoutExtensionPrivileges(t *testing.T) {
 		if err := db.CreateSchema(); err != nil {
 			t.Fatalf("restricted-role startup %d: %v", attempt, err)
 		}
-		if db.messageSearchIndexReady.Load() {
-			t.Fatal("missing extension must select the fallback query")
+		if db.messageSearchIndexReady.Load() || !db.messageSearchGramIndexReady.Load() {
+			t.Fatal("missing extension must enable the built-in gram index")
 		}
 	}
 	uid, err := db.CreateUser(&types.User{Username: "searchviewer", AccountType: types.AccountHuman, PassHash: []byte("hash")})
@@ -259,7 +267,11 @@ func testPostgresMessageSearchIndexedCandidates(t *testing.T, db *Adapter) {
 	t.Helper()
 	// Also exercise the SQL pattern escape. Each is a literal substring, including
 	// quotes, backslashes, wildcards, the escape character itself, and Unicode.
-	for i, needle := range []string{`100%_ready!`, `a\b"quoted`, "多语言部署", "line\nbreak"} {
+	needles := []string{`100%_ready!`, `a\b"quoted`, "多语言部署", "line\nbreak"}
+	if db.messageSearchGramIndexReady.Load() {
+		needles = append(needles, "稀詞", "QZ", "éZ")
+	}
+	for i, needle := range needles {
 		if _, err := db.db.Exec(`INSERT INTO messages(id,topic_id,from_uid,content,msg_type) VALUES($1,'grp_1',2,$2,'text')`, 900000+i, "literal "+needle+" tail"); err != nil {
 			t.Fatal(err)
 		}
@@ -280,12 +292,16 @@ func testPostgresMessageSearchIndexedCandidates(t *testing.T, db *Adapter) {
 			t.Fatal(err)
 		}
 	}
+	searchSQL, indexName := postgresMessageSearchQuery, "idx_messages_search_document_trgm"
+	if db.messageSearchGramIndexReady.Load() {
+		searchSQL, indexName = postgresMessageSearchGramQuery, "idx_messages_search_grams_gin"
+	}
 	for _, needle := range []string{"selectivecourse2md", "absent_probe_91be8"} {
 		var plan string
-		if err := db.db.QueryRow(`EXPLAIN (ANALYZE,FORMAT JSON) `+postgresMessageSearchQuery, 1, "all", needle, 200, 0).Scan(&plan); err != nil {
+		if err := db.db.QueryRow(`EXPLAIN (ANALYZE,FORMAT JSON) `+searchSQL, 1, "all", needle, 200, 0).Scan(&plan); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(plan, `"Index Name": "idx_messages_search_document_trgm"`) {
+		if !strings.Contains(plan, `"Index Name": "`+indexName+`"`) {
 			t.Fatalf("selective query did not use trigram index: %s", plan)
 		}
 	}
@@ -300,6 +316,12 @@ func testPostgresMessageSearchIndexedCandidates(t *testing.T, db *Adapter) {
 		if err != nil || len(results) != 6 {
 			t.Fatalf("prepared search %d: count=%d err=%v", attempt, len(results), err)
 		}
+	}
+	commonCtx, cancelCommon := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCommon()
+	commonResults, err := db.SearchMessages(commonCtx, 1, "ordinary", "message", 20)
+	if err != nil || len(commonResults) != 20 {
+		t.Fatalf("common term did not use a bounded plan: count=%d err=%v", len(commonResults), err)
 	}
 	var mode string
 	if err := db.db.QueryRow(`SHOW plan_cache_mode`).Scan(&mode); err != nil || mode != "force_generic_plan" {
