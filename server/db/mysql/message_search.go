@@ -90,14 +90,41 @@ AND (
   ))
 )
 AND (
-  (search.search_type <> 'artifact' AND m.msg_type = 'text'
-    AND (m.content_blocks IS NULL OR (m.search_blocks_valid AND
-      JSON_SEARCH(m.content_blocks, 'one', 'thinking', NULL, '$[*].type') IS NULL
-      AND JSON_SEARCH(m.content_blocks, 'one', 'tool_use', NULL, '$[*].type') IS NULL
-      AND JSON_SEARCH(m.content_blocks, 'one', 'tool_result', NULL, '$[*].type') IS NULL
-      AND JSON_SEARCH(m.content_blocks, 'one', 'runtime_plan', NULL, '$[*].type') IS NULL
+  (search.search_type <> 'artifact' AND m.msg_type = 'text' AND m.search_blocks_valid
+    AND (
+      EXISTS (
+        SELECT 1 FROM JSON_TABLE(
+          COALESCE(m.content_blocks, JSON_ARRAY()),
+          '$[*]' COLUMNS (
+            block_type LONGTEXT PATH '$.type',
+            block_text LONGTEXT PATH '$.text',
+            block_content LONGTEXT PATH '$.content'
+          )
+        ) AS block
+        WHERE BINARY block.block_type IN ('text', 'assistant_text')
+          AND LOCATE(search.needle, LOWER(COALESCE(
+            CASE WHEN OCTET_LENGTH(block.block_text) > 0 THEN block.block_text ELSE block.block_content END, ''
+          ))) > 0
+      )
+      OR (
+        LOCATE(search.needle, LOWER(m.content)) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM JSON_TABLE(
+            COALESCE(m.content_blocks, JSON_ARRAY()),
+            '$[*]' COLUMNS (
+              block_type LONGTEXT PATH '$.type',
+              block_text LONGTEXT PATH '$.text',
+              block_content LONGTEXT PATH '$.content'
+            )
+          ) AS block
+          WHERE BINARY block.block_type IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan', 'debug')
+            OR (BINARY block.block_type IN ('text', 'assistant_text')
+              AND OCTET_LENGTH(COALESCE(
+                CASE WHEN OCTET_LENGTH(block.block_text) > 0 THEN block.block_text ELSE block.block_content END, ''
+              )) > 0)
+        )
+      )
     ))
-    AND LOCATE(search.needle, LOWER(m.content)) > 0)
   OR
   (search.search_type <> 'message' AND (
     (m.content_blocks IS NOT NULL AND JSON_TYPE(m.content_blocks) = 'ARRAY'
