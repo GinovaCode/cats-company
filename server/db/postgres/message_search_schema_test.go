@@ -26,6 +26,7 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer db.Close()
+			mock.ExpectQuery("SELECT EXISTS .*pg_extension").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 			mock.ExpectExec(createMessageSearchExtension).WillReturnError(&pgconn.PgError{Code: tc.code})
 			a := &Adapter{db: db}
 			a.messageSearchIndexReady.Store(true)
@@ -40,6 +41,31 @@ func TestMessageSearchExtensionFailurePolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestMessageSearchPreinstalledExtensionSkipsInstallation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Managed providers can reject CREATE EXTENSION before processing IF NOT
+	// EXISTS. A preinstalled extension must never invoke that command.
+	mock.ExpectQuery("SELECT EXISTS .*pg_extension").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("SELECT pg_advisory_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT count.*pg_index").WillReturnRows(sqlmock.NewRows([]string{"exists", "valid"}).AddRow(true, true))
+	mock.ExpectExec("CREATE INDEX CONCURRENTLY").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SELECT pg_advisory_unlock").WillReturnResult(sqlmock.NewResult(0, 1))
+	a := &Adapter{db: db}
+	if err := a.ensureMessageSearchIndex(); err != nil {
+		t.Fatal(err)
+	}
+	if !a.messageSearchIndexReady.Load() {
+		t.Fatal("preinstalled extension did not enable indexed search")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

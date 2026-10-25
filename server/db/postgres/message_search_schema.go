@@ -19,15 +19,21 @@ func (a *Adapter) ensureMessageSearchIndex() error {
 		return err
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, createMessageSearchExtension); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && (pgErr.Code == "42501" || pgErr.Code == "0A000") {
-			// Managed databases may reserve extension installation for their
-			// administrator. Search must remain available without this index.
-			log.Printf("message search trigram index unavailable: %v; using history search; ask a database administrator to install pg_trgm in public, then restart", err)
-			return nil
+	var extensionInstalled bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')`).Scan(&extensionInstalled); err != nil {
+		return fmt.Errorf("check message search extension: %w", err)
+	}
+	if !extensionInstalled {
+		if _, err := conn.ExecContext(ctx, createMessageSearchExtension); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "42501" || pgErr.Code == "0A000") {
+				// Managed databases may reserve extension installation for their
+				// administrator. Search must remain available without this index.
+				log.Printf("message search trigram index unavailable: %v; using history search; ask a database administrator to install pg_trgm in public, then restart", err)
+				return nil
+			}
+			return fmt.Errorf("install message search extension: %w", err)
 		}
-		return fmt.Errorf("install message search extension: %w", err)
 	}
 	const lock = `SELECT pg_advisory_lock(hashtextextended(current_schema() || '.message-search-index', 0))`
 	const unlock = `SELECT pg_advisory_unlock(hashtextextended(current_schema() || '.message-search-index', 0))`
