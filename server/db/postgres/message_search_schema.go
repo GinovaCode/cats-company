@@ -2,18 +2,39 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ensureMessageSearchIndex serializes builds in this schema and repairs an
 // invalid index left by an interrupted concurrent build before retrying it.
 func (a *Adapter) ensureMessageSearchIndex() error {
+	a.messageSearchIndexReady.Store(false)
 	ctx := context.Background()
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	var extensionInstalled bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')`).Scan(&extensionInstalled); err != nil {
+		return fmt.Errorf("check message search extension: %w", err)
+	}
+	if !extensionInstalled {
+		if _, err := conn.ExecContext(ctx, createMessageSearchExtension); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "42501" || pgErr.Code == "0A000") {
+				// Managed databases may reserve extension installation for their
+				// administrator. Search must remain available without this index.
+				log.Printf("message search trigram index unavailable: %v; using history search; ask a database administrator to install pg_trgm in public, then restart", err)
+				return nil
+			}
+			return fmt.Errorf("install message search extension: %w", err)
+		}
+	}
 	const lock = `SELECT pg_advisory_lock(hashtextextended(current_schema() || '.message-search-index', 0))`
 	const unlock = `SELECT pg_advisory_unlock(hashtextextended(current_schema() || '.message-search-index', 0))`
 	if _, err := conn.ExecContext(ctx, lock); err != nil {
@@ -39,14 +60,18 @@ func (a *Adapter) ensureMessageSearchIndex() error {
 		// one present throughout history immediately after the initial build.
 		_, err = conn.ExecContext(ctx, `ANALYZE messages`)
 	}
+	if err == nil {
+		a.messageSearchIndexReady.Store(true)
+	}
 	return err
 }
+
+const createMessageSearchExtension = `CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;`
 
 // Version the immutable document function: changing its output requires rebuilding
 // the expression index. It is a prefilter; the search query still enforces block
 // validity, individual field matching, sender visibility, and topic permissions.
 const createMessageSearchDocument = `
-CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
 CREATE OR REPLACE FUNCTION message_search_document_v1(kind text, body text, blocks jsonb)
 RETURNS text LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE

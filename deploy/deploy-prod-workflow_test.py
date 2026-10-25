@@ -1,6 +1,7 @@
 import re
 import importlib.util
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -148,6 +149,54 @@ class DeployProdWorkflowTest(unittest.TestCase):
         self.assertTrue(exec_lines, "expected the deploy to exec in a container")
         for line in exec_lines:
             self.assertRegex(line, r"<\s*/dev/null\s*$")
+
+    def run_mock_rollout(self, health_ready=True, exec_status=0):
+        script = (ROOT / "deploy/prod/remote-deploy.sh").read_text(encoding="utf-8")
+        functions = script.split('if [ -z "$revision" ]; then', 1)[0]
+        rollout = 'cd "$compose_dir"' + script.split('cd "$compose_dir"', 1)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "compose").mkdir()
+            (root / "env").mkdir()
+            (root / "env/prod.env").write_text("", encoding="utf-8")
+            mocks = r'''
+compose() {
+  shift 4
+  echo "compose $*" >&2
+  case "$1" in
+    exec) return "$MOCK_EXEC_STATUS" ;;
+    logs) echo "server startup diagnostic" >&2 ;;
+    ps) echo '"Health":"healthy"' ;;
+  esac
+}
+curl() { echo "api health probe" >&2; return "$MOCK_HEALTH_STATUS"; }
+sleep() { :; }
+'''
+            result = subprocess.run(
+                ["bash", "-c", functions + mocks + rollout, "rollout-test", str(root), "revision"],
+                env={**os.environ, "SKIP_IMAGE_PULL": "1", "MOCK_EXEC_STATUS": str(exec_status),
+                     "MOCK_HEALTH_STATUS": "0" if health_ready else "1"},
+                capture_output=True, text=True, timeout=10,
+            )
+            return result
+
+    def test_rollout_waits_for_api_before_entering_server(self):
+        result = self.run_mock_rollout()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(result.stderr.index("api health probe"), result.stderr.index("compose exec"))
+        self.assertNotIn("server startup diagnostic", result.stderr)
+
+    def test_rollout_preserves_exec_failure_and_captures_server_logs(self):
+        result = self.run_mock_rollout(exec_status=127)
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertIn("capturing container logs before rollback", result.stderr)
+        self.assertIn("server startup diagnostic", result.stderr)
+
+    def test_unready_server_is_not_entered_and_its_logs_are_captured(self):
+        result = self.run_mock_rollout(health_ready=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("compose exec", result.stderr)
+        self.assertIn("server startup diagnostic", result.stderr)
 
     def test_prod_deploy_does_not_recreate_web_after_api_recreation(self):
         # The web nginx config resolves the API container per request through
