@@ -659,7 +659,7 @@ export const api = {
       'GET',
       `/api/messages/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(searchType)}`,
       undefined,
-      options,
+      { timeoutMs: 10_000, ...options },
     ),
   getConversations: () => request('GET', '/api/conversations'),
   forkConversation: (payload, options = {}) => request('POST', '/api/conversations/fork', payload, options),

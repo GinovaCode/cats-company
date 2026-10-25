@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -308,7 +309,7 @@ type MessageSearchResult struct {
 // MessageSearchStore is optional so narrow fake stores are not forced to implement search.
 // Implementations must apply topic read access in the same query that selects results.
 type MessageSearchStore interface {
-	SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*MessageSearchResult, error)
+	SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*MessageSearchResult, error)
 }
 
 // MessageAroundStore is optional support for locating an old message in topic history.
