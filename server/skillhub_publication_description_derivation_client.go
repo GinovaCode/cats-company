@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -36,6 +37,7 @@ type PublicationDescriptionDerivationClientConfig struct {
 	Enabled           bool
 	ReadEnabled       bool
 	ValidationEnabled bool
+	PlanEnabled       bool
 	URL               string
 	Issuer            string
 	Audience          string
@@ -48,6 +50,8 @@ type PublicationDescriptionDerivationClient struct {
 	enabled           bool
 	readEnabled       bool
 	validationEnabled bool
+	planEnabled       bool
+	planActive        atomic.Int32
 	endpoint          *url.URL
 	secret            string
 	issuer            string
@@ -85,7 +89,7 @@ func NewPublicationDescriptionDerivationClient(cfg PublicationDescriptionDerivat
 		return nil, ErrSkillHubPublicationDescriptionDerivationConfig
 	}
 	client.Timeout = cfg.Timeout
-	return &PublicationDescriptionDerivationClient{enabled: true, readEnabled: cfg.ReadEnabled, validationEnabled: cfg.ValidationEnabled, endpoint: endpoint, secret: cfg.PeerSecret, issuer: cfg.Issuer, audience: cfg.Audience, client: client}, nil
+	return &PublicationDescriptionDerivationClient{enabled: true, readEnabled: cfg.ReadEnabled, validationEnabled: cfg.ValidationEnabled, planEnabled: cfg.PlanEnabled, endpoint: endpoint, secret: cfg.PeerSecret, issuer: cfg.Issuer, audience: cfg.Audience, client: client}, nil
 }
 
 func NewPublicationDescriptionDerivationClientFromEnv() (*PublicationDescriptionDerivationClient, error) {
@@ -106,6 +110,7 @@ func NewPublicationDescriptionDerivationClientFromEnv() (*PublicationDescription
 		Enabled:           enabled,
 		ReadEnabled:       strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_READ_ENABLED")) == "1",
 		ValidationEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_VALIDATION_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_VALIDATION_ENABLED")) == "1",
+		PlanEnabled:       strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED")) == "1",
 		URL:               strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_URL")),
 		Issuer:            strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER")),
 		Audience:          strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE")),

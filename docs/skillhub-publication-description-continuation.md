@@ -49,6 +49,49 @@ consumer still needs current source/authority checks and a commit protocol bound
 to the derived candidate. The existing original rejected-candidate commit path
 must not be reused by substituting hashes or replacing its receipt.
 
+## Planning the independent repaired release
+
+`planConfirmedPublicationDescription` consumes this private handoff, validates
+its bytes and full checkpoint, and brackets `PlanRetainedCopy` with current
+transactional checkpoint reads and original Runtime source checks. The complete
+task/draft/application/acceptance must remain identical. Port-owned pointers
+cannot change the baseline or returned plan. This coordinator has only a
+read-only store interface and is not registered as a production action.
+
+The peer client requires the derivation configuration plus the separate
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED` switch (default false).
+It derives `/internal/plan` exclusively from the configured HTTPS origin, clears
+the cookie jar, refuses redirects, bounds request/response sizes and concurrent
+calls, and accepts only exact noncacheable JSON. Original upload receipt,
+application, complete derivation receipt, derived byte length, derived candidate
+hash, target structure and requested version-policy boolean must all match.
+Nested duplicates, null/missing fields, old-candidate targets and receipt
+substitution fail closed. Errors never include upstream private bodies/URLs.
+
+Cloud #55 retains one immutable independently reserved target, excluding the old
+original-candidate plan for the same task. A lost reply is recovered by asking
+for the same plan; neither side automatically retries a paid model call. The
+description's human confirmation does not implicitly authorize a new version:
+`confirmVersionPublish` is a distinct policy input, not human authorization.
+
+The returned private checkpoint/plan is still a point-in-time observation, not
+a durable CatsCo release intent, execution permit or publication success. No
+CatsCo row, round, original Skill, task state or budget is changed. The old
+commit path remains original-only. A subsequent step must durably bind the
+accepted application/report/target and obtain a distinct candidate-bound permit
+under current authority/source checks before publishing.
+
+The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
+Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing
+dependencies or any skipped case fail. It pairs actual Cloud intake, retention,
+bounded workers, PostgreSQL planner/reservation and verified HTTPS with this
+CatsCo client/coordinator. It covers reconstruction after a committed lost reply,
+one exact target/version, unchanged original bytes, no commits/old plans, source
+cancellation, publisher suspension and default-off rejection. CatsCo authority,
+accepted report and Runtime source remain synthetic, not dual-database or
+production/paid-model E2E evidence. The private Cloud repository hosts the pinned
+CI job so public CatsCo PRs receive no private-repository credential.
+
 ## Verification and remaining work
 
 Domain tests cover exact task/draft/application/report binding and earlier-round
