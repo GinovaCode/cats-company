@@ -97,15 +97,27 @@ AND (
   ))
 )
 AND (
-  ($2 <> 'artifact' AND m.msg_type = 'text'
-    AND (m.content_blocks IS NULL OR jsonb_typeof(m.content_blocks) = 'null'
-      OR (m.search_blocks_valid
-      AND NOT EXISTS (
-        SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS block
-        WHERE block->>'type' IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan')
+  ($2 <> 'artifact' AND m.msg_type = 'text' AND m.search_blocks_valid
+    AND (
+      EXISTS (
+        SELECT 1 FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END
+        ) AS block
+        WHERE block->>'type' IN ('text', 'assistant_text')
+          AND STRPOS(LOWER(COALESCE(NULLIF(block->>'text', ''), block->>'content', '')), LOWER($3)) > 0
+      )
+      OR (
+        STRPOS(LOWER(m.content), LOWER($3)) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END
+          ) AS block
+          WHERE block->>'type' IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan', 'debug')
+            OR (block->>'type' IN ('text', 'assistant_text')
+              AND COALESCE(NULLIF(block->>'text', ''), block->>'content', '') <> '')
+        )
       )
     ))
-    AND STRPOS(LOWER(m.content), LOWER($3)) > 0)
   OR
   ($2 <> 'message' AND (
     (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array'

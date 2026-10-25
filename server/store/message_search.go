@@ -84,11 +84,37 @@ func MessageSearchContentMatches(msgType, content, query string) bool {
 func messageSearchHasInternalBlocks(blocks []types.ContentBlock) bool {
 	for _, block := range blocks {
 		switch block.Type {
-		case "thinking", "tool_use", "tool_result", "runtime_plan":
+		case "thinking", "tool_use", "tool_result", "runtime_plan", "debug":
 			return true
 		}
 	}
 	return false
+}
+
+// messageSearchVisibleTexts follows the chat's text-block precedence. A mixed
+// Agent message may contain a readable answer alongside private runtime data;
+// only its text/assistant_text blocks may supply search matches or excerpts.
+func messageSearchVisibleTexts(msgType, content string, blocks []types.ContentBlock) []string {
+	if msgType != "text" {
+		return nil
+	}
+	var texts []string
+	for _, block := range blocks {
+		if block.Type != "text" && block.Type != "assistant_text" {
+			continue
+		}
+		text := block.Text
+		if text == "" {
+			text = block.Content
+		}
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	if len(texts) == 0 && !messageSearchHasInternalBlocks(blocks) && content != "" {
+		texts = append(texts, content)
+	}
+	return texts
 }
 
 func parseMessageSearchBlocks(raw []byte) ([]types.ContentBlock, bool) {
@@ -150,8 +176,14 @@ func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, search
 	if artifactName == "" && candidate.MessageType == "file" {
 		artifactName = LegacyMatchingArtifactName(candidate.Result.Content, query)
 	}
-	contentMatches := !messageSearchHasInternalBlocks(blocks) &&
-		MessageSearchContentMatches(candidate.MessageType, candidate.Result.Content, query)
+	texts := messageSearchVisibleTexts(candidate.MessageType, candidate.Result.Content, blocks)
+	contentMatches := false
+	for _, text := range texts {
+		if MessageSearchContentMatches(candidate.MessageType, text, query) {
+			contentMatches = true
+			break
+		}
+	}
 	if !ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
 		return nil, false
 	}
@@ -160,9 +192,11 @@ func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, search
 	if artifactName != "" && (searchType == MessageSearchArtifact || !contentMatches) {
 		result.ContentType = MessageSearchArtifact
 		result.ArtifactName = artifactName
+		result.Content = artifactName
 		result.Snippet = artifactName
 	} else {
 		result.ContentType = MessageSearchMessage
+		result.Content = strings.Join(texts, "\n")
 		result.Snippet = MessageSearchSnippet(result.Content, query)
 	}
 	return &result, true

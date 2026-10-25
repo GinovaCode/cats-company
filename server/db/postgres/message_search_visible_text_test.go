@@ -1,0 +1,115 @@
+package postgres
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/openchat/openchat/server/store"
+)
+
+func TestPostgresMessageSearchVisibleText(t *testing.T) {
+	dsn := os.Getenv("CATS_PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set CATS_PG_TEST_DSN for database integration")
+	}
+	db := &Adapter{}
+	if err := db.Open(dsn); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.db.SetMaxOpenConns(1)
+	// Connection-local tables exercise the production query without changing a schema.
+	for _, statement := range []string{
+		`CREATE TEMP TABLE users(id bigint PRIMARY KEY, account_type text, display_name text, username text)`,
+		`CREATE TEMP TABLE topics(id text PRIMARY KEY, type text, name text)`,
+		`CREATE TEMP TABLE messages(id bigint PRIMARY KEY, topic_id text, from_uid bigint, content text, msg_type text, created_at timestamptz DEFAULT now(), content_blocks jsonb)`,
+		`CREATE TEMP TABLE group_members(group_id bigint, user_id bigint)`,
+		`CREATE TEMP TABLE "groups"(id bigint PRIMARY KEY, name text, group_kind text)`,
+		`CREATE TEMP TABLE bot_config(user_id bigint, owner_id bigint)`,
+		`CREATE TEMP TABLE friends(from_user_id bigint, to_user_id bigint, status text)`,
+		`CREATE TEMP TABLE conversation_titles(user_id bigint, topic_id text, title text)`,
+		`INSERT INTO users VALUES (1,'human','Viewer','viewer'),(2,'bot','Agent','agent'),(3,'human','Outsider','outsider')`,
+		`INSERT INTO topics VALUES ('grp_1','group','Visible'),('grp_2','group','Private')`,
+		`INSERT INTO group_members VALUES(1,1),(2,3)`,
+		`INSERT INTO "groups" VALUES(1,'Visible','standard'),(2,'Private','standard')`,
+	} {
+		if _, err := db.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtures := []struct{ content, blocks string }{
+		{"部署成功", `null`},
+		{"", `[{"type":"text","text":"部署成功 UPPERCASE"}]`},
+		{"private legacy body", `[{"type":"thinking","thinking":"private reasoning"},{"type":"assistant_text","text":"部署成功"}]`},
+		{"private legacy body", `[{"type":"tool_result","content":"private output"},{"type":"text","content":"部署成功"}]`},
+		{"private legacy body", `[{"type":"text","text":"第一段"},{"type":"assistant_text","text":"部署成功"}]`},
+		{"", `[{"type":"text","text":"` + strings.Repeat("前", 2200) + `部署成功"}]`},
+		{"部署成功", `[{"type":"text","text":""}]`},
+		{"部署成功", `[{"type":"text","text":"unrelated visible answer"}]`},
+		{"部署成功", `[{"type":"debug","content":"部署成功"}]`},
+		{"部署成功", `[{"type":"thinking","thinking":"部署成功"}]`},
+		{"部署成功", `{"type":"text"}`},
+		{"部署成功", `[{"type":"text","text":" ","content":"部署成功"}]`},
+	}
+	for i, fixture := range fixtures {
+		if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type,content_blocks) VALUES ($1,'grp_1',2,$2,'text',$3::jsonb)`, i+1, fixture.content, fixture.blocks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type) VALUES (20,'grp_2',3,'部署成功','text')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{store.MessageSearchAll, store.MessageSearchMessage} {
+		t.Run(scope, func(t *testing.T) {
+			results, err := db.SearchMessages(1, "部署", scope, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []int64
+			for _, r := range results {
+				ids = append(ids, r.MessageID)
+				if strings.Contains(r.Content, "private") || strings.Contains(r.Snippet, "private") || !strings.Contains(r.Snippet, "部署") {
+					t.Fatalf("unsafe or missing excerpt: %+v", r)
+				}
+			}
+			if fmt.Sprint(ids) != "[7 6 5 4 3 2 1]" {
+				t.Fatalf("visible result IDs=%v", ids)
+			}
+		})
+	}
+	for _, query := range []string{"private", "reasoning", "output"} {
+		results, err := db.SearchMessages(1, query, store.MessageSearchAll, 100)
+		if err != nil || len(results) != 0 {
+			t.Fatalf("private query %q: results=%+v err=%v", query, results, err)
+		}
+	}
+	results, err := db.SearchMessages(1, "uppercase", store.MessageSearchMessage, 100)
+	if err != nil || len(results) != 1 || results[0].MessageID != 2 {
+		t.Fatalf("case-insensitive block search results=%+v err=%v", results, err)
+	}
+	results, err = db.SearchMessages(1, "部署", store.MessageSearchArtifact, 100)
+	if err != nil || len(results) != 0 {
+		t.Fatalf("artifact scope results=%+v err=%v", results, err)
+	}
+	if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type,content_blocks)
+ VALUES (30,'grp_1',2,'private legacy body','text','[{"type":"tool_result","content":"private output"},{"type":"file","name":"Visible Report.pdf"}]'::jsonb)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{store.MessageSearchAll, store.MessageSearchArtifact} {
+		results, err := db.SearchMessages(1, "report", scope, 100)
+		if err != nil || len(results) != 1 || results[0].Content != "Visible Report.pdf" || results[0].Snippet != "Visible Report.pdf" {
+			t.Fatalf("artifact response results=%+v err=%v", results, err)
+		}
+	}
+	// False matches in a stale legacy body must not consume the 2,000-row budget.
+	if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type,content_blocks)
+ SELECT 100+n,'grp_1',2,'部署成功','text','[{"type":"text","text":"unrelated visible answer"}]'::jsonb FROM generate_series(1,2100) AS n`); err != nil {
+		t.Fatal(err)
+	}
+	results, err = db.SearchMessages(1, "部署", store.MessageSearchMessage, 20)
+	if err != nil || len(results) != 7 {
+		t.Fatalf("valid older hits were crowded out: count=%d err=%v", len(results), err)
+	}
+}
