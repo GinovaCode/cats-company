@@ -16,18 +16,16 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set CATS_PG_TEST_DSN for database integration")
 	}
-	db := &Adapter{}
-	if err := db.Open(dsn); err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := messageSearchSchemaTestAdapter(t, dsn)
 	db.db.SetMaxOpenConns(1)
-	// Connection-local tables exercise the production query without changing a schema.
+	// Private-schema tables exercise the production query and expression index.
 	for _, statement := range []string{
 		`CREATE TEMP TABLE users(id bigint PRIMARY KEY, account_type text, display_name text, username text)`,
 		`CREATE TEMP TABLE topics(id text PRIMARY KEY, type text, name text)`,
 		`CREATE TEMP TABLE messages(id bigint PRIMARY KEY, topic_id text, from_uid bigint, content text, msg_type text, created_at timestamptz DEFAULT now(), content_blocks jsonb)`,
 		`CREATE INDEX ON messages(topic_id,created_at)`,
+		createMessageSearchDocument,
+		createMessageSearchIndex,
 		`CREATE TEMP TABLE group_members(group_id bigint, user_id bigint)`,
 		`CREATE TEMP TABLE "groups"(id bigint PRIMARY KEY, name text, group_kind text)`,
 		`CREATE TEMP TABLE bot_config(user_id bigint, owner_id bigint)`,
@@ -38,6 +36,7 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 		`INSERT INTO group_members VALUES(1,1),(2,3)`,
 		`INSERT INTO "groups" VALUES(1,'Visible','standard'),(2,'Private','standard')`,
 	} {
+		statement = strings.Replace(statement, "CREATE TEMP TABLE", "CREATE TABLE", 1)
 		if _, err := db.db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
@@ -218,4 +217,7 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 	if err != nil || len(results) != 7 {
 		t.Fatalf("search with 50,000 users and 2,000 empty histories: count=%d err=%v", len(results), err)
 	}
+	t.Run("indexed selective candidates and literal patterns", func(t *testing.T) {
+		testPostgresMessageSearchIndexedCandidates(t, db)
+	})
 }
