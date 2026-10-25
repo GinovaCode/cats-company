@@ -75,7 +75,7 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 	query = strings.Replace(query, "JOIN topics t", "JOIN search_group_topics t", 1)
 	searchAs := func(viewerUID int64, needle, scope string, limit int) ([]*store.MessageSearchResult, error) {
 		return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-			rows, err := db.db.Query(query, scope, needle, viewerUID, pageSize, offset)
+			rows, err := db.db.Query(query, scope, needle, viewerUID, pageSize+offset, pageSize, offset)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -179,4 +179,86 @@ func TestMySQLMessageSearchVisibleText(t *testing.T) {
 			t.Fatalf("viewer %d: ids=%v want %s", tc.uid, ids, tc.ids)
 		}
 	}
+	t.Run("legacy filenames remain decoded and scoped", func(t *testing.T) {
+		for i, content := range []string{
+			`{"filename":"Old-Report.pdf"}`,
+			`"{\"filename\":\"Escaped Old-Report.pdf\"}"`,
+			`{"payload":{"filename":"Escaped \u004fld-Report.pdf"}}`,
+			`not-json`, `"not-json"`, `null`, `{"filename":12345}`,
+		} {
+			if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type) VALUES (?,'grp_1',2,?,'file')`, 5000+i, content); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, scope := range []string{store.MessageSearchAll, store.MessageSearchArtifact} {
+			results, err := search("old-report", scope, 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []int64
+			for _, result := range results {
+				ids = append(ids, result.MessageID)
+			}
+			if fmt.Sprint(ids) != "[5002 5001 5000]" {
+				t.Fatalf("legacy scope=%s ids=%v", scope, ids)
+			}
+		}
+	})
+	t.Run("per-topic limits preserve global pages and timestamp ties", func(t *testing.T) {
+		if _, err := db.db.Exec(`INSERT INTO search_sender VALUES (7,'service','Hidden','hidden')`); err != nil {
+			t.Fatal(err)
+		}
+		var values []string
+		var args []interface{}
+		topics := []string{"grp_1", "p2p_1_4", "p2p_1_6"}
+		for n := 1; n <= 600; n++ {
+			values = append(values, "(?,?,2,'rankprobe','text',?,'[{\"type\":\"file\",\"name\":\"rankprobe.pdf\"}]')")
+			args = append(args, 3000+n, topics[n%3], fmt.Sprintf("2030-01-01 00:00:%02d", (n*17)%37))
+		}
+		for n := 1; n <= 60; n++ {
+			values = append(values, "(?,'grp_1',7,'rankprobe','text','2031-01-01','[{\"type\":\"file\",\"name\":\"rankprobe.pdf\"}]')")
+			args = append(args, 4000+n)
+		}
+		if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type,created_at,content_blocks) VALUES `+strings.Join(values, ","), args...); err != nil {
+			t.Fatal(err)
+		}
+		for _, scope := range []string{store.MessageSearchAll, store.MessageSearchMessage, store.MessageSearchArtifact} {
+			for _, offset := range []int{0, 7, 97, 597, 607} {
+				wantRows, err := db.db.Query(`SELECT m.id FROM messages m JOIN search_sender sender ON sender.id=m.from_uid
+ WHERE m.content='rankprobe' AND sender.account_type IN ('human','bot')
+ ORDER BY m.created_at DESC,m.id DESC LIMIT 7 OFFSET ?`, offset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var want []int64
+				for wantRows.Next() {
+					var id int64
+					if err := wantRows.Scan(&id); err != nil {
+						t.Fatal(err)
+					}
+					want = append(want, id)
+				}
+				if err := wantRows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				wantRows.Close()
+				rows, err := db.db.Query(query, scope, "rankprobe", 1, 7+offset, 7, offset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				page, _, err := scanMySQLMessageSearch(rows, "rankprobe", scope, 7)
+				rows.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got []int64
+				for _, result := range page {
+					got = append(got, result.MessageID)
+				}
+				if fmt.Sprint(got) != fmt.Sprint(want) {
+					t.Fatalf("scope=%s offset=%d: ids=%v want %v", scope, offset, got, want)
+				}
+			}
+		}
+	})
 }

@@ -149,6 +149,58 @@ func TestPostgresMessageSearchVisibleText(t *testing.T) {
 			t.Fatalf("viewer %d: ids=%v want %s", tc.uid, ids, tc.ids)
 		}
 	}
+	t.Run("per-topic limits preserve global pages and timestamp ties", func(t *testing.T) {
+		if _, err := db.db.Exec(`INSERT INTO users VALUES (7,'service','Hidden','hidden')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(`INSERT INTO messages (id,topic_id,from_uid,content,msg_type,created_at,content_blocks)
+ SELECT 3000+n, CASE n%3 WHEN 0 THEN 'grp_1' WHEN 1 THEN 'p2p_1_4' ELSE 'p2p_1_6' END,
+ 2,'rankprobe','text',TIMESTAMPTZ '2030-01-01' + ((n*17)%37)*INTERVAL '1 second',
+ '[{"type":"file","name":"rankprobe.pdf"}]'::jsonb FROM generate_series(1,600)n
+ UNION ALL
+ SELECT 4000+n,'grp_1',7,'rankprobe','text',TIMESTAMPTZ '2031-01-01',
+ '[{"type":"file","name":"rankprobe.pdf"}]'::jsonb FROM generate_series(1,60)n`); err != nil {
+			t.Fatal(err)
+		}
+		for _, scope := range []string{store.MessageSearchAll, store.MessageSearchMessage, store.MessageSearchArtifact} {
+			for _, offset := range []int{0, 7, 97, 597, 607} {
+				wantRows, err := db.db.Query(`SELECT m.id FROM messages m JOIN users sender ON sender.id=m.from_uid
+ WHERE m.content='rankprobe' AND sender.account_type IN ('human','bot')
+ ORDER BY m.created_at DESC,m.id DESC LIMIT 7 OFFSET $1`, offset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var want []int64
+				for wantRows.Next() {
+					var id int64
+					if err := wantRows.Scan(&id); err != nil {
+						t.Fatal(err)
+					}
+					want = append(want, id)
+				}
+				if err := wantRows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				wantRows.Close()
+				rows, err := db.db.Query(postgresMessageSearchQuery, 1, scope, "rankprobe", 7, offset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				page, _, err := scanPostgresMessageSearch(rows, "rankprobe", scope, 7)
+				rows.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got []int64
+				for _, result := range page {
+					got = append(got, result.MessageID)
+				}
+				if fmt.Sprint(got) != fmt.Sprint(want) {
+					t.Fatalf("scope=%s offset=%d: ids=%v want %v", scope, offset, got, want)
+				}
+			}
+		}
+	})
 	// Scale the user/topic relation independently of the number of actual hits.
 	// The former computed LEFT JOIN compared every topic against every user.
 	for _, statement := range []string{

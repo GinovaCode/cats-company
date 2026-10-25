@@ -10,10 +10,11 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-// Materialize readable topics once, then retain the lateral boundary (OFFSET 0)
-// so message JSON predicates run after each topic's indexed history lookup.
-// Joining every message to users through a computed P2P id causes a large
-// nested-loop join and lets unrelated histories dominate a global search.
+// Compute permissions once, then use ordered, bounded history lookups per topic.
+// The newest K global hits can only contain a topic's newest K hits; bounding each
+// topic before the final merge preserves ordering and avoids scanning every match.
+// Keep sender and content filters inside the lateral lookup, before its limit.
+// CASE defers full block-schema validation until the visible fields match.
 const postgresMessageSearchQuery = `
 WITH readable_topics AS MATERIALIZED (
   SELECT t.id, COALESCE(g.name, t.name, '') AS topic_name
@@ -38,7 +39,7 @@ WITH readable_topics AS MATERIALIZED (
     )
   )
 ), normalized_messages AS (
-  SELECT messages.*, readable.topic_name,
+  SELECT messages.*,
          CASE
            WHEN msg_type <> 'file' OR NOT pg_input_is_valid(content, 'jsonb') THEN '{}'::jsonb
            WHEN jsonb_typeof(content::jsonb) = 'string'
@@ -93,19 +94,20 @@ WITH readable_topics AS MATERIALIZED (
                )
            )
          END AS search_blocks_valid
-  FROM readable_topics readable
-  CROSS JOIN LATERAL (
-    SELECT * FROM messages WHERE topic_id = readable.id OFFSET 0
-  ) messages
+  FROM messages
 )
-SELECT m.id, m.topic_id, m.topic_name,
-       m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
+SELECT m.id, m.topic_id, readable.topic_name,
+       m.from_uid, m.sender_name, m.content, m.msg_type, m.created_at, m.content_blocks
+FROM readable_topics readable
+CROSS JOIN LATERAL (
+SELECT m.id, m.topic_id,
+       m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, '') AS sender_name,
        m.content, m.msg_type, m.created_at, m.content_blocks
 FROM normalized_messages m
 JOIN users sender ON sender.id = m.from_uid
-WHERE sender.account_type IN ('human', 'bot')
-AND (
-  ($2 <> 'artifact' AND m.msg_type = 'text' AND m.search_blocks_valid
+WHERE m.topic_id = readable.id AND sender.account_type IN ('human', 'bot')
+AND CASE WHEN (
+  ($2 <> 'artifact' AND m.msg_type = 'text'
     AND (
       EXISTS (
         SELECT 1 FROM jsonb_array_elements(
@@ -129,8 +131,10 @@ AND (
   OR
   ($2 <> 'message' AND (
     (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array'
-      AND m.search_blocks_valid AND EXISTS (
-      SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS artifact
+      AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END
+      ) AS artifact
       WHERE artifact->>'type' IN ('file', 'image', 'audio', 'video')
         AND (
           STRPOS(LOWER(COALESCE(artifact->>'name', '')), LOWER($3)) > 0
@@ -159,7 +163,10 @@ AND (
           AND STRPOS(LOWER(legacy_file.content->>'title'), LOWER($3)) > 0)
     ))
   ))
-)
+) THEN m.search_blocks_valid ELSE FALSE END
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT ($4::int + $5::int)
+) m
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT $4 OFFSET $5`
 

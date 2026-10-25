@@ -15,7 +15,7 @@ func TestMessageSearchCancelsDatabaseWork(t *testing.T) {
 	}
 	defer db.Close()
 	mock.ExpectQuery("WITH search_params").
-		WithArgs("all", "course2md", int64(1), 200, 0).
+		WithArgs("all", "course2md", int64(1), 200, 200, 0).
 		WillDelayFor(time.Second).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)

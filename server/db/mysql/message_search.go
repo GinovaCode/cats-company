@@ -9,8 +9,14 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-// UNION ALL materializes readable topics once; STRAIGHT_JOIN keeps that small
-// relation ahead of message history so JSON predicates stay permission-scoped.
+// UNION ALL computes permissions once. The lateral lookup keeps only each
+// topic's newest pageSize+offset hits before globally merging the same window.
+// Sender and content filters must run before the per-topic limit. CASE keeps
+// full block-schema validation off the path for messages with no visible match.
+// Keep validation in WHERE and use indexed sender lookups: a projected subquery
+// or hash join would materialize full histories before the ordered limit. The
+// constant topic_id also appears in the inner ORDER BY so MySQL can reverse-scan
+// the existing (topic_id, created_at) index with its implicit primary-key suffix.
 const mysqlMessageSearchQuery = `
 WITH search_params AS (
   SELECT ? AS search_type, LOWER(?) AS needle, ? AS viewer_uid
@@ -39,65 +45,20 @@ readable_topics AS (
       WHERE f.from_user_id = viewer.id AND f.to_user_id = peer.id AND f.status = 'accepted'
     )
   )
-),
-normalized_messages AS (
-  SELECT messages.*, readable.topic_name,
-         CASE
-           WHEN msg_type <> 'file' OR NOT JSON_VALID(content) THEN JSON_OBJECT()
-           WHEN JSON_TYPE(content) = 'STRING' AND JSON_VALID(JSON_UNQUOTE(content))
-             THEN JSON_UNQUOTE(content)
-           ELSE content
-         END AS search_legacy_content,
-         CASE
-           WHEN content_blocks IS NULL THEN TRUE
-           ELSE JSON_SCHEMA_VALID(
-             '{"type":["array","null"],"items":{"type":["object","null"],"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
-             content_blocks
-           )
-           AND NOT EXISTS (
-             SELECT 1
-             FROM JSON_TABLE(
-               content_blocks,
-               '$[*]' COLUMNS (block_index FOR ORDINALITY)
-             ) AS typed_block
-             JOIN JSON_TABLE(
-               JSON_KEYS(JSON_EXTRACT(
-                 content_blocks,
-                 CONCAT('$[', typed_block.block_index - 1, ']')
-               )),
-               '$[*]' COLUMNS (block_key VARCHAR(64) PATH '$')
-             ) AS typed_key
-             WHERE BINARY LOWER(typed_key.block_key) IN (
-               'type', 'text', 'thinking', 'payload', 'id',
-               'name', 'input', 'tool_use_id', 'content', 'is_error'
-             )
-             AND BINARY typed_key.block_key NOT IN (
-               'type', 'text', 'thinking', 'payload', 'id',
-               'name', 'input', 'tool_use_id', 'content', 'is_error'
-             )
-           )
-         END AS search_blocks_valid
-  FROM readable_topics readable
-  STRAIGHT_JOIN messages ON messages.topic_id = readable.id
-),
-searchable_messages AS (
-  SELECT normalized_messages.*,
-         CASE
-           WHEN JSON_TYPE(JSON_EXTRACT(search_legacy_content, '$.payload')) = 'OBJECT'
-             THEN JSON_EXTRACT(search_legacy_content, '$.payload')
-           ELSE search_legacy_content
-         END AS search_legacy_fields
-  FROM normalized_messages
 )
-SELECT m.id, m.topic_id, m.topic_name,
-       m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
-       m.content, m.msg_type, m.created_at, m.content_blocks
-FROM searchable_messages m
+SELECT m.id, m.topic_id, readable.topic_name,
+       m.from_uid, m.sender_name, m.content, m.msg_type, m.created_at, m.content_blocks
+FROM readable_topics readable
 CROSS JOIN search_params search
-JOIN users sender ON sender.id = m.from_uid
-WHERE sender.account_type IN ('human', 'bot')
-AND (
-  (search.search_type <> 'artifact' AND m.msg_type = 'text' AND m.search_blocks_valid
+JOIN LATERAL (
+SELECT /*+ NO_BNL(sender) */ m.id, m.topic_id,
+       m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, '') AS sender_name,
+       m.content, m.msg_type, m.created_at, m.content_blocks
+FROM messages m
+STRAIGHT_JOIN users sender ON sender.id = m.from_uid
+WHERE m.topic_id = readable.id AND sender.account_type IN ('human', 'bot')
+AND CASE WHEN (
+  (search.search_type <> 'artifact' AND m.msg_type = 'text'
     AND (
       EXISTS (
         SELECT 1 FROM JSON_TABLE(
@@ -135,7 +96,7 @@ AND (
   OR
   (search.search_type <> 'message' AND (
     (m.content_blocks IS NOT NULL AND JSON_TYPE(m.content_blocks) = 'ARRAY'
-      AND m.search_blocks_valid AND EXISTS (
+      AND EXISTS (
       SELECT 1
       FROM JSON_TABLE(
         COALESCE(m.content_blocks, JSON_ARRAY()),
@@ -159,33 +120,79 @@ AND (
     ))
     OR (m.msg_type = 'file' AND EXISTS (
       SELECT 1
-      FROM JSON_TABLE(
-        JSON_EXTRACT(m.search_legacy_fields, '$'),
+      FROM LATERAL (
+        SELECT CASE
+          WHEN NOT JSON_VALID(m.content) THEN JSON_OBJECT()
+          WHEN JSON_TYPE(m.content) = 'STRING' AND JSON_VALID(JSON_UNQUOTE(m.content))
+            THEN JSON_UNQUOTE(m.content)
+          ELSE m.content
+        END AS content
+      ) AS legacy_content
+      JOIN LATERAL (
+        SELECT CASE
+          WHEN JSON_TYPE(JSON_EXTRACT(legacy_content.content, '$.payload')) = 'OBJECT'
+            THEN JSON_EXTRACT(legacy_content.content, '$.payload')
+          ELSE legacy_content.content
+        END AS fields
+      ) AS legacy ON TRUE
+      JOIN JSON_TABLE(
+        JSON_EXTRACT(legacy.fields, '$'),
         '$' COLUMNS (
           name VARCHAR(2048) PATH '$.name',
           file_name VARCHAR(2048) PATH '$.file_name',
           filename VARCHAR(2048) PATH '$.filename',
           title VARCHAR(2048) PATH '$.title'
         )
-      ) AS legacy_file
-      WHERE (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.name')) = 'STRING'
+      ) AS legacy_file ON TRUE
+      WHERE (JSON_TYPE(JSON_EXTRACT(legacy.fields, '$.name')) = 'STRING'
           AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.name, ''))) > 0)
-        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.file_name')) = 'STRING'
+        OR (JSON_TYPE(JSON_EXTRACT(legacy.fields, '$.file_name')) = 'STRING'
           AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.file_name, ''))) > 0)
-        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.filename')) = 'STRING'
+        OR (JSON_TYPE(JSON_EXTRACT(legacy.fields, '$.filename')) = 'STRING'
           AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.filename, ''))) > 0)
-        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.title')) = 'STRING'
+        OR (JSON_TYPE(JSON_EXTRACT(legacy.fields, '$.title')) = 'STRING'
           AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.title, ''))) > 0)
     ))
   ))
-)
+) THEN CASE
+  WHEN m.content_blocks IS NULL THEN TRUE
+  ELSE JSON_SCHEMA_VALID(
+    '{"type":["array","null"],"items":{"type":["object","null"],"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
+    m.content_blocks
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM JSON_TABLE(
+      m.content_blocks,
+      '$[*]' COLUMNS (block_index FOR ORDINALITY)
+    ) AS typed_block
+    JOIN JSON_TABLE(
+      JSON_KEYS(JSON_EXTRACT(
+        m.content_blocks,
+        CONCAT('$[', typed_block.block_index - 1, ']')
+      )),
+      '$[*]' COLUMNS (block_key VARCHAR(64) PATH '$')
+    ) AS typed_key
+    WHERE BINARY LOWER(typed_key.block_key) IN (
+      'type', 'text', 'thinking', 'payload', 'id',
+      'name', 'input', 'tool_use_id', 'content', 'is_error'
+    )
+    AND BINARY typed_key.block_key NOT IN (
+      'type', 'text', 'thinking', 'payload', 'id',
+      'name', 'input', 'tool_use_id', 'content', 'is_error'
+    )
+  )
+END ELSE FALSE END
+ORDER BY m.topic_id DESC, m.created_at DESC, m.id DESC
+LIMIT ?
+) m ON TRUE
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT ? OFFSET ?`
 
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
 func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
 	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.QueryContext(ctx, mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize, offset)
+		rows, err := a.db.QueryContext(ctx, mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize+offset, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
