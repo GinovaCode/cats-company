@@ -129,4 +129,5 @@ func verifyHumanDescriptionConfirmationPostgres(t *testing.T, db *postgres.Adapt
 		t.Fatal("confirmation changed receipt or published", err)
 	}
 	t.Log("real JWT/HTTPS/PostgreSQL description confirmation: exact text, wrong key rejected, committed response loss, reconstructed-handler GET/POST recovery, same one-round waiting checkpoint; synthetic model draft/report, no model/file mutation or publication")
+	verifyDescriptionContinuationPostgres(t, db, in, actor)
 }

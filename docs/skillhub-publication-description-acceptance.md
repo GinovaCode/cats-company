@@ -49,8 +49,11 @@ There is no production route, RPC, model tool, worker, executor registration or
 new feature switch. The store interface and coordinator are internal trusted
 components. Browser/model-supplied reports are never accepted through a handler.
 
-The remaining M3 work includes consuming this checkpoint in controlled
-continuation, private candidate ancestry and later-round derivation, uncertain
+The internal [continuation coordinator](skillhub-publication-description-continuation.md)
+now consumes this checkpoint together with authoritative task/draft records and
+verified retained bytes, without rewriting the round or issuing a commit permit.
+The remaining M3 work includes derived-candidate release/commit, production
+continuation wiring, private candidate ancestry and later-round derivation, uncertain
 paid-call reconciliation, and both publishing entry points. Chinese presentation
 content and author images remain later work.
 
