@@ -811,6 +811,22 @@ export function createGatewayAnnotationHost({
     return postToFrame(nextBinding, hostConnectMessage());
   }
 
+  // Re-post the handshake that is already open, without minting anything new.
+  //
+  // The SDK listens for `connect` from its own document, so a message posted
+  // before that document's listener exists is dropped with no error anywhere —
+  // which is why a single attempt left the channel permanently closed. Posting
+  // the SAME session/request pair again is safe: the SDK treats an unchanged
+  // pair as the same handshake (no state reset) and answers `ready` again. A
+  // second `connect()` would instead mint a new token and revoke the live
+  // session, so retries must go through this function.
+  function retransmit() {
+    if (state.disposed || !state.session) return false;
+    if (state.readyNotified) return true;
+    if (!revalidateBinding()) return false;
+    return postToFrame(state.session.binding, hostConnectMessage());
+  }
+
   function setMode(mode) {
     if (state.disposed) return false;
     if (!SUPPORTED_MODES.includes(mode)) return false;
@@ -829,6 +845,7 @@ export function createGatewayAnnotationHost({
 
   const host = {
     connect,
+    retransmit,
     setMode,
     handleWindowMessage,
     captureScreenshot,
