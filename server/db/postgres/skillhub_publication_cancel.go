@@ -26,6 +26,13 @@ func (a *Adapter) CancelSkillHubPublicationEntry(ctx context.Context, actorUID i
 	if err != nil {
 		return nil, err
 	}
+	var releaseStarted bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM skillhub_publication_description_release_permits WHERE entry_id=$1)`, id).Scan(&releaseStarted); err != nil {
+		return nil, err
+	}
+	if releaseStarted {
+		return nil, store.ErrSkillHubPublicationConflict
+	}
 	switch e.State {
 	case "waiting_runtime":
 		var linked bool

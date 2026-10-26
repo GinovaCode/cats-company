@@ -6,9 +6,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var publicationDescriptionReleasePermitID = regexp.MustCompile(`^pubdescpermit_[a-f0-9]{32}$`)
+
+func ValidSkillHubPublicationDescriptionApplicationID(id string) bool {
+	return strings.HasPrefix(id, "pubdesc_") && len(id) == len("pubdesc_")+64 &&
+		publicationSHA256.MatchString(strings.TrimPrefix(id, "pubdesc_"))
+}
 
 // A separate human-confirmed intent for the exact derived candidate target.
 // It is durable evidence only: it is not a commit permit and cannot publish.
@@ -20,6 +28,23 @@ type SkillHubPublicationDescriptionReleaseIntent struct {
 	Target                 SkillHubPublicationCommitTarget
 	IdentityHash           string
 	RequestedAt            time.Time
+}
+
+// A separately issued, exact authorization for Cloud to execute an already
+// confirmed derived target. It cannot authorize the legacy receipt target.
+type SkillHubPublicationDescriptionReleasePermit struct {
+	Intent       SkillHubPublicationDescriptionReleaseIntent
+	ID           string
+	AuthorizedAt time.Time
+}
+
+func (p SkillHubPublicationDescriptionReleasePermit) Validate() error {
+	if h, err := p.Intent.Digest(); err != nil || p.Intent.IdentityHash != h ||
+		!publicationDescriptionReleasePermitID.MatchString(p.ID) || p.AuthorizedAt.IsZero() ||
+		p.AuthorizedAt.Before(p.Intent.RequestedAt) {
+		return ErrSkillHubPublicationConflict
+	}
+	return nil
 }
 
 func (i SkillHubPublicationDescriptionReleaseIntent) ValidateFor(c SkillHubPublicationDescriptionContinuation) error {
@@ -37,8 +62,7 @@ func (i SkillHubPublicationDescriptionReleaseIntent) ValidateFor(c SkillHubPubli
 }
 
 func (i SkillHubPublicationDescriptionReleaseIntent) Digest() (string, error) {
-	if i.ActorUID <= 0 || !ValidSkillHubPublicationDeliveryEntryID(i.EntryID) ||
-		!(strings.HasPrefix(i.ApplicationID, "pubdesc_") && len(i.ApplicationID) == len("pubdesc_")+64 && publicationSHA256.MatchString(strings.TrimPrefix(i.ApplicationID, "pubdesc_"))) ||
+	if i.ActorUID <= 0 || !ValidSkillHubPublicationDeliveryEntryID(i.EntryID) || !ValidSkillHubPublicationDescriptionApplicationID(i.ApplicationID) ||
 		!publicationSHA256.MatchString(i.AcceptanceIdentityHash) || i.Target.Validate() != nil {
 		return "", ErrSkillHubPublicationInvalid
 	}
@@ -63,6 +87,10 @@ func (i SkillHubPublicationDescriptionReleaseIntent) Digest() (string, error) {
 type SkillHubPublicationDescriptionReleaseIntentStore interface {
 	RecordSkillHubPublicationDescriptionReleaseIntent(context.Context, int64, SkillHubPublicationDescriptionContinuation, SkillHubPublicationCommitTarget) (*SkillHubPublicationDescriptionReleaseIntent, error)
 	GetSkillHubPublicationDescriptionReleaseIntent(context.Context, int64, string) (*SkillHubPublicationDescriptionReleaseIntent, error)
+}
+
+type SkillHubPublicationDescriptionReleasePermitStore interface {
+	AuthorizeSkillHubPublicationDescriptionRelease(context.Context, string, string, SkillHubPublicationCommitTarget) (*SkillHubPublicationDescriptionReleasePermit, error)
 }
 
 func SameSkillHubPublicationDescriptionReleaseIntent(a, b SkillHubPublicationDescriptionReleaseIntent) bool {

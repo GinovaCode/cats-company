@@ -306,7 +306,7 @@ func TestPostgresSkillHubPublicationDescriptionCancellationRace(t *testing.T) {
 func TestPostgresSkillHubPublicationDescriptionMigrationLifecycle(t *testing.T) {
 	t.Parallel()
 	db, _, _, _, _, _ := repairBudgetFixture(t)
-	for _, q := range []string{descriptionReleaseIntentMigration(t, "down"), descriptionAcceptanceMigration(t, "down"), descriptionApplicationMigration(t, "down"), descriptionApplicationMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "up"), descriptionMigration(t, "up"), descriptionApplicationMigration(t, "up"), descriptionApplicationMigration(t, "up")} {
+	for _, q := range []string{descriptionReleasePermitMigration(t), descriptionReleaseIntentMigration(t, "down"), descriptionAcceptanceMigration(t, "down"), descriptionApplicationMigration(t, "down"), descriptionApplicationMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "down"), descriptionMigration(t, "up"), descriptionMigration(t, "up"), descriptionApplicationMigration(t, "up"), descriptionApplicationMigration(t, "up")} {
 		deliveryExec(t, db, q)
 	}
 	if err := db.CreateSchema(); err != nil {
