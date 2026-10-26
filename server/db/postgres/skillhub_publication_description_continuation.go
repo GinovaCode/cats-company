@@ -188,6 +188,7 @@ func (a *Adapter) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Con
 		FROM skillhub_publication_description_release_permits WHERE application_id=$1`, applicationID).
 		Scan(&permit.ID, &savedEntry, &savedHash, &permit.AuthorizedAt)
 	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
 		// Existing permits are immutable historical authorizations and may be
 		// replayed after local authority changes. Only new issuance rechecks it.
 		current, err := readSkillHubPublicationDescriptionContinuation(ctx, tx, actor, entryID)
