@@ -191,6 +191,21 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err != nil {
 		return nil, err
 	}
+	// Project placement lives in its own table, so a new topic starts outside
+	// every project. Without this the copy of a project conversation would drop
+	// into the general task list, which reads as if it had been "lost" from the
+	// project it was branched off. Inherit the actor's placement for the source;
+	// an unplaced source simply yields no row, which is the existing behaviour.
+	var projectID sql.NullInt64
+	err = tx.QueryRowContext(ctx, s.query("SELECT project_id FROM project_topics WHERE owner_uid = ? AND topic_id = ?"), req.ActorUserID, req.SourceTopicID).Scan(&projectID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if projectID.Valid {
+		if _, err = tx.ExecContext(ctx, s.query("INSERT INTO project_topics (owner_uid, topic_id, project_id) VALUES (?,?,?)"), req.ActorUserID, target, projectID.Int64); err != nil {
+			return nil, err
+		}
+	}
 	f := &types.SessionFork{ActorUserID: req.ActorUserID, AgentUID: req.AgentUID, RequestID: req.RequestID, SourceTopicID: req.SourceTopicID, TargetTopicID: target, Name: req.Name, BodyID: req.BodyID, SourceRevision: revision, State: "pending", CreatedAt: time.Now().UTC(), MessageIDMap: map[string]int64{}}
 	// The runtime cannot match cloud message IDs, so the copied range is
 	// described to it as a count of complete turns.

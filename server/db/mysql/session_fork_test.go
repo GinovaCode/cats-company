@@ -39,6 +39,7 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 			mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 			mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
 			mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"project_id"}))
 			copyExpectation := mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "file", "file", `[{"type":"file","payload":{"url":"/uploads/files/report.pdf"}}]`, "normal", "user", `{"custom":"keep"}`, stamp)
 			if failCopy {
 				copyExpectation.WillReturnError(errors.New("copy failure"))
@@ -91,6 +92,7 @@ func TestSessionForkMySQLCloneIsBoundedByAnchor(t *testing.T) {
 	mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"project_id"}))
 	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "first", "text", nil, "normal", "user", nil, stamp).WillReturnResult(sqlmock.NewResult(100, 1))
 	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(9), "first answer", "text", nil, "normal", "assistant", nil, stamp).WillReturnResult(sqlmock.NewResult(101, 1))
 	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, nil, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -106,6 +108,47 @@ func TestSessionForkMySQLCloneIsBoundedByAnchor(t *testing.T) {
 	// The recorded boundary is the anchor, so the runtime copies the same range.
 	if got.SourceLastSeq != 10 || len(got.MessageIDMap) != 2 || got.MessageIDMap["11"] != 0 {
 		t.Fatalf("bounded clone %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionForkMySQLCloneInheritsProjectPlacement(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	stamp := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT account_type FROM users").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"account_type"}).AddRow("human"))
+	mock.ExpectQuery("SELECT .* FROM session_forks WHERE actor_user_id").WithArgs(int64(7), "proj").WillReturnRows(sqlmock.NewRows(sessionForkColumns))
+	mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(3, ""))
+	mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
+	mock.ExpectQuery("SELECT .* FROM messages WHERE topic_id").WithArgs("p2p_7_9").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).
+			AddRow(9, 7, "asked", "text", nil, "normal", "user", nil, nil, stamp).
+			AddRow(10, 9, "answered", "text", nil, "normal", "assistant", nil, 9, stamp))
+	mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	// The source sits in project 42, so the copy must land there instead of the
+	// general task list the user would otherwise have to search.
+	mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(42))
+	mock.ExpectExec("INSERT INTO project_topics").WithArgs(int64(7), "grp_20", int64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "asked", "text", nil, "normal", "user", nil, stamp).WillReturnResult(sqlmock.NewResult(100, 1))
+	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(9), "answered", "text", nil, "normal", "assistant", nil, stamp).WillReturnResult(sqlmock.NewResult(101, 1))
+	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, nil, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(int64(100), nil, int64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT history_revision FROM topics").WithArgs("grp_20").WillReturnRows(sqlmock.NewRows([]string{"history_revision"}).AddRow(2))
+	mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "proj", "p2p_7_9", "grp_20", int64(9), "body", "", int64(3), int64(2), int64(10), `{"10":101,"9":100}`, "pending", "", sqlmock.AnyArg(), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE topics SET fork_state = 'pending'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "proj", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body"})
+	if err != nil || got.TargetTopicID != "grp_20" {
+		t.Fatalf("clone %#v %v", got, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
