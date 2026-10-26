@@ -20,17 +20,6 @@ func descriptionReleaseIntentMigration(t *testing.T, direction string) string {
 	return string(b)
 }
 
-func rollbackDescriptionReleaseIntentIfPresent(t *testing.T, db *Adapter) {
-	t.Helper()
-	var exists bool
-	if err := db.db.QueryRow(`SELECT to_regclass('skillhub_publication_description_release_intents') IS NOT NULL`).Scan(&exists); err != nil {
-		t.Fatal(err)
-	}
-	if exists {
-		deliveryExec(t, db, descriptionReleaseIntentMigration(t, "down"))
-	}
-}
-
 func TestSkillHubPublicationDescriptionReleaseIntentMigrationMatchesStartup(t *testing.T) {
 	b, err := os.ReadFile("../migrations/postgres/000060_skillhub_publication_description_release_intent.up.sql")
 	if err != nil {
@@ -39,6 +28,12 @@ func TestSkillHubPublicationDescriptionReleaseIntentMigrationMatchesStartup(t *t
 	if strings.Join(strings.Fields(string(b)), " ") != strings.Join(strings.Fields(createSkillHubPublicationDescriptionReleaseIntentTable), " ") {
 		t.Fatal("000060 differs from startup schema")
 	}
+}
+
+func TestSkillHubPublicationDescriptionReleaseIntentDownIsSafeWhenAbsent(t *testing.T) {
+	t.Parallel()
+	db, _ := publicationEmptyDatabase(t)
+	deliveryExec(t, db, descriptionReleaseIntentMigration(t, "down"))
 }
 
 func TestPostgresSkillHubPublicationDescriptionReleaseIntentPersistsExactTarget(t *testing.T) {
