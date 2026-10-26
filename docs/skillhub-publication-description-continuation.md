@@ -81,6 +81,25 @@ commit path remains original-only. A subsequent step must durably bind the
 accepted application/report/target and obtain a distinct candidate-bound permit
 under current authority/source checks before publishing.
 
+## Authorizing the retained derived release
+
+After a separate durable release intent has been confirmed by the actor, the
+internal authorize client sends only the original upload receipt and application
+identifier to Cloud. Cloud recovers or issues a permit for the exact retained
+derived target; it never creates a commit or publication job. CatsCo brackets the
+call with current continuation, intent, identity, target, source and cancellation
+checks. A permit is therefore an internal handoff, not permission to bypass the
+future derived commit worker. The response is strict wrapper-plus-proof JSON:
+the nested proof must match the application, intent digest, target and UTC
+authorization time. Replays are immutable and pointer-isolated. Unknown,
+cacheable, compressed, redirected, oversized, duplicated, null or mismatched
+responses fail closed; upstream unavailable errors do not become a new intent.
+
+The authorize client uses a separate default-off
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_AUTHORIZE_ENABLED` gate and
+shares a bounded service concurrency budget with planning. No production route,
+RPC, worker, model call or actual publication is wired by this slice.
+
 The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
 Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing
 dependencies or any skipped case fail. It pairs actual Cloud intake, retention,
