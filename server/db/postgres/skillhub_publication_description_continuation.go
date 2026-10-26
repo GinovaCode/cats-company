@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -194,7 +195,7 @@ func (a *Adapter) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Con
 			return nil, err
 		}
 		if intent.ValidateFor(*current) != nil {
-			return nil, store.ErrSkillHubPublicationConflict
+			return nil, fmt.Errorf("derived release intent no longer matches its accepted continuation: %w", store.ErrSkillHubPublicationConflict)
 		}
 		suffix, err := uploadRandomHex(16)
 		if err != nil {
@@ -208,8 +209,14 @@ func (a *Adapter) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Con
 		err = tx.QueryRowContext(ctx, `SELECT entry_id,intent_identity_hash,authorized_at FROM skillhub_publication_description_release_permits WHERE application_id=$1`, applicationID).
 			Scan(&savedEntry, &savedHash, &permit.AuthorizedAt)
 	}
-	if err != nil || savedEntry != entryID || savedHash != intent.IdentityHash || permit.Validate() != nil {
-		return nil, store.ErrSkillHubPublicationConflict
+	if err != nil {
+		return nil, err
+	}
+	if savedEntry != entryID || savedHash != intent.IdentityHash {
+		return nil, fmt.Errorf("derived release permit does not match its retained intent: %w", store.ErrSkillHubPublicationConflict)
+	}
+	if err := permit.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid derived release permit: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
