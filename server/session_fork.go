@@ -72,8 +72,11 @@ func (h *ConversationHandler) HandleFork(w http.ResponseWriter, r *http.Request)
 	// Lookup precedes online/source checks: a lost successful response stays successful.
 	existing, err := db.GetSessionFork(r.Context(), uid, req.RequestID, "")
 	if err == nil {
+		// Bidirectional, matching the store: a bounded retry must match the stored
+		// anchor, and an unbounded retry must not adopt a copy that was bounded.
 		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name ||
-			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) {
+			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) ||
+			(req.UntilMessageID == 0 && existing.SourceTurnCount > 0) {
 			writeSessionFork(w, nil, store.ErrSessionForkConflict)
 			return
 		}

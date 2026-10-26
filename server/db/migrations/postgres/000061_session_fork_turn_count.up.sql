@@ -1,0 +1,1 @@
+ALTER TABLE session_forks ADD COLUMN IF NOT EXISTS source_turn_count BIGINT NOT NULL DEFAULT 0;

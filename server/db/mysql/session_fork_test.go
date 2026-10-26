@@ -50,7 +50,7 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 				mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, `{"custom":"keep"}`, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(int64(100), nil, int64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectQuery("SELECT history_revision FROM topics").WithArgs("grp_20").WillReturnRows(sqlmock.NewRows([]string{"history_revision"}).AddRow(4))
-				mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "one", "p2p_7_9", "grp_20", int64(9), "body", "", int64(2), int64(4), int64(11), `{"10":100,"11":101}`, "pending", "", sqlmock.AnyArg(), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "one", "p2p_7_9", "grp_20", int64(9), "body", "", int64(2), int64(4), int64(11), `{"10":100,"11":101}`, "pending", "", sqlmock.AnyArg(), int64(0)).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE topics SET fork_state = 'pending'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectCommit()
 			}
@@ -143,7 +143,7 @@ func TestSessionForkMySQLCloneInheritsProjectPlacement(t *testing.T) {
 	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(nil, nil, int64(100)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE messages SET reply_to").WithArgs(int64(100), nil, int64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT history_revision FROM topics").WithArgs("grp_20").WillReturnRows(sqlmock.NewRows([]string{"history_revision"}).AddRow(2))
-	mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "proj", "p2p_7_9", "grp_20", int64(9), "body", "", int64(3), int64(2), int64(10), `{"10":101,"9":100}`, "pending", "", sqlmock.AnyArg(), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO session_forks").WithArgs(int64(7), "proj", "p2p_7_9", "grp_20", int64(9), "body", "", int64(3), int64(2), int64(10), `{"10":101,"9":100}`, "pending", "", sqlmock.AnyArg(), int64(0)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE topics SET fork_state = 'pending'").WithArgs("grp_20").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "proj", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body"})
@@ -315,19 +315,38 @@ func TestSessionForkMySQLExpiryCountsOnlyRowsItMoved(t *testing.T) {
 }
 
 func TestSessionForkMySQLMigrationMatchesStartup(t *testing.T) {
-	raw, err := os.ReadFile("../migrations/mysql/000041_session_forks.up.sql")
-	if err != nil {
-		t.Fatal(err)
+	// The startup schema runs on every boot and is the concatenation of the fork
+	// migrations; each numbered migration runs once. Comparing the pair keeps a
+	// new column from landing on one side only.
+	var combined strings.Builder
+	for _, name := range []string{"000041_session_forks", "000048_session_fork_turn_count"} {
+		raw, err := os.ReadFile("../migrations/mysql/" + name + ".up.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined.WriteString(string(raw))
+		combined.WriteString("\n")
 	}
 	for _, eol := range []string{"\n", "\r\n"} {
 		t.Run(fmt.Sprintf("EOL=%q", eol), func(t *testing.T) {
-			migration := strings.ReplaceAll(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n", eol)
+			migration := strings.ReplaceAll(strings.ReplaceAll(combined.String(), "\r\n", "\n"), "\n", eol)
 			for _, statement := range sessionForkSchema {
 				if !strings.Contains(strings.ReplaceAll(migration, "\r\n", "\n"), strings.ReplaceAll(statement, "\r\n", "\n")) {
 					t.Fatalf("startup statement absent from migration: %s", statement)
 				}
 			}
 		})
+	}
+}
+
+// A migration that cannot be rolled back is not a migration.
+func TestSessionForkTurnCountMigrationIsReversible(t *testing.T) {
+	down, err := os.ReadFile("../migrations/mysql/000048_session_fork_turn_count.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(down), "DROP COLUMN source_turn_count") {
+		t.Fatalf("down migration does not remove the column: %s", down)
 	}
 }
 

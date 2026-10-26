@@ -58,25 +58,33 @@ func scanFork(row interface{ Scan(...interface{}) error }) (*types.SessionFork, 
 // countCompleteTurns returns how many user turns in the range reached an
 // assistant reply before the next user message.
 //
-// A trailing user message with no answer yet is not counted: the runtime has the
-// same trailing turn in its transcript and would otherwise cut one turn further
-// than intended. A runtime must apply this identical rule, so the two sides
-// cannot silently disagree about where the copy ends.
-func countCompleteTurns(messages []message) int64 {
+// A turn opens on a message from the human participant, identified by sender
+// rather than by `role`. `role` is supplied by the client and production does
+// not write `role='user'` for human messages at all: the plain-text send path
+// stores only topic, sender, content and type, so a role-based rule counts zero
+// turns on real data. Callers must already have established that the only
+// senders are the actor and the agent, which CreateSessionFork checks.
+//
+// A trailing user message with no answer yet is not counted: the runtime holds
+// the same trailing turn and would otherwise cut one turn further than intended.
+// The runtime applies this identical state machine, so the two sides cannot
+// silently disagree about where the copy ends.
+func countCompleteTurns(messages []message, agentUID int64) int64 {
 	var turns int64
 	answered := false
 	open := false
 	for _, m := range messages {
-		switch m.role.String {
-		case "user":
+		if m.from != agentUID {
+			// Consecutive user messages fold into the turn already open.
 			if open && answered {
 				turns++
 			}
 			open, answered = true, false
-		case "assistant":
-			if open {
-				answered = true
-			}
+		} else if open {
+			// Any agent message answers the open turn. Requiring role='assistant'
+			// would drop the ~6% of agent rows written without a role, which would
+			// undercount turns here while the runtime still counted them.
+			answered = true
 		}
 	}
 	if open && answered {
@@ -129,10 +137,15 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	}
 	existing, err := scanFork(tx.QueryRowContext(ctx, s.query("SELECT "+forkColumns+" FROM session_forks WHERE actor_user_id = ? AND request_id = ? FOR UPDATE"), req.ActorUserID, req.RequestID))
 	if err == nil {
-		// The copy boundary is part of the request identity: reusing a request ID
-		// with a different anchor would silently return a copy of another range.
+		// The copy boundary is part of the request identity in both directions: a
+		// bounded retry must match the stored anchor, and an unbounded retry must
+		// not adopt a copy that was bounded. Comparing only when the retry carries
+		// an anchor would let a later unbounded retry silently return the bounded
+		// copy. SourceTurnCount is set only for bounded copies, so it identifies
+		// which kind the stored row is.
 		if existing.SourceTopicID != req.SourceTopicID || existing.Name != req.Name ||
-			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) {
+			(req.UntilMessageID > 0 && existing.SourceLastSeq != req.UntilMessageID) ||
+			(req.UntilMessageID == 0 && existing.SourceTurnCount > 0) {
 			return nil, store.ErrSessionForkConflict
 		}
 		return existing, tx.Commit()
@@ -161,18 +174,22 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if req.UntilMessageID > 0 && (len(messages) == 0 || messages[len(messages)-1].id != req.UntilMessageID) {
 		return nil, store.ErrSessionForkSource
 	}
+	// Validate every sender before counting turns: the count treats every
+	// non-agent sender as the human participant, which is only sound once the
+	// conversation is known to have exactly those two senders.
+	for _, m := range messages {
+		if m.from != req.ActorUserID && m.from != req.AgentUID {
+			return nil, store.ErrSessionForkForbidden
+		}
+	}
 	// The anchor must be the message that closes a turn. Otherwise the copied
 	// range ends mid-turn: the runtime, which cuts at a turn boundary, would keep
 	// less than the server copied, and the copy's visible history and its model
 	// context would disagree. Requiring the last row to close a turn is the
 	// cheapest way to state that on both sides.
-	if req.UntilMessageID > 0 && countCompleteTurns(messages) <= countCompleteTurns(messages[:len(messages)-1]) {
+	if req.UntilMessageID > 0 &&
+		countCompleteTurns(messages, req.AgentUID) <= countCompleteTurns(messages[:len(messages)-1], req.AgentUID) {
 		return nil, store.ErrSessionForkSource
-	}
-	for _, m := range messages {
-		if m.from != req.ActorUserID && m.from != req.AgentUID {
-			return nil, store.ErrSessionForkForbidden
-		}
 	}
 	title := req.Name
 	if title == "" {
@@ -207,9 +224,13 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 		}
 	}
 	f := &types.SessionFork{ActorUserID: req.ActorUserID, AgentUID: req.AgentUID, RequestID: req.RequestID, SourceTopicID: req.SourceTopicID, TargetTopicID: target, Name: req.Name, BodyID: req.BodyID, SourceRevision: revision, State: "pending", CreatedAt: time.Now().UTC(), MessageIDMap: map[string]int64{}}
-	// The runtime cannot match cloud message IDs, so the copied range is
-	// described to it as a count of complete turns.
-	f.SourceTurnCount = countCompleteTurns(messages)
+	// Only a bounded copy carries a turn count. A whole-conversation copy must
+	// leave it unset: the field means "cut the runtime transcript here", and the
+	// runtime treats a missing value as "no bound". Sending a count for a full
+	// copy would silently trim the tail of any turn the runtime had not finished.
+	if req.UntilMessageID > 0 {
+		f.SourceTurnCount = countCompleteTurns(messages, req.AgentUID)
+	}
 	// Copy raw stored payloads, never run the message-ingestion/fanout service.
 	// client_msg_id belongs to ingress deduplication and must not be inherited.
 	for _, m := range messages {

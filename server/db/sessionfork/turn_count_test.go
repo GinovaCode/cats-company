@@ -5,43 +5,54 @@ import (
 	"testing"
 )
 
-func role(value string) sql.NullString { return sql.NullString{String: value, Valid: true} }
+// Production does not write role='user': the plain-text send path stores only
+// topic, sender, content and type, so human rows carry an empty role while bot
+// rows carry 'assistant'. These fixtures mirror that shape; a role-based rule
+// would count zero turns against them.
+const agentUID int64 = 9
+
+func human() message { return message{from: 7, role: sql.NullString{}} }
+func bot() message   { return message{from: agentUID, role: sql.NullString{String: "assistant", Valid: true}} }
+func botPlain() message {
+	return message{from: agentUID, role: sql.NullString{}}
+}
 
 func TestCountCompleteTurns(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		roles []string
-		want  int64
+		name     string
+		messages []message
+		want     int64
 	}{
 		{"empty range", nil, 0},
-		{"single answered turn", []string{"user", "assistant"}, 1},
-		{"two answered turns", []string{"user", "assistant", "user", "assistant"}, 2},
+		{"single answered turn", []message{human(), bot()}, 1},
+		{"two answered turns", []message{human(), bot(), human(), bot()}, 2},
 		// The runtime still holds this trailing turn. Counting it would make the
 		// runtime cut one turn further than the cloud range intends.
-		{"trailing unanswered user", []string{"user", "assistant", "user"}, 1},
-		// A user message arriving before any answer collapses into one turn, so
-		// the count cannot overstate how much history was copied.
-		{"consecutive user messages", []string{"user", "user", "assistant"}, 1},
-		{"assistant only", []string{"assistant", "assistant"}, 0},
-		// Tool traffic and unknown roles carry no turn boundary of their own.
-		{"tool messages ignored", []string{"user", "assistant", "tool", "tool", "assistant"}, 1},
-		{"unknown roles ignored", []string{"system", "user", "assistant"}, 1},
+		{"trailing unanswered user", []message{human(), bot(), human()}, 1},
+		// A user sending twice before any answer is one turn, not two. Both sides
+		// must fold it the same way or the runtime cuts between the two messages.
+		{"consecutive user messages fold", []message{human(), human(), bot()}, 1},
+		{"assistant only", []message{bot(), bot()}, 0},
+		// Any agent message answers the open turn, even without a role: production
+		// writes ~6% of agent rows with an empty role, and requiring
+		// role='assistant' would undercount turns here while the runtime counted
+		// them.
+		{"agent without role still answers", []message{human(), botPlain()}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			messages := make([]message, 0, len(tc.roles))
-			for _, r := range tc.roles {
-				messages = append(messages, message{role: role(r)})
-			}
-			if got := countCompleteTurns(messages); got != tc.want {
-				t.Fatalf("countCompleteTurns(%v) = %d, want %d", tc.roles, got, tc.want)
+			if got := countCompleteTurns(tc.messages, agentUID); got != tc.want {
+				t.Fatalf("countCompleteTurns(%s) = %d, want %d", tc.name, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestCountCompleteTurnsIgnoresNullRoles(t *testing.T) {
-	messages := []message{{role: role("user")}, {role: sql.NullString{}}, {role: role("assistant")}}
-	if got := countCompleteTurns(messages); got != 1 {
-		t.Fatalf("null role must not create a turn boundary: %d", got)
+// The regression this guards: counting by `role` alone returns zero on real
+// data, which made every bounded copy fail its anchor check and every turn count
+// read as "unbounded".
+func TestCountCompleteTurnsOnProductionShape(t *testing.T) {
+	history := []message{human(), bot(), human(), bot()}
+	if got := countCompleteTurns(history, agentUID); got != 2 {
+		t.Fatalf("production-shaped history counts %d turns, want 2", got)
 	}
 }
