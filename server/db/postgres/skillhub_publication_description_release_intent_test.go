@@ -92,4 +92,51 @@ func TestPostgresSkillHubPublicationDescriptionReleaseIntentPersistsExactTarget(
 	if err := db.db.QueryRow(`SELECT count(*) FROM skillhub_publication_commit_intents WHERE entry_id=$1`, in.EntryID).Scan(&count); err != nil || count != 0 {
 		t.Fatal("description confirmation was incorrectly turned into the legacy commit intent", err)
 	}
+
+	permit, err := db.AuthorizeSkillHubPublicationDescriptionRelease(ctx, in.EntryID, app.ID, target)
+	if err != nil || permit == nil || permit.Validate() != nil {
+		t.Fatal("authorize exact derived target", err)
+	}
+	recovered, err := peer.AuthorizeSkillHubPublicationDescriptionRelease(ctx, in.EntryID, app.ID, target)
+	if err != nil || !reflect.DeepEqual(permit, recovered) {
+		t.Fatal("retry did not recover the same immutable permit", err)
+	}
+	if _, err := db.CancelSkillHubPublicationEntry(ctx, actor, in.EntryID); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
+		t.Fatal("local cancellation was allowed after permit issuance", err)
+	}
+	if _, err := db.db.Exec(`INSERT INTO skillhub_publication_commit_intents(entry_id,target,identity_hash) VALUES($1,'{}',$2)`, in.EntryID, strings.Repeat("f", 64)); err == nil {
+		t.Fatal("derived candidate entered the legacy receipt commit path")
+	}
+	if _, err := db.db.Exec(`UPDATE bot_config SET enabled=false WHERE user_id=$1`, in.Binding.BotUID); err != nil {
+		t.Fatal("revoke runtime owner authority", err)
+	}
+	recovered, err = peer.AuthorizeSkillHubPublicationDescriptionRelease(ctx, in.EntryID, app.ID, target)
+	if err != nil || !reflect.DeepEqual(permit, recovered) {
+		t.Fatal("existing permit was not recoverable after authority changed", err)
+	}
+}
+
+func TestSkillHubPublicationDescriptionReleasePermitMigrationMatchesStartup(t *testing.T) {
+	b, err := os.ReadFile("../migrations/postgres/000061_skillhub_publication_description_release_permit.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(string(b)), " "), strings.Join(strings.Fields(createSkillHubPublicationDescriptionReleasePermitTable), " ")) {
+		t.Fatal("000061 does not include startup permit schema")
+	}
+}
+
+func TestSkillHubPublicationDescriptionReleasePermitDownIsSafeWhenAbsent(t *testing.T) {
+	t.Parallel()
+	db, _ := publicationEmptyDatabase(t)
+	deliveryExec(t, db, descriptionReleasePermitMigration(t))
+}
+
+func descriptionReleasePermitMigration(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("../migrations/postgres/000061_skillhub_publication_description_release_permit.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
