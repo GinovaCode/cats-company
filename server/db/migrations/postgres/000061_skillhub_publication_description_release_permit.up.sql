@@ -49,3 +49,28 @@ $$;
 DROP TRIGGER IF EXISTS guard_skillhub_publication_no_legacy_commit_after_description_release ON skillhub_publication_commit_intents;
 CREATE TRIGGER guard_skillhub_publication_no_legacy_commit_after_description_release BEFORE INSERT ON skillhub_publication_commit_intents
 FOR EACH ROW EXECUTE FUNCTION guard_skillhub_publication_no_legacy_commit_after_description_release();
+CREATE OR REPLACE FUNCTION guard_skillhub_publication_release_started_cancellation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_TABLE_NAME='skillhub_publication_entries' THEN
+        IF NEW.state IS DISTINCT FROM OLD.state AND NEW.state='cancelled'
+            AND EXISTS(SELECT 1 FROM skillhub_publication_description_release_permits WHERE entry_id=OLD.entry_id) THEN
+            RAISE EXCEPTION 'publication release permit already issued';
+        END IF;
+        RETURN NEW;
+    END IF;
+    PERFORM 1 FROM skillhub_publication_entries WHERE entry_id=NEW.entry_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN NEW;
+    END IF;
+    IF EXISTS(SELECT 1 FROM skillhub_publication_description_release_permits WHERE entry_id=NEW.entry_id) THEN
+        RAISE EXCEPTION 'publication release permit already issued';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS guard_skillhub_publication_release_started_entry_cancel ON skillhub_publication_entries;
+CREATE TRIGGER guard_skillhub_publication_release_started_entry_cancel BEFORE UPDATE OF state ON skillhub_publication_entries
+FOR EACH ROW EXECUTE FUNCTION guard_skillhub_publication_release_started_cancellation();
+DROP TRIGGER IF EXISTS guard_skillhub_publication_release_started_cancel_intent ON skillhub_publication_cancel_intents;
+CREATE TRIGGER guard_skillhub_publication_release_started_cancel_intent BEFORE INSERT ON skillhub_publication_cancel_intents
+FOR EACH ROW EXECUTE FUNCTION guard_skillhub_publication_release_started_cancellation();

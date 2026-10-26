@@ -92,6 +92,23 @@ func TestPostgresSkillHubPublicationDescriptionReleaseIntentPersistsExactTarget(
 	if err := db.db.QueryRow(`SELECT count(*) FROM skillhub_publication_commit_intents WHERE entry_id=$1`, in.EntryID).Scan(&count); err != nil || count != 0 {
 		t.Fatal("description confirmation was incorrectly turned into the legacy commit intent", err)
 	}
+	if _, err := db.db.Exec(`CREATE OR REPLACE FUNCTION fail_description_release_permit_test() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'transient permit insert failure' USING ERRCODE='40001'; END; $$`); err != nil {
+		t.Fatal("create transient failure trigger function", err)
+	}
+	if _, err := db.db.Exec(`CREATE TRIGGER fail_description_release_permit_test BEFORE INSERT ON skillhub_publication_description_release_permits
+		FOR EACH ROW EXECUTE FUNCTION fail_description_release_permit_test()`); err != nil {
+		t.Fatal("create transient failure trigger", err)
+	}
+	if _, err := db.AuthorizeSkillHubPublicationDescriptionRelease(ctx, in.EntryID, app.ID, target); err == nil || errors.Is(err, store.ErrSkillHubPublicationConflict) {
+		t.Fatal("transient database failure was not preserved for retry", err)
+	}
+	if _, err := db.db.Exec(`DROP TRIGGER fail_description_release_permit_test ON skillhub_publication_description_release_permits`); err != nil {
+		t.Fatal("drop transient failure trigger", err)
+	}
+	if _, err := db.db.Exec(`DROP FUNCTION fail_description_release_permit_test()`); err != nil {
+		t.Fatal("drop transient failure trigger function", err)
+	}
 
 	permit, err := db.AuthorizeSkillHubPublicationDescriptionRelease(ctx, in.EntryID, app.ID, target)
 	if err != nil || permit == nil || permit.Validate() != nil {
@@ -103,6 +120,16 @@ func TestPostgresSkillHubPublicationDescriptionReleaseIntentPersistsExactTarget(
 	}
 	if _, err := db.CancelSkillHubPublicationEntry(ctx, actor, in.EntryID); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
 		t.Fatal("local cancellation was allowed after permit issuance", err)
+	}
+	if _, err := db.RequestSkillHubPublicationCancellation(ctx, actor, in.EntryID); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
+		t.Fatal("cancellation intent path was allowed after permit issuance", err)
+	}
+	if _, err := db.db.Exec(`UPDATE skillhub_publication_entries SET state='cancelled' WHERE entry_id=$1`, in.EntryID); err == nil {
+		t.Fatal("direct entry cancellation bypassed the permit guard")
+	}
+	if _, err := db.db.Exec(`INSERT INTO skillhub_publication_cancel_intents(entry_id,cancel_id,requires_cloud) VALUES($1,$2,true)`,
+		in.EntryID, "pubcancel_"+strings.Repeat("f", 32)); err == nil {
+		t.Fatal("direct cancellation intent bypassed the permit guard")
 	}
 	if _, err := db.db.Exec(`INSERT INTO skillhub_publication_commit_intents(entry_id,target,identity_hash) VALUES($1,'{}',$2)`, in.EntryID, strings.Repeat("f", 64)); err == nil {
 		t.Fatal("derived candidate entered the legacy receipt commit path")
@@ -121,8 +148,8 @@ func TestSkillHubPublicationDescriptionReleasePermitMigrationMatchesStartup(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(strings.Fields(string(b)), " "), strings.Join(strings.Fields(createSkillHubPublicationDescriptionReleasePermitTable), " ")) {
-		t.Fatal("000061 does not include startup permit schema")
+	if strings.Join(strings.Fields(string(b)), " ") != strings.Join(strings.Fields(createSkillHubPublicationDescriptionReleasePermitTable), " ") {
+		t.Fatal("000061 differs from startup permit schema")
 	}
 }
 

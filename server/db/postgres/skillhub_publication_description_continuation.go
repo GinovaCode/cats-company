@@ -191,14 +191,16 @@ func (a *Adapter) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Con
 		err = nil
 		// Existing permits are immutable historical authorizations and may be
 		// replayed after local authority changes. Only new issuance rechecks it.
-		current, err := readSkillHubPublicationDescriptionContinuation(ctx, tx, actor, entryID)
+		var current *store.SkillHubPublicationDescriptionContinuation
+		current, err = readSkillHubPublicationDescriptionContinuation(ctx, tx, actor, entryID)
 		if err != nil {
 			return nil, fmt.Errorf("recheck current derived-release authority: %w", err)
 		}
 		if intent.ValidateFor(*current) != nil {
 			return nil, fmt.Errorf("derived release intent no longer matches its accepted continuation: %w", store.ErrSkillHubPublicationConflict)
 		}
-		suffix, err := uploadRandomHex(16)
+		var suffix string
+		suffix, err = uploadRandomHex(16)
 		if err != nil {
 			return nil, err
 		}
