@@ -202,12 +202,12 @@ func (a *Adapter) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Con
 			return nil, err
 		}
 		permit.ID = "pubdescpermit_" + suffix
-		_, err = tx.ExecContext(ctx, `INSERT INTO skillhub_publication_description_release_permits(application_id,entry_id,permit_id,intent_identity_hash) VALUES($1,$2,$3,$4)`, applicationID, entryID, permit.ID, intent.IdentityHash)
-		if err != nil {
-			return nil, err
-		}
-		err = tx.QueryRowContext(ctx, `SELECT entry_id,intent_identity_hash,authorized_at FROM skillhub_publication_description_release_permits WHERE application_id=$1`, applicationID).
+		err = tx.QueryRowContext(ctx, `INSERT INTO skillhub_publication_description_release_permits(application_id,entry_id,permit_id,intent_identity_hash)
+			VALUES($1,$2,$3,$4) RETURNING entry_id,intent_identity_hash,authorized_at`, applicationID, entryID, permit.ID, intent.IdentityHash).
 			Scan(&savedEntry, &savedHash, &permit.AuthorizedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("permit insert was rejected by the database guard: %w", store.ErrSkillHubPublicationConflict)
+		}
 	}
 	if err != nil {
 		return nil, err
