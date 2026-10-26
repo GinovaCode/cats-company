@@ -192,7 +192,7 @@ func (a *Adapter) AuthorizeSkillHubPublicationDescriptionRelease(ctx context.Con
 		// replayed after local authority changes. Only new issuance rechecks it.
 		current, err := readSkillHubPublicationDescriptionContinuation(ctx, tx, actor, entryID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("recheck current derived-release authority: %w", err)
 		}
 		if intent.ValidateFor(*current) != nil {
 			return nil, fmt.Errorf("derived release intent no longer matches its accepted continuation: %w", store.ErrSkillHubPublicationConflict)
