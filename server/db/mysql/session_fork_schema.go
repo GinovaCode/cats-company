@@ -62,6 +62,7 @@ END`,
 	// range holds, which is the only anchor the runtime can match on, because a
 	// live session never records cloud message IDs.
 	`ALTER TABLE session_forks ADD COLUMN source_turn_count BIGINT NOT NULL DEFAULT 0;`,
+	`ALTER TABLE session_forks ADD COLUMN source_total_turns BIGINT NOT NULL DEFAULT 0;`,
 }
 
 func (a *Adapter) ensureSessionForkSchema() error {

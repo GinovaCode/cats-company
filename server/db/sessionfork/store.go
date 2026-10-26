@@ -37,12 +37,12 @@ func (s SQLStore) query(q string) string {
 	return b.String()
 }
 
-const forkColumns = `actor_user_id, request_id, source_topic_id, target_topic_id, agent_uid, body_id, request_name, source_revision, target_revision, source_last_seq, message_id_map, state, error, created_at, source_turn_count`
+const forkColumns = `actor_user_id, request_id, source_topic_id, target_topic_id, agent_uid, body_id, request_name, source_revision, target_revision, source_last_seq, message_id_map, state, error, created_at, source_turn_count, source_total_turns`
 
 func scanFork(row interface{ Scan(...interface{}) error }) (*types.SessionFork, error) {
 	f := &types.SessionFork{}
 	var mapping []byte
-	err := row.Scan(&f.ActorUserID, &f.RequestID, &f.SourceTopicID, &f.TargetTopicID, &f.AgentUID, &f.BodyID, &f.Name, &f.SourceRevision, &f.TargetRevision, &f.SourceLastSeq, &mapping, &f.State, &f.Error, &f.CreatedAt, &f.SourceTurnCount)
+	err := row.Scan(&f.ActorUserID, &f.RequestID, &f.SourceTopicID, &f.TargetTopicID, &f.AgentUID, &f.BodyID, &f.Name, &f.SourceRevision, &f.TargetRevision, &f.SourceLastSeq, &mapping, &f.State, &f.Error, &f.CreatedAt, &f.SourceTurnCount, &f.SourceTotalTurns)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, store.ErrSessionForkNotFound
 	}
@@ -165,14 +165,28 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err = s.validateSource(ctx, tx, req.ActorUserID, req.AgentUID, req.SourceTopicID, req.BodyID); err != nil {
 		return nil, err
 	}
-	messages, err := s.readMessages(ctx, tx, req.SourceTopicID, req.UntilMessageID)
+	// One read serves both counts: the copied range and the whole conversation.
+	// The total is what lets a runtime that compacted its history translate a
+	// range boundary into an index inside the transcript it still holds.
+	all, err := s.readMessages(ctx, tx, req.SourceTopicID, 0)
 	if err != nil {
 		return nil, err
 	}
-	// An anchor that is not in this conversation would copy nothing. Fail loudly
-	// instead of producing an empty copy the client cannot explain.
-	if req.UntilMessageID > 0 && (len(messages) == 0 || messages[len(messages)-1].id != req.UntilMessageID) {
-		return nil, store.ErrSessionForkSource
+	messages := all
+	if req.UntilMessageID > 0 {
+		anchor := -1
+		for index, m := range all {
+			if m.id == req.UntilMessageID {
+				anchor = index
+				break
+			}
+		}
+		// An anchor that is not in this conversation would copy nothing. Fail
+		// loudly instead of producing an empty copy the client cannot explain.
+		if anchor < 0 {
+			return nil, store.ErrSessionForkSource
+		}
+		messages = all[:anchor+1]
 	}
 	// Validate every sender before counting turns: the count treats every
 	// non-agent sender as the human participant, which is only sound once the
@@ -230,6 +244,11 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	// copy would silently trim the tail of any turn the runtime had not finished.
 	if req.UntilMessageID > 0 {
 		f.SourceTurnCount = countCompleteTurns(messages, req.AgentUID)
+		// A runtime that compacted its transcript holds fewer turns than the
+		// conversation has, so the range boundary alone cannot be placed inside
+		// what it still holds. The total lets it subtract the compacted turns and
+		// branch from the retained part instead of failing the copy.
+		f.SourceTotalTurns = countCompleteTurns(all, req.AgentUID)
 	}
 	// Copy raw stored payloads, never run the message-ingestion/fanout service.
 	// client_msg_id belongs to ingress deduplication and must not be inherited.
@@ -267,7 +286,7 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if err = tx.QueryRowContext(ctx, s.query("SELECT history_revision FROM topics WHERE id = ?"), target).Scan(&f.TargetRevision); err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, s.query("INSERT INTO session_forks ("+forkColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), f.ActorUserID, f.RequestID, f.SourceTopicID, f.TargetTopicID, f.AgentUID, f.BodyID, f.Name, f.SourceRevision, f.TargetRevision, f.SourceLastSeq, string(mapping), f.State, "", f.CreatedAt, f.SourceTurnCount)
+	_, err = tx.ExecContext(ctx, s.query("INSERT INTO session_forks ("+forkColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), f.ActorUserID, f.RequestID, f.SourceTopicID, f.TargetTopicID, f.AgentUID, f.BodyID, f.Name, f.SourceRevision, f.TargetRevision, f.SourceLastSeq, string(mapping), f.State, "", f.CreatedAt, f.SourceTurnCount, f.SourceTotalTurns)
 	if err != nil {
 		return nil, err
 	}
