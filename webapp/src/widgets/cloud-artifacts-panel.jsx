@@ -453,6 +453,12 @@ export default function CloudArtifactsPanel({
   const handleRefresh = useCallback(async () => {
     const open = gatewayPreview;
     if (tab === 'gateway' && open) {
+      // openGatewayApp treats a missing URL as a no-op, which on this path
+      // would leave the toolbar button doing nothing at all.
+      if (!open.url) {
+        setError('应用地址缺失，无法刷新');
+        return;
+      }
       if (gatewayRefreshing) return;
       setGatewayRefreshing(true);
       setError('');
@@ -461,7 +467,7 @@ export default function CloudArtifactsPanel({
         // the `tab` captured at click time, so switching tabs mid-refresh would let a
         // stale response overwrite the panel the user is actually looking at.
         await openGatewayApp({ id: open.id, title: open.title, url: open.url }, 'panel', {
-          keepOnLaunchFailure: true,
+          keepOnLaunchFailure: !open.visitor,
         });
       } catch {
         setError('应用刷新失败，请稍后重试（当前内容保持不变）');
@@ -1137,7 +1143,9 @@ export default function CloudArtifactsPanel({
           {!loading && error && (
             <div className="cloud-artifacts-status error" role="alert">
               <span>{error}</span>
-              <button type="button" onClick={() => loadContent()}>重试</button>
+              <button type="button" onClick={() => (tab === 'gateway' && gatewayPreview
+                ? handleRefresh()
+                : loadContent())}>重试</button>
             </div>
           )}
           {!loading && !error && visibleCount === 0 && (
