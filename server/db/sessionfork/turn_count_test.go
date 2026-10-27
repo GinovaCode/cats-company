@@ -82,6 +82,14 @@ func TestAnchorClosesTurn(t *testing.T) {
 		{"agent message before more agent work", []message{human(), bot(), bot(), human()}, 1, false},
 		{"out of range", []message{human(), bot()}, 5, false},
 		{"empty conversation", nil, 0, false},
+		// Regression: a conversation that opens with an agent message scores zero
+		// turns at that anchor. Zero is indistinguishable from "unbounded" on the
+		// wire (`source_turn_count` is omitempty), so the runtime would copy the
+		// whole transcript while the cloud copied a prefix. Production has such
+		// conversations: 10 two-member human+bot groups start with a bot message.
+		{"agent-only conversation", []message{bot()}, 0, false},
+		{"agent first, anchor before the first user message", []message{bot(), human(), bot()}, 0, false},
+		{"agent first, anchor on the answered turn", []message{bot(), human(), bot()}, 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := anchorClosesTurn(tc.all, tc.anchor, agentUID); got != tc.want {

@@ -93,7 +93,8 @@ func countCompleteTurns(messages []message, agentUID int64) int64 {
 	return turns
 }
 
-// anchorClosesTurn reports whether the anchor is the last message of its turn.
+// anchorClosesTurn reports whether the anchor is the last message of a complete
+// turn.
 //
 // The runtime cuts whole turns, so a boundary anywhere inside a turn copies less
 // history than the runtime keeps: the copy's visible messages and its model
@@ -103,8 +104,16 @@ func countCompleteTurns(messages []message, agentUID int64) int64 {
 // segment is "answered" but not the turn's end, and accepting it truncated the copy
 // while the runtime kept the rest.
 //
-// A turn ends when the next user message arrives, so the anchor must be an agent
-// message that is either the last message overall or followed by a user message.
+// Two conditions, both necessary:
+//
+//  1. No further agent message follows the anchor. A turn continues while the
+//     agent keeps producing, so the anchor is the turn's last message exactly when
+//     the next message is not from the agent (today that means it is the user's).
+//  2. The turn it closes actually opened on a user message. Without this a
+//     conversation whose first message is from the agent scores zero turns, and
+//     zero is indistinguishable from "unbounded" on the wire: `source_turn_count`
+//     is `omitempty`, so the runtime would read its absence as "no bound" and copy
+//     the whole transcript while the cloud copied a prefix.
 func anchorClosesTurn(all []message, anchor int, agentUID int64) bool {
 	if anchor < 0 || anchor >= len(all) {
 		return false
@@ -113,7 +122,10 @@ func anchorClosesTurn(all []message, anchor int, agentUID int64) bool {
 		// The anchor is a user message: its turn has no answer yet.
 		return false
 	}
-	return anchor+1 >= len(all) || all[anchor+1].from != agentUID
+	if anchor+1 < len(all) && all[anchor+1].from == agentUID {
+		return false
+	}
+	return countCompleteTurns(all[:anchor+1], agentUID) > 0
 }
 
 func (s SQLStore) GetSessionFork(ctx context.Context, uid int64, request, topic string) (*types.SessionFork, error) {
