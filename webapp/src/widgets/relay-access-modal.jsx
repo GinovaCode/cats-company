@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import {
@@ -569,10 +569,12 @@ function CommercialPlanCards({
   onSelectPlan,
   compact = false,
   className = '',
+  showFreePlan = true,
+  presentationOverrides = {},
 }) {
   return (
     <div className={`relay-access-plan-list${hasCurrentCommercialPlans ? ' current-catalog' : ''}${className ? ` ${className}` : ''}`}>
-      {hasCurrentCommercialPlans && (
+      {hasCurrentCommercialPlans && showFreePlan && (
         <article className="relay-access-plan-row official free">
           <div className="relay-access-plan-heading">
             <span className="relay-access-plan-kicker">{FREE_PLAN_PRESENTATION.kicker}</span>
@@ -598,7 +600,7 @@ function CommercialPlanCards({
         </article>
       )}
       {salePlans.map((plan) => {
-        const presentation = commercialPlanPresentation(plan);
+        const presentation = presentationOverrides[plan.slug] || commercialPlanPresentation(plan);
         const planTier = commercialPlanTier(plan.slug);
         const isActivePlan = planTier > 0
           ? activeOfficialPlanTier === planTier
@@ -609,7 +611,7 @@ function CommercialPlanCards({
         const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
         return (
           <article
-            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}`}
+            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}${presentation.highlights?.length ? ' has-highlights' : ''}`}
             key={plan.id}
           >
             <div className="relay-access-plan-heading">
@@ -647,20 +649,48 @@ function CommercialPlanCards({
                             ? '继续支付'
                             : isUpgradePlan
                               ? `升级至${plan.name}`
-                              : hasCurrentCommercialPlans ? `选择${plan.name}` : '购买'}
+                              : presentation.actionLabel || (hasCurrentCommercialPlans ? `选择${plan.name}` : '购买')}
               </button>
             </div>
+            {presentation.highlights?.length > 0 && (
+              <dl className="relay-access-plan-highlights">
+                {presentation.highlights.map(highlight => {
+                  const Icon = highlight.kind === 'cloud' ? Cloud : Cpu;
+                  return <div key={highlight.label}>
+                    <dt><Icon size={17} aria-hidden="true" />{highlight.label}</dt>
+                    <dd>{highlight.value}{highlight.unit && <span>{highlight.unit}</span>}</dd>
+                    {highlight.detail && <small>{highlight.detail}</small>}
+                  </div>;
+                })}
+              </dl>
+            )}
             {Array.isArray(presentation.features) && presentation.features.length > 0 && (
               <>
                 <div className="relay-access-plan-divider" />
-                <span className="relay-access-plan-includes">包含</span>
+                {presentation.featuresLabel !== false && <span className="relay-access-plan-includes">{presentation.featuresLabel || '包含'}</span>}
                 <ul className="relay-access-plan-features">
-                  {presentation.features.map(feature => (
-                    <li key={feature}><Check size={14} />{feature}</li>
-                  ))}
+                  {presentation.features.map(feature => {
+                    const label = typeof feature === 'string' ? feature : feature.label;
+                    return (
+                      <li key={label} className={feature.emphasis ? 'relay-access-plan-feature-inherited' : undefined}>
+                        <Check size={14} aria-hidden="true" />
+                        {typeof feature === 'string' ? label : (
+                          <div>
+                            <span>{label}</span>
+                            {feature.details?.length > 0 && (
+                              <ul className="relay-access-plan-feature-details">
+                                {feature.details.map(detail => <li key={detail}>{detail}</li>)}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </>
             )}
+            {presentation.note && <p className="relay-access-plan-footnote">{presentation.note}</p>}
           </article>
         );
       })}
@@ -710,7 +740,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -743,6 +773,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
   const paymentRequestIDs = useRef(loadCommercialPaymentRequestIDs());
   const purchaseSubmittingRef = useRef(false);
   const purchaseConfirmRef = useRef(null);
+  const purchaseFromChooserRef = useRef(false);
   const checkoutRef = useRef(null);
   const modalRef = useRef(null);
   const closeButtonRef = useRef(null);
@@ -1189,9 +1220,16 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
   };
 
   const selectCommercialPlan = (plan) => {
+    purchaseFromChooserRef.current = true;
     setPlanChooserOpen(false);
     setCheckoutOrder(null);
     setPurchasePlan(plan);
+  };
+
+  const returnFromPurchase = () => {
+    setPurchasePlan(null);
+    if (purchaseFromChooserRef.current) setPlanChooserOpen(true);
+    purchaseFromChooserRef.current = false;
   };
 
   const openCommercialOrderFromChooser = (order) => {
@@ -1410,7 +1448,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
   const handleModalKeyDown = (event) => {
     if (event.key === 'Escape') {
       event.stopPropagation();
-      if (purchasePlan) setPurchasePlan(null);
+      if (purchasePlan) returnFromPurchase();
       else if (checkoutOrder) setCheckoutOrder(null);
       else onClose();
       return;
@@ -1572,7 +1610,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
                     : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
-                  <button type="button" className="secondary" onClick={() => setPurchasePlan(null)} disabled={Boolean(paymentLoading)}>返回</button>
+                  <button type="button" className="secondary" onClick={returnFromPurchase} disabled={Boolean(paymentLoading)}>返回</button>
                   <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading)}>
                     <CreditCard size={15} />
                     {paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
@@ -2005,7 +2043,6 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
             <header className="relay-access-plan-modal-header">
               <div>
                 <h3>选择适合你的套餐</h3>
-                <p>按实际工作频率选择，套餐到期前不会自动续费。</p>
               </div>
               <button type="button" onClick={() => setPlanChooserOpen(false)} aria-label="关闭升级套餐">
                 <X size={18} />
@@ -2050,6 +2087,8 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
                   aria-labelledby="relay-access-personal-plan-tab"
                 >
                   <CommercialPlanCards
+                    showFreePlan={showFreePlan}
+                    presentationOverrides={planPresentationOverrides}
                     salePlans={salePlans}
                     hasCurrentCommercialPlans={hasCurrentCommercialPlans}
                     activeOfficialPlanTier={activeOfficialPlanTier}
@@ -2070,7 +2109,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '' }) {
                   role="tabpanel"
                   aria-labelledby="relay-access-enterprise-plan-tab"
                 >
-                  <EnterprisePlanCard />
+                  {enterprisePlanContent || <EnterprisePlanCard />}
                 </div>
               )}
             </div>
