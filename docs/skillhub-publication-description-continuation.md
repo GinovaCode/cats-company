@@ -108,6 +108,27 @@ under the current checkpoint before asking Cloud for the permit. This keeps
 description approval, version-policy selection and release authorization as
 three distinct facts; the coordinator remains an internal default-off adapter.
 
+## Isolated Cloud commit admission
+
+The internal commit client is a distinct irreversible step after the durable
+human release intent and exact Cloud permit exist. It posts only
+`schemaVersion`, `applicationId` and `permitId` to Cloud's isolated
+`/api/skills/publication-descriptions/internal/commit` endpoint. The response
+must bind the same application, original task and permit, and return one of the
+known isolated queue states. A retry after an uncertain response uses the same
+permit; Cloud returns the same durable admission instead of creating duplicate
+publication work.
+
+The separate
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_COMMIT_ENABLED` gate defaults
+off and also requires the derivation, planning and release-authorization
+configuration. This slice adds no RPC, HTTP route, model tool, worker or
+automatic invocation. Cloud's own commit-admission switch remains independently
+default-off. When later wired and both sides are enabled, admission can start
+the asynchronous isolated publication worker; it is not merely a status read
+or a reversible preview. It never enters the legacy original-candidate commit
+path. Production activation and user-facing wiring are later steps.
+
 The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
 Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing
 dependencies or any skipped case fail. It pairs actual Cloud intake, retention,

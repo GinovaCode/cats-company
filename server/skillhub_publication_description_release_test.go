@@ -81,6 +81,87 @@ func TestAuthorizeConfirmedPublicationDescriptionReleaseFlow(t *testing.T) {
 	}
 }
 
+func TestAdmitConfirmedPublicationDescriptionReleaseFlowRequiresDurableIntentAndPermit(t *testing.T) {
+	db, continuationPorts, _ := descriptionContinuationFixture(t)
+	flowDB := &publicationDescriptionReleaseFlowStore{descriptionContinuationTestStore: db}
+	checkpoint, err := continueConfirmedPublicationDescription(context.Background(), flowDB, 1, db.app.Input.Receipt.Query.EntryID, continuationPorts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := descriptionPlanFixture(checkpoint.checkpoint.Application, false)
+	flowDB.intent = releaseFlowIntent(checkpoint.checkpoint, plan.Target)
+	permit := publicationDescriptionCloudReleasePermit{SchemaVersion: 1, ApplicationID: flowDB.intent.ApplicationID,
+		EntryID: flowDB.intent.EntryID, Target: flowDB.intent.Target, IntentHash: flowDB.intent.IdentityHash,
+		PermitID: "pubdescpermit_" + strings.Repeat("b", 32), AuthorizedAt: flowDB.intent.RequestedAt.Add(time.Second).Format(time.RFC3339Nano)}
+	replayed := false
+	permit.Replayed = &replayed
+	admission := &publicationDescriptionCloudReleaseAdmission{SchemaVersion: 1, ApplicationID: flowDB.intent.ApplicationID,
+		TaskID: db.app.Input.Receipt.TaskID, PermitID: permit.PermitID, State: "queued", Replayed: &replayed}
+	authorized, admitted := 0, 0
+	ports := publicationDescriptionReleasePorts{publicationDescriptionContinuationPorts: continuationPorts,
+		PlanRetainedCopy: func(_ context.Context, app store.SkillHubPublicationDescriptionApplication, confirm bool) (*publicationDescriptionReleasePlan, error) {
+			p := descriptionPlanFixture(app, confirm)
+			return &p, nil
+		},
+		AuthorizeCloud: func(_ context.Context, _ store.SkillHubPublicationDescriptionApplication, got store.SkillHubPublicationDescriptionReleaseIntent) (*publicationDescriptionCloudReleasePermit, error) {
+			authorized++
+			if got != *flowDB.intent {
+				t.Fatal("permit request was not bound to the durable intent")
+			}
+			return &permit, nil
+		},
+		AdmitCloud: func(_ context.Context, app store.SkillHubPublicationDescriptionApplication, got store.SkillHubPublicationDescriptionReleaseIntent, gotPermit publicationDescriptionCloudReleasePermit) (*publicationDescriptionCloudReleaseAdmission, error) {
+			admitted++
+			if app.ID != got.ApplicationID || got != *flowDB.intent || !reflect.DeepEqual(gotPermit, permit) {
+				t.Fatal("Cloud admission was not bound to the verified intent and permit")
+			}
+			return admission, nil
+		},
+	}
+	got, err := admitConfirmedPublicationDescriptionReleaseFlow(context.Background(), flowDB, 1, db.app.Input.Receipt.Query.EntryID, ports)
+	if err != nil || got == nil || got.admission.State != "queued" || authorized != 1 || admitted != 1 {
+		t.Fatalf("derived release admission failed: got=%+v err=%v authorize=%d admit=%d", got, err, authorized, admitted)
+	}
+}
+
+func TestAdmitConfirmedPublicationDescriptionReleaseFlowDoesNotAdmitChangedIntent(t *testing.T) {
+	db, continuationPorts, _ := descriptionContinuationFixture(t)
+	flowDB := &publicationDescriptionReleaseFlowStore{descriptionContinuationTestStore: db}
+	checkpoint, err := continueConfirmedPublicationDescription(context.Background(), flowDB, 1, db.app.Input.Receipt.Query.EntryID, continuationPorts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := descriptionPlanFixture(checkpoint.checkpoint.Application, false)
+	flowDB.intent = releaseFlowIntent(checkpoint.checkpoint, plan.Target)
+	var permit publicationDescriptionCloudReleasePermit
+	commitCalls := 0
+	ports := publicationDescriptionReleasePorts{publicationDescriptionContinuationPorts: continuationPorts,
+		PlanRetainedCopy: func(_ context.Context, app store.SkillHubPublicationDescriptionApplication, confirm bool) (*publicationDescriptionReleasePlan, error) {
+			p := descriptionPlanFixture(app, confirm)
+			return &p, nil
+		},
+		AuthorizeCloud: func(_ context.Context, _ store.SkillHubPublicationDescriptionApplication, intent store.SkillHubPublicationDescriptionReleaseIntent) (*publicationDescriptionCloudReleasePermit, error) {
+			permit = publicationDescriptionCloudReleasePermit{SchemaVersion: 1, ApplicationID: intent.ApplicationID,
+				EntryID: intent.EntryID, Target: intent.Target, IntentHash: intent.IdentityHash,
+				PermitID: "pubdescpermit_" + strings.Repeat("c", 32), AuthorizedAt: intent.RequestedAt.Add(time.Second).Format(time.RFC3339Nano)}
+			replayed := false
+			permit.Replayed = &replayed
+			flowDB.intent.Target.Version = "9.9.9"
+			return &permit, nil
+		},
+		AdmitCloud: func(context.Context, store.SkillHubPublicationDescriptionApplication, store.SkillHubPublicationDescriptionReleaseIntent, publicationDescriptionCloudReleasePermit) (*publicationDescriptionCloudReleaseAdmission, error) {
+			commitCalls++
+			return nil, nil
+		},
+	}
+	if got, err := admitConfirmedPublicationDescriptionReleaseFlow(context.Background(), flowDB, 1, db.app.Input.Receipt.Query.EntryID, ports); got != nil || err != store.ErrSkillHubPublicationConflict {
+		t.Fatalf("changed intent reached Cloud admission: got=%+v err=%v", got, err)
+	}
+	if commitCalls != 0 {
+		t.Fatalf("Cloud admission called %d times", commitCalls)
+	}
+}
+
 func TestAuthorizeConfirmedPublicationDescriptionReleaseFlowReadsIntentBeforeCloud(t *testing.T) {
 	db, continuationPorts, _ := descriptionContinuationFixture(t)
 	flowDB := &publicationDescriptionReleaseFlowStore{descriptionContinuationTestStore: db}
