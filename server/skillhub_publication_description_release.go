@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/openchat/openchat/server/db/postgres"
 	"github.com/openchat/openchat/server/store"
@@ -16,6 +17,8 @@ type publicationDescriptionReleasePorts struct {
 	PlanRetainedCopy func(context.Context, store.SkillHubPublicationDescriptionApplication, bool) (*publicationDescriptionReleasePlan, error)
 	AuthorizeCloud   func(context.Context, store.SkillHubPublicationDescriptionApplication,
 		store.SkillHubPublicationDescriptionReleaseIntent) (*publicationDescriptionCloudReleasePermit, error)
+	AdmitCloud func(context.Context, store.SkillHubPublicationDescriptionApplication,
+		store.SkillHubPublicationDescriptionReleaseIntent, publicationDescriptionCloudReleasePermit) (*publicationDescriptionCloudReleaseAdmission, error)
 }
 
 type publicationDescriptionReleaseStore interface {
@@ -63,4 +66,57 @@ func authorizeConfirmedPublicationDescriptionReleaseFlow(ctx context.Context, db
 		VerifySource:   ports.VerifySource,
 		AuthorizeCloud: ports.AuthorizeCloud,
 	})
+}
+
+type publicationDescriptionAdmittedRelease struct {
+	authorized *publicationDescriptionAuthorizedRelease
+	admission  publicationDescriptionCloudReleaseAdmission
+}
+
+// Admission is a distinct, irreversible handoff. It is reachable only after
+// the actor's exact release intent and Cloud permit have both been verified.
+// A valid replay may report a terminal state; callers must inspect State
+// instead of interpreting a nil error as an in-progress publication.
+func admitConfirmedPublicationDescriptionReleaseFlow(ctx context.Context, db publicationDescriptionReleaseStore,
+	actor int64, id string, ports publicationDescriptionReleasePorts,
+) (*publicationDescriptionAdmittedRelease, error) {
+	if ports.AdmitCloud == nil {
+		return nil, store.ErrSkillHubPublicationInvalid
+	}
+	authorized, err := authorizeConfirmedPublicationDescriptionReleaseFlow(ctx, db, actor, id, ports)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := ports.VerifySource(ctx, snapshotPublicationDescriptionApplication(authorized.checkpoint.Application)); err != nil {
+		return nil, err
+	}
+	current, err := db.GetSkillHubPublicationDescriptionContinuation(ctx, actor, id)
+	if err != nil {
+		return nil, err
+	}
+	intent, err := db.GetSkillHubPublicationDescriptionReleaseIntent(ctx, actor, id)
+	if err != nil {
+		return nil, err
+	}
+	if current == nil || current.Validate() != nil || !reflect.DeepEqual(*current, authorized.checkpoint) ||
+		intent == nil || !reflect.DeepEqual(*intent, authorized.intent) {
+		return nil, store.ErrSkillHubPublicationConflict
+	}
+	admission, err := ports.AdmitCloud(ctx, snapshotPublicationDescriptionApplication(authorized.checkpoint.Application),
+		authorized.intent, authorized.permit)
+	if err != nil {
+		return nil, err
+	}
+	if admission == nil || admission.SchemaVersion != 1 || admission.ApplicationID != authorized.intent.ApplicationID ||
+		admission.TaskID != authorized.checkpoint.Application.Input.Receipt.TaskID || admission.PermitID != authorized.permit.PermitID ||
+		admission.Replayed == nil || !oneOf(admission.State, "queued", "publishing", "committing", "published", "publish_failed") {
+		return nil, store.ErrSkillHubPublicationConflict
+	}
+	admissionSnapshot := *admission
+	replayed := *admission.Replayed
+	admissionSnapshot.Replayed = &replayed
+	return &publicationDescriptionAdmittedRelease{authorized: authorized, admission: admissionSnapshot}, nil
 }
