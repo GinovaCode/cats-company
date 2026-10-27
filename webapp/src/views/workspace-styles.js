@@ -1,4 +1,5 @@
 import '@fontsource-variable/jetbrains-mono/wght.css';
+import '../css/motion.css';
 
 // Match the former eager dependency order: base themes, then shell refinements.
 import '../css/openchat-theme.css';

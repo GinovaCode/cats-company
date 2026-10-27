@@ -75,6 +75,7 @@ describe('entry bundle split', () => {
 
     expect(importedStylesheets).toEqual([
       '@fontsource-variable/jetbrains-mono/wght.css',
+      '../css/motion.css',
       '../css/openchat-theme.css',
       '../css/catsco-ui-system.css',
       '../css/catsco-liquid-green.css',

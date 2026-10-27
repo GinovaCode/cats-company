@@ -7792,6 +7792,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(loadingState?.getAttribute('role')).toBe('status');
     expect(loadingState?.textContent).toContain('正在读取对话');
     expect(loadingState?.querySelectorAll('.cc-history-loading-bubble')).toHaveLength(3);
+    expect(loadingState?.parentElement).toBe(container.querySelector('.v3-timeline'));
+    expect(container.querySelector('.v3-timeline-inner .cc-history-loading')).toBeNull();
     expect(container.querySelector('.v3-timeline.is-history-loading')).not.toBeNull();
     expect(container.querySelector('.v3-date-divider')).toBeNull();
 
