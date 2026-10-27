@@ -602,8 +602,6 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
             </div>
           )}
 
-          {busy && !connectionReady && <LoadingState kind="connect" className="catsco-connect-motion" label="正在连接电脑" compact />}
-
           <div className="catsco-connect-actions">
             <button className={`oc-btn ${computersMode ? 'oc-btn-default' : 'oc-btn-primary'}`} type="button" onClick={startConnect} disabled={busy}>
               {busy && <Loader2 className="catsco-spin" size={16} />}
