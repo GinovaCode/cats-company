@@ -93,6 +93,25 @@ func countCompleteTurns(messages []message, agentUID int64) int64 {
 	return turns
 }
 
+// endsWithOpenTurn reports whether the range ends in a user message that no agent
+// message has answered yet.
+//
+// This is the property a copy boundary must avoid, and it is stated directly
+// rather than by comparing turn counts: comparing a range against the same range
+// minus its last row rejects a legal anchor that lands on the last of several
+// agent messages in one turn, where the count does not change.
+func endsWithOpenTurn(messages []message, agentUID int64) bool {
+	open, answered := false, false
+	for _, m := range messages {
+		if m.from != agentUID {
+			open, answered = true, false
+		} else if open {
+			answered = true
+		}
+	}
+	return open && !answered
+}
+
 func (s SQLStore) GetSessionFork(ctx context.Context, uid int64, request, topic string) (*types.SessionFork, error) {
 	column, value := "request_id", request
 	if request == "" {
@@ -188,21 +207,23 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 		}
 		messages = all[:anchor+1]
 	}
-	// Validate every sender before counting turns: the count treats every
-	// non-agent sender as the human participant, which is only sound once the
-	// conversation is known to have exactly those two senders.
-	for _, m := range messages {
+	// Validate every sender in the whole conversation, not only inside the copied
+	// range: the total turn count is computed over `all`, so a third sender after
+	// the anchor would be read as the human participant and inflate the total,
+	// which would shift the cut in a compacted runtime.
+	for _, m := range all {
 		if m.from != req.ActorUserID && m.from != req.AgentUID {
 			return nil, store.ErrSessionForkForbidden
 		}
 	}
-	// The anchor must be the message that closes a turn. Otherwise the copied
-	// range ends mid-turn: the runtime, which cuts at a turn boundary, would keep
-	// less than the server copied, and the copy's visible history and its model
-	// context would disagree. Requiring the last row to close a turn is the
-	// cheapest way to state that on both sides.
-	if req.UntilMessageID > 0 &&
-		countCompleteTurns(messages, req.AgentUID) <= countCompleteTurns(messages[:len(messages)-1], req.AgentUID) {
+	// The copied range must not end in an open, unanswered turn: the runtime cuts at
+	// a turn boundary and would keep less than the server copied, so the copy's
+	// visible history and its model context would disagree. Comparing the range's
+	// count against the count without the last row would reject a legal anchor that
+	// lands on the last of several agent messages in one turn, so state the property
+	// directly instead: after the last row, no user message may be awaiting an
+	// answer.
+	if req.UntilMessageID > 0 && endsWithOpenTurn(messages, req.AgentUID) {
 		return nil, store.ErrSessionForkSource
 	}
 	title := req.Name

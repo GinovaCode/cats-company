@@ -56,3 +56,28 @@ func TestCountCompleteTurnsOnProductionShape(t *testing.T) {
 		t.Fatalf("production-shaped history counts %d turns, want 2", got)
 	}
 }
+
+// The copy boundary must not end in a turn that is still waiting for an answer,
+// and it must not reject a legal anchor either. Comparing "count of range" with
+// "count without the last row" got the second case wrong: an anchor on the last of
+// several agent messages leaves the count unchanged.
+func TestEndsWithOpenTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		messages []message
+		want     bool
+	}{
+		{"answered turn", []message{human(), bot()}, false},
+		{"trailing user message", []message{human(), bot(), human()}, true},
+		{"anchor on last of several agent messages", []message{human(), bot(), bot()}, false},
+		{"only a user message", []message{human()}, true},
+		{"empty range", nil, false},
+		{"agent first", []message{bot(), human(), bot()}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := endsWithOpenTurn(tc.messages, agentUID); got != tc.want {
+				t.Fatalf("endsWithOpenTurn(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}

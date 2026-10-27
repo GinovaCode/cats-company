@@ -20,7 +20,7 @@ func readMigration(t *testing.T, name string) string {
 }
 
 func TestSessionForkPostgresMigrationMatchesStartup(t *testing.T) {
-	expected := readMigration(t, "000042_session_forks") + readMigration(t, "000061_session_fork_turn_count")
+	expected := readMigration(t, "000042_session_forks") + readMigration(t, "000063_session_fork_turn_count")
 	for _, eol := range []string{"\n", "\r\n"} {
 		t.Run(fmt.Sprintf("EOL=%q", eol), func(t *testing.T) {
 			migration := strings.ReplaceAll(strings.ReplaceAll(expected, "\r\n", "\n"), "\n", eol)
@@ -34,7 +34,7 @@ func TestSessionForkPostgresMigrationMatchesStartup(t *testing.T) {
 // A migration that cannot be rolled back is not a migration. The column is an
 // addition, so its down direction must remove it.
 func TestSessionForkTurnCountMigrationIsReversible(t *testing.T) {
-	down, err := os.ReadFile("../migrations/postgres/000061_session_fork_turn_count.down.sql")
+	down, err := os.ReadFile("../migrations/postgres/000063_session_fork_turn_count.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -321,7 +321,7 @@ func TestSessionForkMySQLMigrationMatchesStartup(t *testing.T) {
 	// migrations; each numbered migration runs once. Comparing the pair keeps a
 	// new column from landing on one side only.
 	var combined strings.Builder
-	for _, name := range []string{"000041_session_forks", "000048_session_fork_turn_count"} {
+	for _, name := range []string{"000041_session_forks", "000063_session_fork_turn_count"} {
 		raw, err := os.ReadFile("../migrations/mysql/" + name + ".up.sql")
 		if err != nil {
 			t.Fatal(err)
@@ -343,7 +343,7 @@ func TestSessionForkMySQLMigrationMatchesStartup(t *testing.T) {
 
 // A migration that cannot be rolled back is not a migration.
 func TestSessionForkTurnCountMigrationIsReversible(t *testing.T) {
-	down, err := os.ReadFile("../migrations/mysql/000048_session_fork_turn_count.down.sql")
+	down, err := os.ReadFile("../migrations/mysql/000063_session_fork_turn_count.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
