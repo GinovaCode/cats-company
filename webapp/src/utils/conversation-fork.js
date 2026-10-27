@@ -64,6 +64,10 @@ export function describeForkError(error) {
     session_fork_not_found: '尚未找到此复制请求，可以使用原请求重试。',
     session_fork_ack_timeout: '运行该 Agent 的设备长时间没有响应，可能版本过旧或已离线。请确认设备在线并升级到支持会话复制的版本后，重新创建副本。',
     session_fork_cancelled: '复制已取消，原会话不受影响。',
+    // The chosen point was summarized away during context compaction, so that part
+    // of the conversation no longer exists message by message. Plain wording: the
+    // place is too old, pick a newer one.
+    session_fork_anchor_compacted: '这个位置太靠前了，早期对话已经被系统压缩整理，没法从这里复制。请往下选一个更接近现在的位置再复制。',
   };
   return messages[text] || text;
 }
