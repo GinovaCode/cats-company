@@ -90,12 +90,16 @@ type botRunnerHub interface {
 
 // ServiceBotRunner 把 run 转交给 bot 执行。
 type ServiceBotRunner struct {
-	store   botRunnerStore
-	hub     botRunnerHub
-	timeout time.Duration
-	poll    time.Duration
-	settle  time.Duration
-	// ambiguityGrace：看见回复却认不了时等多久才如实失败（测试可调小）。
+	store botRunnerStore
+	hub   botRunnerHub
+	// —— 以下是**进程内显式覆盖**，零值 = 不覆盖（走平台默认 + definition）。——
+	//
+	// 保留它们是为了不改变已有语义：测试用它把超时压到 100ms，运维脚本也可能
+	// 用它钉一个值。显式设置的值**不做区间夹取** —— 那是代码里写死的意图，
+	// 不是外部配置里的手滑。
+	timeout        time.Duration
+	poll           time.Duration
+	settle         time.Duration
 	ambiguityGrace time.Duration
 	// ownerWhitelist 非空时，只有这些账号名下的 bot 可以被当作工具调用。
 	ownerWhitelist map[int64]bool
@@ -107,20 +111,41 @@ type ServiceBotRunner struct {
 }
 
 // NewServiceBotRunner 构造 runner；store/hub 缺能力时返回 nil（能力关闭）。
+//
+// 不再预置计时字段：那会让「零值 = 没覆盖」的约定失效，也把平台默认写死在
+// 两个地方。默认值统一由 platformBotRunnerTuning() 提供。
 func NewServiceBotRunner(db any, hub botRunnerHub) *ServiceBotRunner {
 	store, ok := db.(botRunnerStore)
 	if !ok || hub == nil {
 		return nil
 	}
 	return &ServiceBotRunner{
-		store:          store,
-		hub:            hub,
-		timeout:        defaultBotRunnerTimeout,
-		poll:           defaultBotRunnerPollInterval,
-		settle:         defaultBotRunnerSettle,
-		ambiguityGrace: botReplyAmbiguousGrace,
-		inFlight:       map[string]int{},
+		store:    store,
+		hub:      hub,
+		inFlight: map[string]int{},
 	}
+}
+
+// tuningFor 解析一次 run 要用的参数。
+//
+//	平台默认(内置+env，已夹区间) ← definition.runner(已夹区间) ← 进程内显式覆盖(原值)
+//
+// 最后一层不夹区间，见字段注释。
+func (r *ServiceBotRunner) tuningFor(definition json.RawMessage) botRunnerTuning {
+	t := botRunnerTuningFor(definition)
+	if r.timeout > 0 {
+		t.Timeout = r.timeout
+	}
+	if r.poll > 0 {
+		t.Poll = r.poll
+	}
+	if r.settle > 0 {
+		t.Settle = r.settle
+	}
+	if r.ambiguityGrace > 0 {
+		t.AmbiguityGrace = r.ambiguityGrace
+	}
+	return t
 }
 
 // claimTopic 登记「我要在这个 topic 上等一条回复」，返回当前共有几单在等。
@@ -206,11 +231,21 @@ func ParseBotRunnerBotUID(definition json.RawMessage) (int64, bool) {
 //
 // 投递失败直接改 run 状态（fail），不留给「恢复扫描」——这里没有可以重放的副作用：
 // 消息发出去就已经发了，重发会让 bot 收到两遍同一个请求。
+//
+// **这里必须保持零阻塞**。它跑在 MCP `tools/call` 的返回路径上，而这个功能对
+// 主 Agent 的承诺就是「立刻拿到运行句柄」。所以：
+//   - 只做内存里的 JSON 解析（判断是不是 bot runner、目标 bot 是谁）；
+//   - **任何 DB 读一律放进后台 goroutine**（见 execute）。
+//
+// 早期版本在这里同步读一次最新 definition，意在热更新，代价是给「零阻塞」
+// 偷偷加了最多 2 秒 —— 拿核心承诺去换次要需求，不能接受。
 func (r *ServiceBotRunner) MaybeDispatch(ctx context.Context, agent store.ServiceAgentDescriptor, run store.ServiceRun, callerUID int64) {
+	_ = ctx // 请求级 ctx 不往下传：本函数返回后它就会被取消，而后台还要干活。
 	if r == nil {
 		return
 	}
-	botUID, ok := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON))
+	definition := json.RawMessage(agent.DefinitionJSON)
+	botUID, ok := ParseBotRunnerBotUID(definition)
 	if !ok {
 		return
 	}
@@ -219,10 +254,64 @@ func (r *ServiceBotRunner) MaybeDispatch(ctx context.Context, agent store.Servic
 		SessionID: run.SessionID,
 		Slug:      agent.Slug,
 		BotUID:    botUID,
+		AgentID:   agent.ID,
 		CallerUID: callerUID,
 		Input:     run.Input,
+		// 会话快照：热更新读不到时用它（不能因为一次读失败就不派活）。
+		SnapshotDefinition: definition,
 	}
 	go r.execute(req)
+}
+
+// applyFreshConfig 用**最新** definition 覆盖本次 run 的执行配置。
+//
+// 为什么要重读：MCP 会话建立时把 definition 快照进了工具闭包，用快照意味着
+// 「改了应用配置，已连接的调用方要重开 MCP 会话才生效」—— 那不叫实时更新。
+//
+// 热更新范围：
+//   - 执行参数（超时/静默/歧义窗口/轮询）—— 总是跟随最新配置；
+//   - `bot_uid` —— 最新配置**仍然是 bot runner** 时才跟随。
+//
+// 为什么 `bot_uid` 要加条件：`runner.type` 是在 invoke 时就定下的（它决定了
+// 本次返回句柄还是同步等），不能跑到一半把执行者从 bot 变成 worker。
+// 但如果最新配置依旧是 bot、只是换了人，那就应该换 —— 用户改了配置却发现
+// 不生效，才是真正的隐患。
+func (r *ServiceBotRunner) applyFreshConfig(req botRunRequest) botRunRequest {
+	fresh := r.freshDefinition(req.AgentID, req.Slug, req.SnapshotDefinition)
+	if freshBotUID, ok := ParseBotRunnerBotUID(fresh); ok {
+		req.BotUID = freshBotUID
+	}
+	req.Tuning = r.tuningFor(fresh)
+	return req
+}
+
+// freshDefinition 尽力取到最新 definition；取不到就用会话快照。
+//
+// 用 context.Background() 而不是请求 ctx：调用它的时候请求早已返回，
+// 请求 ctx 已经（或即将）被取消，拿它去查库会立刻失败 —— 然后「热更新永远
+// 退化成快照」，而且不报错。这是个容易静默失效的点，所以固定用后台 ctx。
+func (r *ServiceBotRunner) freshDefinition(agentID int64, slug string, snapshot json.RawMessage) json.RawMessage {
+	reader, ok := r.store.(botDefinitionReader)
+	if !ok || agentID <= 0 {
+		return snapshot
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), botDefinitionReadTimeout)
+	defer cancel()
+	// definitionRev=0 = 最新版本。
+	_, _, fresh, err := reader.GetServiceAgentDefinition(ctx, agentID, 0)
+	if err != nil || len(fresh) == 0 {
+		if err != nil {
+			log.Printf("bot runner: read fresh definition agent=%s: %v (fallback to session snapshot)", slug, err)
+		}
+		return snapshot
+	}
+	return json.RawMessage(fresh)
+}
+
+// botDefinitionReader 是「按 agent 取最新 definition」的窄能力。
+// 与 botRunnerStore 分开：缺这个能力时热更新退化成会话快照，其余功能不受影响。
+type botDefinitionReader interface {
+	GetServiceAgentDefinition(ctx context.Context, agentID int64, definitionRev int64) (slug string, thresholdSeconds int, definitionJSON json.RawMessage, err error)
 }
 
 type botRunRequest struct {
@@ -230,8 +319,15 @@ type botRunRequest struct {
 	SessionID string
 	Slug      string
 	BotUID    int64
+	// AgentID 用于后台重读最新 definition（热更新）。
+	AgentID   int64
 	CallerUID int64
 	Input     json.RawMessage
+	// SnapshotDefinition 是 invoke 时拿到的那份（会话快照），热更新读不到时兜底。
+	SnapshotDefinition json.RawMessage
+	// Tuning 是本次 run 的执行参数（已合并平台默认与 definition 覆盖）。
+	// 每次调用重新解析，所以改应用配置下一次调用就生效。
+	Tuning botRunnerTuning
 }
 
 func (r *ServiceBotRunner) execute(req botRunRequest) {
@@ -242,9 +338,20 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		}
 	}()
 
+	// 热更新放在这里（后台 goroutine）而不是 MaybeDispatch：
+	// 那张「立即返回运行句柄」的承诺不能被一次 DB 读拖慢。
+	// 只影响「bot 多快开始干活」（最多 2s），不影响调用方拿到句柄的时间。
+	req = r.applyFreshConfig(req)
+
+	tuning := req.Tuning
+	if tuning.Timeout <= 0 {
+		// 兜底：调用方造了零值（或直接调 execute）时不能变成「立刻超时」。
+		tuning = r.tuningFor(req.SnapshotDefinition)
+	}
+
 	// 先在落库层面占住这个 run：抢不到说明已被别的执行方接管 / 已终态。
 	started, err := r.store.StartServiceRun(context.Background(), req.RunID,
-		fmt.Sprintf("bot:%d", req.BotUID), int(r.timeout.Seconds())+60)
+		fmt.Sprintf("bot:%d", req.BotUID), int(tuning.Timeout.Seconds())+60)
 	if err != nil {
 		log.Printf("bot runner: start run=%s: %v", req.RunID, err)
 		return
@@ -316,7 +423,7 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 		return
 	}
 
-	reply, waitErr := r.awaitReply(topic, msgID, req.BotUID, req.SessionID)
+	reply, waitErr := r.awaitReply(topic, msgID, req.BotUID, req.SessionID, tuning)
 	if waitErr != nil {
 		r.fail(req, waitErr.Error())
 		return
@@ -361,8 +468,8 @@ func (r *ServiceBotRunner) execute(req botRunRequest) {
 //
 // 收到第一段后每出现新内容就把收尾时间往后推 settle，直到静默：bot 会把长回复
 // 按 4000 字切段，收得太早会把答案截断。
-func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64, sessionID string) (string, error) {
-	deadline := time.Now().Add(r.timeout)
+func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64, sessionID string, tuning botRunnerTuning) (string, error) {
+	deadline := time.Now().Add(tuning.Timeout)
 	var (
 		sinceID     = promptID
 		parts       []string
@@ -422,13 +529,13 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 			}
 			size += len(text)
 			parts = append(parts, text)
-			settleTill = time.Now().Add(r.settle)
+			settleTill = time.Now().Add(tuning.Settle)
 		}
 		if len(parts) > 0 && time.Now().After(settleTill) {
 			return strings.Join(parts, "\n\n"), nil
 		}
 		// 看见回复了却认不了：别干等到超时，尽快让调用方知道是「分不清」而非「没回」。
-		if len(parts) == 0 && sawUnowned && time.Since(ambiguousAt) > r.grace() {
+		if len(parts) == 0 && sawUnowned && time.Since(ambiguousAt) > tuning.AmbiguityGrace {
 			return "", fmt.Errorf(
 				"bot_reply_ambiguous: 目标 bot 的回复没有指回本次调用（缺 reply_to），" +
 					"而同一会话上还有别的调用在等，无法判断哪条是这次的。请升级客户端后重试，或改为串行调用")
@@ -438,18 +545,10 @@ func (r *ServiceBotRunner) awaitReply(topic string, promptID int64, botUID int64
 				// 已经有内容：按「说到一半」交付，比丢掉更有用。
 				return strings.Join(parts, "\n\n"), nil
 			}
-			return "", fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", r.timeout)
+			return "", fmt.Errorf("bot_timeout: 等了 %s 目标 bot 没有回复", tuning.Timeout)
 		}
-		time.Sleep(r.poll)
+		time.Sleep(tuning.Poll)
 	}
-}
-
-// grace 返回「看见回复却认不了」的容忍窗口。
-func (r *ServiceBotRunner) grace() time.Duration {
-	if r.ambiguityGrace > 0 {
-		return r.ambiguityGrace
-	}
-	return botReplyAmbiguousGrace
 }
 
 // botReplyOwnership 是一条 bot 消息的归属判定结果。
