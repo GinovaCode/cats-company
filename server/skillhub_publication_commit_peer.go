@@ -143,3 +143,56 @@ func (h *SkillHubPublicationPeerHandler) authorizeCommitPermit(ctx context.Conte
 	writeSkillHubPublicationJSON(w, 200, map[string]any{"schemaVersion": 1, "receipt": body.Receipt, "target": body.Target,
 		"permitId": p.ID, "intentHash": p.Intent.IdentityHash, "authorityEpoch": p.AuthorityEpoch, "authorizedAt": p.AuthorizedAt.UTC()})
 }
+
+func (h *SkillHubPublicationPeerHandler) authorizeDescriptionReleasePermit(ctx context.Context, w http.ResponseWriter, data []byte, fail func(int, string)) {
+	object, err := publicationExactObject(data, "schemaVersion", "entryId", "applicationId", "target")
+	if err != nil {
+		fail(400, "publication.invalid_request")
+		return
+	}
+	var request struct {
+		SchemaVersion int                                   `json:"schemaVersion"`
+		EntryID       string                                `json:"entryId"`
+		ApplicationID string                                `json:"applicationId"`
+		Target        store.SkillHubPublicationCommitTarget `json:"target"`
+	}
+	if _, err := publicationExactObject(object["target"], "candidateHash", "manifestHash", "publisherUserId", "publisherProfileId", "namespace", "skillId", "version", "uploadId", "releaseAt", "confirmVersionPublish"); err != nil ||
+		json.Unmarshal(data, &request) != nil || request.SchemaVersion != 1 || !store.ValidSkillHubPublicationDeliveryEntryID(request.EntryID) ||
+		!store.ValidSkillHubPublicationDescriptionApplicationID(request.ApplicationID) || request.Target.Validate() != nil {
+		fail(400, "publication.invalid_request")
+		return
+	}
+	if !h.limits.allow(HTTPRateLimitConfig{Name: "publication_description_release_entry", Limit: 30, Window: time.Minute, Burst: 5}, request.EntryID) {
+		w.Header().Set("Retry-After", "5")
+		fail(429, "publication.rate_limited")
+		return
+	}
+	if ctx.Err() != nil {
+		fail(503, "publication.peer_unavailable")
+		return
+	}
+	p, err := h.descriptionPermits.AuthorizeSkillHubPublicationDescriptionRelease(ctx, request.EntryID, request.ApplicationID, request.Target)
+	if ctx.Err() != nil {
+		fail(503, "publication.peer_unavailable")
+		return
+	}
+	switch {
+	case errors.Is(err, store.ErrSkillHubPublicationDenied):
+		fail(403, "publication.commit_denied")
+		return
+	case errors.Is(err, store.ErrSkillHubPublicationSettled):
+		fail(409, "publication.commit_cancelled")
+		return
+	case errors.Is(err, store.ErrSkillHubPublicationConflict), errors.Is(err, store.ErrSkillHubPublicationInvalid):
+		fail(409, "publication.commit_conflict")
+		return
+	}
+	if err != nil || p == nil || p.Validate() != nil || p.Intent.EntryID != request.EntryID ||
+		p.Intent.ApplicationID != request.ApplicationID || p.Intent.Target != request.Target {
+		fail(503, "publication.peer_unavailable")
+		return
+	}
+	writeSkillHubPublicationJSON(w, 200, map[string]any{"schemaVersion": 1, "entryId": p.Intent.EntryID,
+		"applicationId": p.Intent.ApplicationID, "target": p.Intent.Target, "intentHash": p.Intent.IdentityHash,
+		"permitId": p.ID, "authorizedAt": p.AuthorizedAt.UTC()})
+}

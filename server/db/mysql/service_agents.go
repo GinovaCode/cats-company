@@ -16,7 +16,7 @@ import (
 
 var _ store.ServiceAgentStore = (*Adapter)(nil)
 
-const mysqlServiceRunColumns = `run_id, session_id, state, client_token, input_json, instance_id, lease_epoch, lease_expires_at, attempts, result_json, checkpoint_ref`
+const mysqlServiceRunColumns = `run_id, session_id, state, client_token, input_json, instance_id, lease_epoch, lease_expires_at, attempts, result_json, checkpoint_ref, COALESCE(error_text, '')`
 
 type mysqlServiceRunScanner interface {
 	Scan(dest ...interface{}) error
@@ -29,7 +29,7 @@ func scanMySQLServiceRun(scanner mysqlServiceRunScanner) (store.ServiceRun, erro
 	var clientToken sql.NullString
 	if err := scanner.Scan(
 		&run.RunID, &run.SessionID, &run.State, &clientToken, &input, &run.InstanceID,
-		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef,
+		&run.LeaseEpoch, &leaseExpires, &run.Attempts, &result, &run.CheckpointRef, &run.ErrorText,
 	); err != nil {
 		return store.ServiceRun{}, err
 	}
@@ -75,6 +75,28 @@ func (a *Adapter) GetServiceAgentBySlug(ctx context.Context, slug string) (int64
 		return 0, "", 0, 0, fmt.Errorf("get service agent by slug: %w", err)
 	}
 	return id, name, version, threshold, nil
+}
+
+// GetServiceAgentAccess 取当前归属与可见性（调用准入用；只查 service_agents 一行）。
+//
+// 为什么要单独一条查询：工具闭包里的 descriptor 是建立 MCP 会话时的快照，
+// 用快照判定可见性会让「改成自用」对已连接的调用方失效。这条查询很轻（slug 唯一索引）。
+func (a *Adapter) GetServiceAgentAccess(ctx context.Context, slug string) (int64, string, error) {
+	var (
+		ownerUID   int64
+		visibility string
+	)
+	err := a.db.QueryRowContext(ctx, `
+		SELECT COALESCE(a.owner_uid, 0), COALESCE(a.visibility, '')
+		FROM service_agents a
+		WHERE a.slug = ? AND a.state = 'active'`, slug).Scan(&ownerUID, &visibility)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", store.ErrServiceAgentNotFound
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("get service agent access: %w", err)
+	}
+	return ownerUID, visibility, nil
 }
 
 func (a *Adapter) CreateServiceSession(ctx context.Context, agentID, definitionRev, callerUID, callerBotUID int64, assetsHash string) (string, error) {

@@ -90,7 +90,32 @@ func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
 	copy.TokenQuota = 0
 	copy.TokenQuotaDuration = ""
 	copy.CloudWorkerBillingMode = ""
+	// Which fleet a plan buys is an internal capacity decision; the public
+	// catalog only advertises quotas and prices.
+	copy.CloudWorkerDeploymentProfile = ""
+	// Retention windows are an internal capacity/cost decision.
+	copy.CloudWorkerRetentionDays = 0
 	return &copy
+}
+
+// resolvePlanDeploymentProfile keeps a plan's fleet assignment when the admin
+// request omits the field: the plan editor does not round-trip every column, so
+// an absent value must not silently move already-sold plans back onto dedicated
+// instances. An explicit value, including an empty string, is honoured.
+func resolvePlanDeploymentProfile(existing *types.CommercialPlan, requested *string) (string, error) {
+	if requested != nil {
+		profile, ok := types.NormalizeCloudWorkerProfile(strings.TrimSpace(*requested))
+		if !ok {
+			return "", fmt.Errorf("unsupported cloud worker deployment profile")
+		}
+		return profile, nil
+	}
+	if existing != nil {
+		if profile, ok := types.NormalizeCloudWorkerProfile(existing.CloudWorkerDeploymentProfile); ok {
+			return profile, nil
+		}
+	}
+	return types.CloudWorkerPrivateNAT, nil
 }
 
 func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
@@ -1277,6 +1302,11 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			State                  int                `json:"state"`
 			SortOrder              int                `json:"sort_order"`
 			CloudWorkerBillingMode string             `json:"cloud_worker_billing_mode"`
+			// Pointer so an absent field keeps the plan's current fleet
+			// instead of decoding to "" and landing on private_nat.
+			CloudWorkerDeploymentProfile *string `json:"cloud_worker_deployment_profile"`
+			// 0 keeps the derived window (7d→3, longer→7); a positive value pins it.
+			CloudWorkerRetentionDays int `json:"cloud_worker_retention_days"`
 			// Pointer so an absent field keeps the plan's current setting
 			// instead of decoding to false and silently pinning the plan.
 			AutoUpdateModels *bool `json:"auto_update_models"`
@@ -1347,6 +1377,15 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 		if req.AutoUpdateModels != nil {
 			autoUpdateModels = *req.AutoUpdateModels
 		}
+		deploymentProfile, err := resolvePlanDeploymentProfile(existingPlan, req.CloudWorkerDeploymentProfile)
+		if err != nil {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if req.CloudWorkerRetentionDays < 0 || req.CloudWorkerRetentionDays > 90 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud worker retention days must be within 0-90"})
+			return
+		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
 			Slug:                   req.Slug,
 			Name:                   req.Name,
@@ -1362,10 +1401,13 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			TokenQuota:             req.TokenQuota,
 			TokenQuotaDuration:     req.TokenQuotaDuration,
 			CloudWorkerBillingMode: req.CloudWorkerBillingMode,
-			DurationDays:           req.DurationDays,
-			State:                  req.State,
-			SortOrder:              req.SortOrder,
-			AutoUpdateModels:       autoUpdateModels,
+			// Fleet assignment follows the same absent-means-keep rule.
+			CloudWorkerDeploymentProfile: deploymentProfile,
+			CloudWorkerRetentionDays:     req.CloudWorkerRetentionDays,
+			DurationDays:                 req.DurationDays,
+			State:                        req.State,
+			SortOrder:                    req.SortOrder,
+			AutoUpdateModels:             autoUpdateModels,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save plan"})

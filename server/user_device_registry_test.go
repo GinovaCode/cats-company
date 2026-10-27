@@ -473,6 +473,7 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 		displayName: "Agent Runtime",
 		send:        make(chan []byte, 1),
 	}
+	botClient.setRuntimeCapabilities([]string{xiaobaDeviceTargetsCapability})
 	hub.addClient(botClient)
 
 	payload, err := normalizeMessageRequest(&SendMessageRequest{

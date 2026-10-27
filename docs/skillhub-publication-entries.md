@@ -322,7 +322,23 @@ connection generation. Neither a legacy body nor DeviceID-as-BodyID fallback is
 allowed. A desktop works only when already bound to that Bot through its Bot
 socket, not a generic owner device. No selection invokes Bot switch or rebinding.
 
-The runtime must explicitly advertise `skillhub.publication.sourceProbe.v1`.
+Runtime publication capabilities are operation-specific:
+
+| Capability | Operation |
+| --- | --- |
+| `skillhub.publication.sourceProbe.v1` | Read-only original source admission probe. |
+| `skillhub.publication.capture.v1` | Retain/replay the original immutable candidate capture. |
+| `skillhub.publication.upload.v1` | Upload that capture under separate upload authority. |
+| `skillhub.publication.verifyRepairSource.v1` | Service-only live original-source check for a confirmed repair application, including later repair rounds; never capture replay or derived-copy verification. |
+
+The repair-source lane additionally requires the default-off CatsCo
+`CATSCO_SKILLHUB_PUBLICATION_REPAIR_SOURCE_ENABLED` switch and Runtime's
+probe/capture/repair-source switches. It adds no requirement to ordinary
+probe/capture/upload callers. Its exact protocol, checks and remaining
+continuation scope are described in
+[Confirmed description application](skillhub-publication-description-application.md#dedicated-live-runtime-source-adapter).
+
+The runtime must explicitly advertise `skillhub.publication.sourceProbe.v1` for admission.
 Legacy share capability is not enough. CatsCo sends a fresh server-random probe ID
 with the same three source selectors and a maximum 30-second expiry. The probe is
 read-only: the XiaoBa adapter must verify the scoped local reference and workspace
@@ -1039,6 +1055,36 @@ response, reopened-handler recovery with identical ID/time, cancel-before-permit
 denial and historical replay after later cancellation/disablement. Receipt and
 human intent are explicitly seeded test facts, not real user approval or a full
 publication E2E. No Cloud package-writing worker is registered by this transport.
+
+## Authenticated derived-description release permit transport
+
+`POST /api/skillhub/publications/internal/description-release-permits/authorize`
+is independently default-off under
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_PERMITS_ENABLED`. It uses the
+same configured issuer, Cloud audience, peer secret, HTTPS/Host validation and
+rate/concurrency limits as the commit-permit route. It accepts only the exact
+JSON object `schemaVersion`, `entryId`, `applicationId` and `target`; `target`
+uses the same exact 10 fields documented above. It does not accept a receipt,
+upload grant, browser session or model-supplied identity. The durable human
+confirmed release intent must already exist and match the complete target.
+
+Success returns the schema version, entry/application IDs, full target, intent
+digest, immutable permit ID and authorization timestamp. Repeating the same
+request recovers the same permit, including after local authority changes; it
+cannot change the target. `403 publication.commit_denied` and `409
+publication.commit_conflict` are terminal authority/policy outcomes. `503
+publication.peer_unavailable` represents storage or transient transport failures
+and may be retried with the exact same request. `429 publication.rate_limited`
+may be retried after `Retry-After`. The database serializes permit issuance
+against both local cancellation paths and prevents subsequent entry cancellation
+or cancellation-intent insertion. The permit is not a Cloud commit or published
+result: the future Cloud consumer must atomically record it with its own commit
+transition and serialize that transition against Cloud cancellation. No Cloud
+consumer or publication worker is registered by this endpoint.
+
+Real-PostgreSQL CatsCo tests cover target matching, exact permit replay,
+cancellation ordering, authority loss after issuance, and rejection of both the
+legacy receipt commit path and cancellation paths.
 
 ## Cloud plan and execution transport
 

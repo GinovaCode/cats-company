@@ -76,7 +76,9 @@ type Hub struct {
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
 	// skip recovery.
-	taskReaperInterval time.Duration
+	taskReaperInterval   time.Duration
+	taskStatusDeliveryMu sync.Mutex
+	taskStatusDelivery   chan struct{}
 	// botConnectionEpochs is incremented every time a bot registers a new
 	// connection. Disconnected-task recovery timers snapshot the current epoch
 	// and skip recovery when a newer connection generation appeared, so an old
@@ -96,6 +98,7 @@ type Hub struct {
 	publicationAdmissions       chan struct{}
 	publicationDelivery         *publicationDeliveryWorker
 	publicationCapture          *publicationCaptureTransport
+	publicationRepairSource     *publicationRepairSourceTransport
 	publicationUpload           *publicationUploadTransport
 }
 
@@ -116,28 +119,57 @@ type presenceEvent struct {
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub                  *Hub
-	conn                 *websocket.Conn
-	uid                  int64
-	remoteAddr           string
-	displayName          string
-	accountType          types.AccountType
-	bodyID               string
-	installationID       string
-	connectionID         string
-	deviceOwnerUID       int64
-	deviceID             string
-	deviceBodyID         string
-	deviceInstallationID string
-	deviceConnector      *DeviceConnectorClaims
-	wikiAgentUID         int64
-	botRuntimeCredential *botRuntimeCredentialClaims
-	messagingAttention   messagingClientAttention
-	messagingAttentionMu sync.RWMutex
-	attentionSyncMu      sync.Mutex
-	send                 chan []byte
-	sendMu               sync.RWMutex
-	sendClosed           bool
+	hub                   *Hub
+	conn                  *websocket.Conn
+	uid                   int64
+	remoteAddr            string
+	displayName           string
+	accountType           types.AccountType
+	bodyID                string
+	installationID        string
+	connectionID          string
+	deviceOwnerUID        int64
+	deviceID              string
+	deviceBodyID          string
+	deviceInstallationID  string
+	deviceConnector       *DeviceConnectorClaims
+	wikiAgentUID          int64
+	botRuntimeCredential  *botRuntimeCredentialClaims
+	runtimeCapabilities   map[string]struct{}
+	runtimeCapabilitiesMu sync.RWMutex
+	messagingAttention    messagingClientAttention
+	messagingAttentionMu  sync.RWMutex
+	attentionSyncMu       sync.Mutex
+	send                  chan []byte
+	sendMu                sync.RWMutex
+	sendClosed            bool
+}
+
+func (c *Client) setRuntimeCapabilities(values []string) {
+	if c == nil {
+		return
+	}
+	capabilities := make(map[string]struct{}, 1)
+	for _, value := range values {
+		// Capability names are a closed, server-owned vocabulary. Do not retain
+		// arbitrary client strings in this long-lived WebSocket object.
+		if strings.TrimSpace(value) == xiaobaDeviceTargetsCapability {
+			capabilities[xiaobaDeviceTargetsCapability] = struct{}{}
+		}
+	}
+	c.runtimeCapabilitiesMu.Lock()
+	c.runtimeCapabilities = capabilities
+	c.runtimeCapabilitiesMu.Unlock()
+}
+
+func (c *Client) hasRuntimeCapability(capability string) bool {
+	if c == nil || capability == "" {
+		return false
+	}
+	c.runtimeCapabilitiesMu.RLock()
+	_, ok := c.runtimeCapabilities[capability]
+	c.runtimeCapabilitiesMu.RUnlock()
+	return ok
 }
 
 // NewHub creates a new Hub.
@@ -194,6 +226,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
+		taskStatusDelivery:  make(chan struct{}, 1),
 		botConnectionEpochs: make(map[int64]uint64),
 	}
 	hub.publicationWorkspaceEntries = publicationWorkspaceEntriesEnabled()
@@ -201,6 +234,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	hub.publicationAdmissions = make(chan struct{}, 16)
 	hub.publicationDelivery = newPublicationDeliveryWorkerFromEnv(hub)
 	hub.publicationCapture = newPublicationCaptureTransportFromEnv(hub)
+	hub.publicationRepairSource = newPublicationRepairSourceTransportFromEnv(hub)
 	hub.publicationUpload = newPublicationUploadTransportFromEnv(hub)
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -212,6 +246,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	// or a transient DB error; the reaper re-scans durable rows so a missed
 	// timer still converges to stale (review 2026-08-05).
 	go hub.runConversationTaskReaper()
+	go hub.runConversationTaskStatusDelivery()
 	go hub.runArtifactRuntimeRunReaper()
 	// Bounds how long a session fork may stay pending. A runtime that predates
 	// session forks ignores the control frame silently, so the create path's
@@ -1417,6 +1452,10 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	// This replaces the complete capability set on every handshake. A
+	// reconnect into an older runtime therefore cannot retain an opt-in made by
+	// a previous connection.
+	client.setRuntimeCapabilities(msg.RuntimeCapabilities)
 	h.setClientMessagingAttention(client, messagingClientAttention{
 		SubscriptionID: msg.PushSubscriptionID,
 		ActiveTopic:    msg.ActiveTopic,
@@ -2120,6 +2159,8 @@ func (h *Hub) handleSub(client *Client, msg *MsgClientSub) {
 func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 	uid := client.uid
 	switch msg.What {
+	case "task_statuses":
+		h.handleTaskStatusHistory(client, msg)
 	case "online":
 		// Return online status of friends and owned bots.
 		onlineList, err := BuildOnlineStatusList(h.db, h, uid)
@@ -2583,11 +2624,12 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 		out := msg
 		if msg != nil && msg.Data != nil && senderUID > 0 {
+			explicitTargetsEnabled := xiaobaRuntimeV2EnabledForClient(h.getClient(m.UserID))
 			metadata := withCatscoIdentityMetadata(
 				msg.Data.Metadata,
-				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
+				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata, ExplicitTargetsEnabled: &explicitTargetsEnabled}),
 			)
-			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata))
+			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadataWithExplicitTargets(senderUID, m.UserID, msg.Data.Topic, explicitTargetsEnabled, msg.Data.Metadata))
 			metadata = withGatewayAnnotationAgentContext(
 				metadata,
 				h.gatewayAnnotationAgentContext(senderUID, m.UserID, msg.Data.Topic, msg.Data.Metadata),

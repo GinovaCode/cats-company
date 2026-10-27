@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   removeServiceAgentSubscription: vi.fn(),
   publishServiceAgent: vi.fn(),
   unpublishServiceAgent: vi.fn(),
+  dismissServiceAgentSelfIntro: vi.fn(),
   listServiceWorkerCredentials: vi.fn(),
   createServiceWorkerCredential: vi.fn(),
   revokeServiceWorkerCredential: vi.fn(),
@@ -71,6 +72,36 @@ describe('ServiceAgentsPanel', () => {
     await act(async () => {
       root.render(<ServiceAgentsPanel onClose={() => {}} {...props} />);
       await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+
+  /**
+   * 发布表单里的「能做什么」。公开应用必填：调用方是另一个 Agent，
+   * 它只看到这段文字，没描述等于不知道能不能用。
+   */
+  const fillDescription = async (form, value = '把中文技术文档润色成对外英文稿，保留代码块。input.text 是正文。') => {
+    const textarea = form.querySelector('textarea');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(textarea, value);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+  };
+
+  /**
+   * 发布表单只有一个入口：选一个 bot 分享出去。
+   * 用户原话——「worker 其实一点都没必要啊，我 bot 定制化了或者调教好了就是 worker 啊」，
+   * 所以「一条命令」那条路已经从面板上拿掉了，发布必须先选 bot。
+   */
+  const chooseBot = async (form, uid = 63) => {
+    const select = form.querySelector('select');
+    expect(select, '表单里应该有 bot 选择器').toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(select, String(uid));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
       await Promise.resolve();
     });
   };
@@ -246,6 +277,8 @@ describe('ServiceAgentsPanel', () => {
     expect(form).toBeTruthy();
 
     const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    // 发布只有一个入口：挑一个 bot 分享出去。
+    await chooseBot(form);
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(nameInput, '我的助手');
@@ -260,6 +293,7 @@ describe('ServiceAgentsPanel', () => {
       slugInput.dispatchEvent(new Event('input', { bubbles: true }));
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -270,7 +304,11 @@ describe('ServiceAgentsPanel', () => {
     expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
     expect(payload).toMatchObject({ slug: 'my-agent', name: '我的助手', visibility: 'public' });
-    expect(payload.definition).toMatchObject({ name: '我的助手', runner: { type: 'worker' } });
+    // 分享的是 bot 本身：别人调的是它的判断力，不是某台机器上的一条命令。
+    expect(payload.definition).toMatchObject({
+      name: '我的助手',
+      runner: { type: 'bot', bot_uid: 63 },
+    });
 
     const banner = container.querySelector('.v3-service-agents-published');
     expect(banner?.textContent).toContain('catsco_my-agent');
@@ -279,13 +317,184 @@ describe('ServiceAgentsPanel', () => {
     expect(banner?.textContent).not.toContain('service-run-worker');
     expect(banner?.textContent).not.toContain('-token');
     expect(banner?.textContent).not.toContain('cwk_');
-    // 只告诉用户：在要跑这个应用的那台电脑上登录桌面端就行。
-    expect(banner?.textContent).toContain('小八');
-    expect(banner?.textContent).toContain('自动接单');
+    // 只告诉用户：这个 bot 在线的时候才接活。
+    expect(banner?.textContent).toContain('在线');
   });
 
   // 「密钥 / 命令」这类东西用户完全看不懂，也就无法判断对错，因此从面板里彻底拿掉；
   // 老用户即使后台还有旧密钥，界面也不该再甩给他一条要粘贴的命令。
+  // 编辑已有应用：发布是全量覆盖，所以必须带原 definition 合并 ——
+  // 只改描述不能把执行命令 / 价格抹掉，否则应用当场跑不起来（run 报 no_command）。
+  it('编辑旧应用：不再提供命令输入，保存时执行方式与价格原样保留', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [
+        {
+          slug: 'my-clock',
+          name: '我的时钟',
+          version: 2,
+          hidden: false,
+          mine: true,
+          visibility: 'private',
+          description: '读我电脑的当前时间。',
+          definition: {
+            name: '我的时钟',
+            description: '读我电脑的当前时间。',
+            runner: { type: 'worker', command: 'node clock.js' },
+            pricing: { unit: 'second', per_second: 0.001, currency: 'CNY' },
+          },
+        },
+      ],
+    });
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'my-clock', version: 3, visibility: 'private' });
+    await renderPanel();
+
+    // 行里能看见描述（这段就是调用方 Agent 看到的字）
+    expect(container.querySelector('.v3-service-agent-desc')?.textContent).toContain('读我电脑的当前时间');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="编辑我的时钟"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    expect(form?.textContent).toContain('编辑应用');
+    const nameInput = form.querySelector('input:not([type])');
+    const slugInput = form.querySelectorAll('input:not([type])')[1];
+    expect(nameInput.value).toBe('我的时钟');
+    expect(slugInput.value).toBe('my-clock');
+    // 调用名是分享出去的名字，编辑时不能改（改了就是另一个应用）
+    expect(slugInput.readOnly).toBe(true);
+    expect(form.querySelector('textarea').value).toBe('读我电脑的当前时间。');
+
+    // 老应用用的是「在你自己的环境里跑一条固定命令」。这种模式面板已经不再提供
+    // （用户不可能知道自己的命令，调教好的 bot 就是执行方），但老应用不能因此变坏：
+    // 打开时说明一句，保存时执行方式原样带回去。
+    expect(form.textContent).toContain('面板已不再提供这种方式');
+    expect([...form.querySelectorAll('input')]
+      .find((node) => node.placeholder === 'claude -p {input_file}')).toBeUndefined();
+    await fillDescription(form, '读我电脑的当前时间；问“现在几点”时用。');
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+    const payload = mocks.publishServiceAgent.mock.calls[0][0];
+    expect(payload.slug).toBe('my-clock');
+    expect(payload.visibility).toBe('private');
+    expect(payload.definition.description).toBe('读我电脑的当前时间；问“现在几点”时用。');
+    // 关键：执行方式保留、价格没被抹掉
+    expect(payload.definition.runner).toEqual({ type: 'worker', command: 'node clock.js' });
+    expect(payload.definition.pricing).toEqual({ unit: 'second', per_second: 0.001, currency: 'CNY' });
+  });
+
+  it('自己的应用没写描述时提示「别人基本不会用它」', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-warn')?.textContent).toContain('没写「能做什么」');
+  });
+
+  // 平台不会替应用编描述：唯一来源是应用自己在 run 结果里带 self_intro。
+  // 所以要告诉人「该怎么让它自己写」，而不是让人凭空想一段。
+  it('没写描述时告诉人怎么让应用自己写自述', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true }],
+    });
+    await renderPanel();
+    const hint = container.querySelector('.v3-service-agent-warn-hint');
+    expect(hint?.textContent).toContain('self_intro');
+    expect(hint?.textContent).toContain('提示词');
+  });
+
+  it('写了描述就不再提「让它自己写」', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true, description: '读时间' }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-warn-hint')).toBeNull();
+  });
+
+  it('别人的应用既不给编辑按钮，也不回传 definition', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{ slug: 'peer', name: '别人的', version: 1, hidden: false, mine: false, description: '别人写的' }],
+    });
+    await renderPanel();
+    expect(container.querySelector('button[aria-label="编辑别人的"]')).toBeNull();
+    expect(container.querySelector('.v3-service-agent-warn')).toBeNull();
+    expect(container.querySelector('.v3-service-agent-desc')?.textContent).toContain('别人写的');
+  });
+
+  // 自述建议：应用自己建议的对外描述。写这段的是模型，所以只能建议 ——
+  // 「用它」必须把内容填进编辑表单（人再确认发布），绝不能直接生效。
+  it('自述建议：用它只预填表单，不直接发布', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{
+        slug: 'my-clock',
+        name: '我的时钟',
+        version: 1,
+        hidden: false,
+        mine: true,
+        visibility: 'private',
+        definition: { name: '我的时钟', runner: { type: 'worker', command: 'node clock.js' } },
+        self_intro: { description: '读我电脑的当前时间；问「现在几点」时用。' },
+      }],
+    });
+    await renderPanel();
+
+    // 建议单独一块，且明确写着「建议」
+    const intro = container.querySelector('.v3-service-agent-intro');
+    expect(intro?.textContent).toContain('这个应用建议这样介绍自己');
+    expect(intro?.textContent).toContain('读我电脑的当前时间');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="用我的时钟的自述"]').click();
+      await Promise.resolve();
+    });
+    // 关键：没有直接发请求，只是打开编辑表单
+    expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+    const form = container.querySelector('.v3-service-agents-publish');
+    expect(form.querySelector('textarea').value).toBe('读我电脑的当前时间；问「现在几点」时用。');
+    // 执行方式不能丢：老应用提示「保持原样」，且面板里已经没有任何命令输入框。
+    expect(form.textContent).toContain('面板已不再提供这种方式');
+    expect([...form.querySelectorAll('input')]
+      .find((node) => node.placeholder === 'claude -p {input_file}')).toBeUndefined();
+  });
+
+  it('自述建议：忽略会调用丢弃接口并从行里消失', async () => {
+    mocks.dismissServiceAgentSelfIntro.mockResolvedValue({ slug: 'my-clock', dismissed: true });
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{
+        slug: 'my-clock', name: '我的时钟', version: 1, hidden: false, mine: true,
+        self_intro: { description: '读时间。' },
+      }],
+    });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="忽略我的时钟的自述"]').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.dismissServiceAgentSelfIntro).toHaveBeenCalledWith('my-clock');
+    expect(container.querySelector('.v3-service-agent-intro')).toBeNull();
+  });
+
+  it('自述建议只给自己的应用看，别人的应用不显示', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [{
+        slug: 'peer', name: '别人的', version: 1, hidden: false, mine: false,
+        description: '别人写的。',
+        // 即使后端误传了，前端也不该显示别人的建议
+        self_intro: { description: '不该出现' },
+      }],
+    });
+    await renderPanel();
+    expect(container.querySelector('.v3-service-agent-intro')).toBeNull();
+    expect(container.textContent).not.toContain('不该出现');
+  });
+
   it('发布后不给命令也不给密钥，只提示在桌面端登录即可', async () => {
     mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'legacy', version: 1, visibility: 'public' });
     await renderPanel();
@@ -300,11 +509,13 @@ describe('ServiceAgentsPanel', () => {
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
     const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
     await act(async () => {
       setValue(nameInput, 'Legacy');
       setValue(slugInput, 'legacy');
       await Promise.resolve();
     });
+    await fillDescription(form);
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -340,11 +551,13 @@ describe('ServiceAgentsPanel', () => {
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
     const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
     await act(async () => {
       setValue(nameInput, 'Priced');
       setValue(slugInput, 'priced');
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     // 默认按 token 用量
     const priceInput = [...form.querySelectorAll('input:not([type])')]
@@ -369,7 +582,8 @@ describe('ServiceAgentsPanel', () => {
       await Promise.resolve();
     });
     const form2 = container.querySelector('.v3-service-agents-publish');
-    const seconds = [...form2.querySelectorAll('input[type="radio"]')]
+      await chooseBot(form2);
+      const seconds = [...form2.querySelectorAll('input[type="radio"]')]
       .find((node) => node.nextSibling?.textContent?.includes('按运行时长')
         || node.parentElement?.textContent?.includes('按运行时长'));
     await act(async () => {
@@ -385,6 +599,7 @@ describe('ServiceAgentsPanel', () => {
       setValue(price2, '0.01');
       await Promise.resolve();
     });
+    await fillDescription(form2);
     await act(async () => {
       form2.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -394,26 +609,29 @@ describe('ServiceAgentsPanel', () => {
     expect(payload.definition.pricing).toEqual({ unit: 'second', per_second: 0.01, currency: 'CNY' });
   });
 
-  it('可以给每个应用单独指定本机执行命令（多个 agent 共用一个 worker）', async () => {
-    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'claude-helper', version: 1, visibility: 'private' });
+  // 「一条命令」这套已经整个从面板拿掉了：用户不可能知道自己该填什么命令，
+  // 而调教好的 bot 本身就是执行方。发布出来的 definition 里不该出现任何命令。
+  it('发布出来的 definition 里没有任何执行命令', async () => {
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'jack-helper', version: 1, visibility: 'private' });
     await renderPanel();
     await act(async () => {
       container.querySelector('button[aria-label="发布应用"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
-    const [nameInput, slugInput, commandInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
     const setValue = (node, value) => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       setter.call(node, value);
       node.dispatchEvent(new Event('input', { bubbles: true }));
     };
     await act(async () => {
-      setValue(nameInput, 'Claude 助手');
-      setValue(slugInput, 'claude-helper');
-      setValue(commandInput, 'claude -p {input_file}');
+      setValue(nameInput, '杰克助手');
+      setValue(slugInput, 'jack-helper');
       await Promise.resolve();
     });
+    await fillDescription(form);
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -421,57 +639,74 @@ describe('ServiceAgentsPanel', () => {
       await Promise.resolve();
     });
 
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
-    expect(payload.definition.runner).toMatchObject({
-      type: 'worker',
-      command: 'claude -p {input_file}',
-    });
-    // 命令随应用下发，worker 不再需要 -cmd；也不再把启动命令甩给用户
+    expect(payload.definition.runner).toEqual({ type: 'bot', bot_uid: 63 });
+    expect(JSON.stringify(payload.definition)).not.toContain('command');
+    // 也不再把启动命令 / 密钥甩给用户
     const banner = container.querySelector('.v3-service-agents-published');
     expect(banner.textContent).not.toContain('service-run-worker');
     expect(banner.textContent).not.toContain('-cmd');
-    expect(banner.textContent).toContain('catsco_claude-helper');
+    expect(banner.textContent).toContain('catsco_jack-helper');
   });
 
-  it('发布 MCP 服务：runner.type=mcp 带地址与工具名', async () => {
-    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'peer-mcp', version: 1, visibility: 'public' });
+  // 面板只提供「分享一个 bot」这一种方式：平台直连 http/mcp 要求公网可达地址，
+  // 「一条命令」要求用户自己会写命令 —— 普通用户两样都没有。
+  it('发布表单只提供分享 bot，不再有直连与命令两种接入方式', async () => {
     await renderPanel();
     await act(async () => {
       container.querySelector('button[aria-label="发布应用"]').click();
       await Promise.resolve();
     });
     const form = container.querySelector('.v3-service-agents-publish');
-    const setValue = (node, value) => {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      setter.call(node, value);
-      node.dispatchEvent(new Event('input', { bubbles: true }));
-    };
-    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    const runnerRadios = [...form.querySelectorAll('input[type="radio"]')]
+      .filter((node) => node.name === 'runner' || node.name === 'target');
+    expect(runnerRadios).toHaveLength(0);
+    expect(form.textContent).not.toContain('HTTP 服务');
+    expect(form.textContent).not.toContain('MCP 服务');
+    expect(form.textContent).not.toContain('一条命令');
+    expect(form.textContent).not.toContain('云服务器');
+    expect(form.textContent).not.toContain('执行命令');
+    // 唯一的入口就是挑 bot
+    expect(form.querySelector('select')).toBeTruthy();
+    expect(form.textContent).toContain('分享哪个 bot');
+  });
+
+  // 旧应用可能还是直连型。面板不再提供这种接入方式，但保存时绝不能把它改成
+  // worker —— 命令一下子没了，应用下次被调用就 no_command 跑不起来。
+  it('编辑旧应用的直连配置时原样保留 runner', async () => {
+    mocks.getServiceAgentsCatalog.mockResolvedValue({
+      agents: [
+        {
+          slug: 'peer-mcp',
+          name: '对端 MCP',
+          version: 1,
+          hidden: false,
+          mine: true,
+          visibility: 'public',
+          description: '对端 MCP 服务。',
+          definition: {
+            name: '对端 MCP',
+            description: '对端 MCP 服务。',
+            runner: { type: 'mcp', url: 'https://peer.example/mcp', tool: 'do-work', timeout_seconds: 60 },
+          },
+        },
+      ],
+    });
+    mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'peer-mcp', version: 2, visibility: 'public' });
+    await renderPanel();
+
     await act(async () => {
-      setValue(nameInput, '对端 MCP');
-      setValue(slugInput, 'peer-mcp');
+      container.querySelector('button[aria-label="编辑对端 MCP"]').click();
       await Promise.resolve();
     });
+    const form = container.querySelector('.v3-service-agents-publish');
+    // 明确告诉用户这条链路面板改不了、也不会被改
+    expect(form.querySelector('.v3-service-agents-locked')?.textContent).toContain('连接方式保持原样');
+    // 直连型没有「执行命令」可填
+    expect(form.querySelector('input[placeholder="claude -p {input_file}"]')).toBeNull();
 
-    // 切到「MCP 服务」
-    const mcpRadio = [...form.querySelectorAll('input[type="radio"]')]
-      .find((node) => node.closest('label')?.textContent.includes('MCP 服务'));
-    expect(mcpRadio).toBeTruthy();
-    await act(async () => {
-      mcpRadio.click();
-      await Promise.resolve();
-    });
-
-    const urlInput = form.querySelector('input[placeholder="https://your-host/mcp"]');
-    const toolInput = form.querySelector('input[placeholder="run"]');
-    expect(urlInput).toBeTruthy();
-    expect(toolInput).toBeTruthy();
-    await act(async () => {
-      setValue(urlInput, 'https://peer.example/mcp');
-      setValue(toolInput, 'do-work');
-      await Promise.resolve();
-    });
-
+    await fillDescription(form, '对端 MCP 服务，问 wiki 用。');
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -479,14 +714,13 @@ describe('ServiceAgentsPanel', () => {
     });
 
     const payload = mocks.publishServiceAgent.mock.calls[0][0];
-    expect(payload.definition.runner).toMatchObject({
+    expect(payload.definition.description).toBe('对端 MCP 服务，问 wiki 用。');
+    expect(payload.definition.runner).toEqual({
       type: 'mcp',
       url: 'https://peer.example/mcp',
       tool: 'do-work',
+      timeout_seconds: 60,
     });
-    // MCP 应用不需要本机 worker，布局里不应出现 worker 启动命令
-    const banner = container.querySelector('.v3-service-agents-published');
-    expect(banner?.textContent).not.toContain('service-run-worker');
   });
 
   it('发布表单会校验调用名，非法时不发请求', async () => {
@@ -507,12 +741,60 @@ describe('ServiceAgentsPanel', () => {
       setValue(slugInput, 'BAD SLUG!');
       await Promise.resolve();
     });
+    await fillDescription(form);
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
     expect(container.querySelector('.v3-service-agents-publish [role="alert"]')?.textContent).toContain('调用名');
+  });
+
+  // 公开分享却不写描述 = 分享出去也没人会用：调用方是另一个 Agent，
+  // 它看不到包内容、也没有你的对话上下文，只能靠这段文字判断要不要调。
+  it('公开应用不写「能做什么」就不发请求；私有应用允许留空', async () => {
+    mocks.publishServiceAgent.mockResolvedValue({ slug: 'no-desc', version: 1, visibility: 'public' });
+    await renderPanel();
+    await act(async () => {
+      container.querySelector('button[aria-label="发布应用"]').click();
+      await Promise.resolve();
+    });
+    const form = container.querySelector('.v3-service-agents-publish');
+    const setValue = (node, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(node, value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+    await chooseBot(form);
+    await act(async () => {
+      setValue(nameInput, 'No Desc');
+      setValue(slugInput, 'no-desc');
+      await Promise.resolve();
+    });
+
+    // 默认公开 + 空描述 → 拦下，不发请求
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+    expect(form.querySelector('[role="alert"]')?.textContent).toContain('能做什么');
+
+    // 同样的内容，选了「仅自己」→ 允许发布
+    const privateRadio = [...form.querySelectorAll('input[type="radio"]')]
+      .find((node) => node.parentElement?.textContent?.includes('仅自己'));
+    await act(async () => {
+      privateRadio.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+    expect(mocks.publishServiceAgent.mock.calls[0][0].definition.description).toBeUndefined();
   });
 
   it('展示归属徽标与工具计数', async () => {    mocks.getServiceAgentsCatalog.mockResolvedValue({
@@ -589,6 +871,301 @@ describe('ServiceAgentsPanel', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('只有发布者本人能收回该应用');
     expect(container.querySelector('.v3-service-agent-slug')?.textContent).toBe('catsco_my-local');
     expect(container.querySelector('.v3-service-agents-notice')).toBeNull();
+  });
+
+  // 分享 bot：这是主路径。用户原话——
+  // 「每个 bot 都有可能被调用/分享出去，就相当于 bot 自己的标签或者描述分享，
+  //   要不然我自己的 bot 调用另一个 bot 怎么知道描述呢」
+  // 面板是唯一的入口：没有这里，后端做得再好别人也看不到、调不了。
+  describe('把 bot 分享成工具', () => {
+    const pickBot = async (form, uid) => {
+      const select = form.querySelector('select');
+      expect(select, '表单里应该有 bot 选择器').toBeTruthy();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(select, String(uid));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+
+    it('默认就是分享 bot，并且不显示执行命令', async () => {
+      await renderPanel();
+      await act(async () => {
+        container.querySelector('button[aria-label="发布应用"]').click();
+        await Promise.resolve();
+      });
+      const form = container.querySelector('.v3-service-agents-publish');
+      // 没有「分享什么」二选一了：只有一个 bot 选择器。
+      expect(form.querySelectorAll('input[type="radio"][name="target"]')).toHaveLength(0);
+      expect(form.querySelectorAll('input[type="radio"][name="runner"]')).toHaveLength(0);
+      expect(form.querySelector('select')).toBeTruthy();
+      // 分享 bot 不需要填命令（「一条命令」模式已经整个拿掉了）。
+      expect(form.textContent).not.toContain('执行命令');
+      expect(form.textContent).not.toContain('一条命令');
+    });
+
+    it('选了 bot 就带上 runner.type=bot 和 bot_uid', async () => {
+      mocks.publishServiceAgent.mockResolvedValueOnce({ slug: 'jack-ops', version: 1, visibility: 'public' });
+      await renderPanel();
+      await act(async () => {
+        container.querySelector('button[aria-label="发布应用"]').click();
+        await Promise.resolve();
+      });
+      const form = container.querySelector('.v3-service-agents-publish');
+      await pickBot(form, 63);
+
+      const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(nameInput, '杰克运维');
+        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+        setter.call(slugInput, 'jack-ops');
+        slugInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+      await fillDescription(form, '把服务器/发布相关的排障活派给杰克。');
+
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+      const payload = mocks.publishServiceAgent.mock.calls[0][0];
+      expect(payload.definition.runner).toEqual({ type: 'bot', bot_uid: 63 });
+      expect(payload.visibility).toBe('public');
+    });
+
+    it('没选 bot 就不发请求：没有执行方，发出去也调不通', async () => {
+      await renderPanel();
+      await act(async () => {
+        container.querySelector('button[aria-label="发布应用"]').click();
+        await Promise.resolve();
+      });
+      const form = container.querySelector('.v3-service-agents-publish');
+      const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(nameInput, '没选 bot');
+        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+        setter.call(slugInput, 'no-bot');
+        slugInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+      await fillDescription(form);
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+
+      expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+      expect(form.querySelector('[role="alert"]')?.textContent).toContain('请选择要分享的 bot');
+    });
+
+    it('编辑已分享的 bot：回填选中的 bot，保存后 runner 不变', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue({
+        agents: [{
+          slug: 'jack-ops',
+          name: '杰克运维',
+          version: 2,
+          hidden: false,
+          mine: true,
+          visibility: 'public',
+          description: '把排障活派给杰克。',
+          definition: {
+            name: '杰克运维',
+            description: '把排障活派给杰克。',
+            runner: { type: 'bot', bot_uid: 63 },
+          },
+        }],
+      });
+      await renderPanel();
+      await act(async () => {
+        container.querySelector('button[aria-label="编辑杰克运维"]').click();
+        await Promise.resolve();
+      });
+      const form = container.querySelector('.v3-service-agents-publish');
+      // 回填：选中的是那个 bot，而不是默认空选项
+      expect(form.querySelector('select')?.value).toBe('63');
+      expect(form.textContent).not.toContain('执行命令');
+
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const payload = mocks.publishServiceAgent.mock.calls.at(-1)[0];
+      expect(payload.definition.runner).toEqual({ type: 'bot', bot_uid: 63 });
+    });
+
+    it('没有 bot 时提示先去创建，而不是给一个空下拉', async () => {
+      mocks.getMyBots.mockResolvedValue({ bots: [] });
+      await renderPanel();
+      await act(async () => {
+        container.querySelector('button[aria-label="发布应用"]').click();
+        await Promise.resolve();
+      });
+      const form = container.querySelector('.v3-service-agents-publish');
+      expect(form.textContent).toContain('你还没有 bot');
+    });
+  });
+
+  // 三级可见性：公开 / 好友 / 自用。
+  // 「好友」这一级的意义是「分享给认识的人」：他们能在目录里找到并加进清单，
+  // 陌生人看不到、也调不动。
+  describe('三级可见性', () => {
+    const openPublishForm = async () => {
+      await act(async () => {
+        container.querySelector('button[aria-label="发布应用"]').click();
+        await Promise.resolve();
+      });
+      return container.querySelector('.v3-service-agents-publish');
+    };
+
+    it('表单给出三档，选「好友」就按 friends 提交', async () => {
+      await renderPanel();
+      const form = await openPublishForm();
+      const radios = [...form.querySelectorAll('input[type="radio"][name="visibility"]')];
+      expect(radios).toHaveLength(3);
+      const friends = radios.find((node) => node.parentElement?.textContent?.includes('好友'));
+      expect(friends, '应该有「好友」这一档').toBeTruthy();
+
+      const setValue = (node, value) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+      await act(async () => {
+        setValue(nameInput, '好友翻译');
+        setValue(slugInput, 'friends-translate');
+        const select = form.querySelector('select');
+        const selectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        selectSetter.call(select, '63');
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        await Promise.resolve();
+      });
+      await fillDescription(form);
+      await act(async () => {
+        friends.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mocks.publishServiceAgent).toHaveBeenCalledTimes(1);
+      expect(mocks.publishServiceAgent.mock.calls[0][0].visibility).toBe('friends');
+    });
+
+    it('好友级同样必须写描述：调用方是另一个 Agent，看不到就不知道能不能用', async () => {
+      await renderPanel();
+      const form = await openPublishForm();
+      const radios = [...form.querySelectorAll('input[type="radio"][name="visibility"]')];
+      const friends = radios.find((node) => node.parentElement?.textContent?.includes('好友'));
+      const setValue = (node, value) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const [nameInput, slugInput] = form.querySelectorAll('input:not([type])');
+      await act(async () => {
+        setValue(nameInput, '好友翻译');
+        setValue(slugInput, 'friends-translate');
+        const select = form.querySelector('select');
+        const selectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        selectSetter.call(select, '63');
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        friends.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+      expect(mocks.publishServiceAgent).not.toHaveBeenCalled();
+      expect(form.querySelector('[role="alert"]')?.textContent).toContain('能做什么');
+    });
+
+    it('列表给好友级应用一个「好友」徽标，和「我的」「私有」区分开', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue({
+        agents: [
+          { slug: 'mine-private', name: '自用', version: 1, hidden: false, mine: true, visibility: 'private' },
+          { slug: 'mine-friends', name: '好友可见', version: 1, hidden: false, mine: true, visibility: 'friends' },
+          { slug: 'mine-public', name: '公开', version: 1, hidden: false, mine: true, visibility: 'public' },
+        ],
+      });
+      await renderPanel();
+      const badges = [...container.querySelectorAll('.v3-service-agent-badge')].map((node) => node.textContent);
+      expect(badges).toContain('私有');
+      expect(badges).toContain('好友');
+    });
+  });
+
+  // 应用一多（同事分享的 + 自己的）就需要找。
+  // 关键词匹配名称/调用名/描述：描述里往往写着使用场景，最常被拿来搜。
+  describe('目录搜索', () => {
+    const manyAgents = () => ({
+      agents: [
+        { slug: 'weekly-report', name: '周报助手', version: 1, hidden: false, description: '把一周的提交整理成周报。' },
+        { slug: 'zh-polish', name: '中文润色', version: 1, hidden: false, description: '把中文技术文档润色成英文稿。' },
+        { slug: 'clock', name: '时钟', version: 1, hidden: false, description: '读本机当前时间。' },
+      ],
+    });
+
+    it('按名称、描述过滤，清空后恢复全部', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue(manyAgents());
+      await renderPanel();
+      const search = container.querySelector('input[type="search"]');
+      expect(search, '应该渲染搜索框').toBeTruthy();
+
+      const type = async (value) => {
+        await act(async () => {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(search, value);
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          await Promise.resolve();
+        });
+      };
+      const slugs = () => [...container.querySelectorAll('.v3-service-agent-slug')].map((node) => node.textContent);
+
+      await type('周报');
+      expect(slugs()).toEqual(['catsco_weekly-report']);
+
+      // 描述命中：搜「英文稿」应命中润色那个（它的名字里没有这个词）
+      await type('英文稿');
+      expect(slugs()).toEqual(['catsco_zh-polish']);
+
+      await type('');
+      expect(slugs()).toHaveLength(3);
+    });
+
+    it('没有匹配时给「清空搜索」，而不是一片空白', async () => {
+      mocks.getServiceAgentsCatalog.mockResolvedValue(manyAgents());
+      await renderPanel();
+      const search = container.querySelector('input[type="search"]');
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(search, '不存在的应用');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(container.querySelectorAll('.v3-service-agent-slug')).toHaveLength(0);
+      const reset = [...container.querySelectorAll('button')]
+        .find((node) => node.textContent.includes('清空搜索'));
+      expect(reset).toBeTruthy();
+
+      await act(async () => {
+        reset.click();
+        await Promise.resolve();
+      });
+      expect(container.querySelectorAll('.v3-service-agent-slug')).toHaveLength(3);
+    });
   });
 });
 

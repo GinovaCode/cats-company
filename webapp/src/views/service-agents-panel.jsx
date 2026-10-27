@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronDown, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Pencil, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react';
 import { api } from '../api';
 
 // Agent 工具（CatsCo 定制 agent 的工具集管理；设计 §3.3-9"模式二：默认开放 + 个人清单"）。
@@ -23,20 +23,36 @@ export default function ServiceAgentsPanel({ onClose }) {
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState('');
   const [publishResult, setPublishResult] = useState(null);
+  // 编辑已有应用：发布是全量覆盖，所以必须带着原 definition 合并，
+  // 否则只改描述会把执行方式/价格抹掉（应用当场跑不起来）。
+  const [editingSlug, setEditingSlug] = useState('');
+  const [editingDefinition, setEditingDefinition] = useState(null);
+  // 旧应用可能还是「平台直连 http/mcp」。面板不再提供这种接入方式，
+  // 但编辑时绝不能把它改写成 worker —— 那会让应用当场跑不起来。
+  const [lockedRunner, setLockedRunner] = useState(null);
   // 收回分享：二次确认（避免误点）+ 逐行进行中状态 + 成功通知。
   const [unpublishTarget, setUnpublishTarget] = useState('');
   const [unpublishing, setUnpublishing] = useState(() => new Set());
+  // 自述建议：应用自己建议的对外描述，等人确认。丢弃是逐行进行中。
+  const [dismissingIntro, setDismissingIntro] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
+  // 目录搜索：应用一多（同事分享的 + 自己的）就靠名称/描述找。纯前端过滤，不发请求。
+  const [query, setQuery] = useState('');
   const [form, setForm] = useState({
+    // 分享哪个 bot：被分享出去的是 bot 本身。
+    //
+    // 为什么没有「填一条命令」这个选项：调教好的 bot 就是执行者。
+    // 让用户去写 `claude -p {input_file}` 这种模板，等于把工程细节当产品语言 ——
+    // 而且大部分人根本不知道自己的「命令」是什么。
+    botUid: '',
     name: '',
+    // 工具描述：调用你的是另一个 Agent，它看不到包内容也没有你的对话上下文，
+    // 只能靠这段文字判断「要不要用、怎么传参」。公开应用必须写。
+    description: '',
     slug: '',
     slugTouched: false,
     // 默认公开：上架就是为了分享给别人调，选「仅自己」要显式选。
     visibility: 'public',
-    runner: 'worker',
-    url: '',
-    tool: '',
-    command: '',
     price: '',
     priceUnit: 'token',
   });
@@ -165,26 +181,37 @@ export default function ServiceAgentsPanel({ onClose }) {
   const submitPublish = useCallback(async () => {
     const name = form.name.trim();
     const slug = form.slug.trim();
+    const description = form.description.trim();
     if (!name) { setPublishError('请填写应用名称'); return; }
+    if ((form.visibility === 'public' || form.visibility === 'friends') && !description) {
+      // 分享给别人（公开或好友）却不写描述：别人（另一个 Agent）只看到名字，
+      // 等于不知道能不能用。「仅自己」不强制 —— 写不写都不影响别人。
+      setPublishError('分享给别人的应用必须写「能做什么」：调用你的是另一个 Agent，它只能靠这段文字判断要不要用');
+      return;
+    }
     if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
       setPublishError('调用名只能用小写字母/数字/中划线，2~64 位');
       return;
     }
-    const definition = { name };
-    if (form.runner === 'http') {
-      const url = form.url.trim();
-      if (!/^https?:\/\//.test(url)) { setPublishError('选 HTTP 执行时要填 http(s):// 地址'); return; }
-      definition.runner = { type: 'http', url, timeout_seconds: 60 };
-    } else if (form.runner === 'mcp') {
-      const url = form.url.trim();
-      if (!/^https?:\/\//.test(url)) { setPublishError('选 MCP 服务时要填 http(s):// 地址'); return; }
-      definition.runner = { type: 'mcp', url, timeout_seconds: 60 };
-      const tool = form.tool.trim();
-      if (tool) definition.runner.tool = tool;
+    if (!lockedRunner && !Number(form.botUid)) {
+      // 没选 bot 就没有执行方，发布了也调不通。
+      setPublishError('请选择要分享的 bot');
+      return;
+    }
+    const definition = editingDefinition && typeof editingDefinition === 'object'
+      ? { ...editingDefinition } : {};
+    definition.name = name;
+    if (description) definition.description = description;
+    else delete definition.description;
+    if (lockedRunner) {
+      // 老应用的执行方式面板不再提供（http/mcp/worker）：原样保留。
+      // 默默改成 bot 会让它当场跑不起来 —— 原有的执行方根本没变。
+      definition.runner = lockedRunner;
     } else {
-      definition.runner = { type: 'worker' };
-      const command = form.command.trim();
-      if (command) definition.runner.command = command;
+      // 分享 bot：执行权交给它自己（它有自己的判断力与所在机器的能力）。
+      // 不写 description 时后端会自动用 bot 自己的自我介绍兜底，
+      // 但表单这里已经预填了，人看过再发更稳。
+      definition.runner = { type: 'bot', bot_uid: Number(form.botUid) };
     }
     const price = Number(form.price);
     if (form.price && Number.isFinite(price) && price > 0) {
@@ -193,6 +220,8 @@ export default function ServiceAgentsPanel({ onClose }) {
       definition.pricing = form.priceUnit === 'second'
         ? { unit: 'second', per_second: price, currency: 'CNY' }
         : { unit: 'token', per_1k_tokens: price, currency: 'CNY' };
+    } else {
+      delete definition.pricing;
     }
     setPublishing(true);
     setPublishError('');
@@ -201,18 +230,86 @@ export default function ServiceAgentsPanel({ onClose }) {
       setPublishResult({
         slug: result?.slug || slug,
         visibility: result?.visibility || form.visibility,
-        runner: form.runner,
-        hasCommand: form.runner === 'worker' && Boolean(form.command.trim()),
+        runner: lockedRunner ? lockedRunner.type : 'bot',
       });
       setShowPublish(false);
-      setForm({ name: '', slug: '', slugTouched: false, visibility: 'public', runner: 'worker', url: '', tool: '', command: '', price: '', priceUnit: 'token' });
+      setEditingSlug('');
+      setEditingDefinition(null);
+      setLockedRunner(null);
+      setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', price: '', priceUnit: 'token', botUid: '' });
       await load();
     } catch (err) {
       setPublishError(err?.message || '发布失败，请稍后重试。');
     } finally {
       setPublishing(false);
     }
-  }, [form, load]);
+  }, [editingDefinition, form, load, lockedRunner]);
+
+  // 打开编辑：把已发布的 definition 回填进表单。
+  // 目录只对 owner 本人返回 definition（别人的执行命令拿不到也用不上）。
+  const startEdit = useCallback((agent, options = {}) => {
+    const definition = agent?.definition && typeof agent.definition === 'object' ? agent.definition : {};
+    const runner = definition.runner && typeof definition.runner === 'object' ? definition.runner : {};
+    const pricing = definition.pricing && typeof definition.pricing === 'object' ? definition.pricing : {};
+    // 老应用的执行方式面板不再提供（http / mcp / worker）：只锁住原配置，
+    // 防止保存时被改成 bot —— 那会让应用当场跑不起来。
+    const locked = runner.type === 'http' || runner.type === 'mcp' || runner.type === 'worker'
+      ? runner : null;
+    // bot 型（分享 bot）：回填目标 bot，编辑时也能看到自己在分享哪一个。
+    const shareBot = runner.type === 'bot' && Number(runner.bot_uid) > 0;
+    const priceUnit = pricing.unit === 'second' ? 'second' : 'token';
+    const priceValue = priceUnit === 'second' ? pricing.per_second : pricing.per_1k_tokens;
+    // 「采纳自述」不走独立写入路径：把建议填进表单，由人确认后照常发布。
+    const suggested = options.useSelfIntro ? (agent?.self_intro?.description || '') : '';
+    setEditingSlug(agent.slug);
+    setEditingDefinition(definition);
+    setLockedRunner(locked);
+    setPublishError('');
+    setPublishResult(null);
+    setForm({
+      name: agent.name || agent.slug,
+      description: suggested || agent.description || '',
+      slug: agent.slug,
+      slugTouched: true,
+      visibility: agent.visibility === 'friends'
+        ? 'friends'
+        : (agent.visibility === 'private' ? 'private' : 'public'),
+      price: typeof priceValue === 'number' && priceValue > 0 ? String(priceValue) : '',
+      priceUnit,
+      botUid: shareBot ? String(runner.bot_uid) : '',
+    });
+    setShowPublish(true);
+  }, []);
+
+  // 丢弃应用建议的自述（不想采纳）。
+  const dismissSelfIntro = useCallback(async (agent) => {
+    const slug = agent?.slug;
+    if (!slug) return;
+    setDismissingIntro((prev) => new Set(prev).add(slug));
+    setError('');
+    try {
+      await api.dismissServiceAgentSelfIntro(slug);
+      setAgents((prev) => prev.map((item) => (
+        item.slug === slug ? { ...item, self_intro: undefined } : item
+      )));
+    } catch (err) {
+      setError(err?.message || '忽略失败，请稍后重试。');
+    } finally {
+      setDismissingIntro((prev) => {
+        const next = new Set(prev);
+        next.delete(slug);
+        return next;
+      });
+    }
+  }, []);
+
+  const resetPublishForm = useCallback(() => {
+    setEditingSlug('');
+    setEditingDefinition(null);
+    setLockedRunner(null);
+    setPublishError('');
+    setForm({ name: '', description: '', slug: '', slugTouched: false, visibility: 'public', price: '', priceUnit: 'token', botUid: '' });
+  }, []);
 
   // 收回分享：下架后目录与别人的 tools/list 立即不可见，已缓存工具名的客户端再调用
   // 会拿到 "该应用已被发布者收回"。重新发布同一调用名即可恢复。
@@ -256,6 +353,14 @@ export default function ServiceAgentsPanel({ onClose }) {
     }
   }, []);
 
+  // 搜索：名称 / 调用名 / 描述任一命中即保留（描述里往往写着使用场景，最常被拿来搜）。
+  const keyword = query.trim().toLowerCase();
+  const visibleAgents = keyword
+    ? agents.filter((agent) => [agent.name, agent.slug, agent.description]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(keyword)))
+    : agents;
+
   return (
     <aside className="v3-service-agents-panel" aria-label="Agent 工具">      <div className="v3-service-agents-header">
         <span className="v3-service-agents-title">
@@ -270,8 +375,11 @@ export default function ServiceAgentsPanel({ onClose }) {
           <button
             type="button"
             onClick={() => {
-              setShowPublish((prev) => !prev);
+              const next = !showPublish;
+              setShowPublish(next);
               setPublishError('');
+              if (next && !editingSlug) setPublishResult(null);
+              if (!next) resetPublishForm();
             }}
             aria-label="发布应用"
             title="发布应用（把自己的 agent 上架成工具）"
@@ -301,7 +409,40 @@ export default function ServiceAgentsPanel({ onClose }) {
             if (!publishing) submitPublish();
           }}
         >
-          <div className="v3-service-agents-publish-title">发布应用</div>
+          <div className="v3-service-agents-publish-title">{editingSlug ? '编辑应用' : '发布应用'}</div>
+          {lockedRunner ? null : (
+            <label className="v3-service-agents-field">
+              <span>分享哪个 bot</span>
+              <select
+                value={form.botUid}
+                onChange={(event) => {
+                  const uid = event.target.value;
+                  const picked = bots.find((bot) => String(bot.uid ?? bot.user_id ?? bot.id) === uid);
+                  updateForm({
+                    botUid: uid,
+                    // 用 bot 自己的介绍预填：标签就该是它自己的话，人看过再发。
+                    description: form.description || String(picked?.description || ''),
+                    name: form.name || String(picked?.display_name || picked?.name || ''),
+                  });
+                }}
+              >
+                <option value="">— 选一个 —</option>
+                {bots.map((bot) => {
+                  const uid = String(bot.uid ?? bot.user_id ?? bot.id);
+                  return (
+                    <option key={uid} value={uid}>
+                      {bot.display_name || bot.name || bot.username || `bot ${uid}`}
+                    </option>
+                  );
+                })}
+              </select>
+              <span className="v3-service-agents-field-hint">
+                {bots.length === 0
+                  ? '你还没有 bot。先在「我的机器人」里创建一个 —— 你调教好的 bot 就是能接活的那个。'
+                  : '别人调的是这个 bot 本身：它用自己的判断力干活。它在线（开着）时才接活，不在线会立刻报「不在线」。'}
+              </span>
+            </label>
+          )}
           <label className="v3-service-agents-field">
             <span>名称</span>
             <input
@@ -312,22 +453,37 @@ export default function ServiceAgentsPanel({ onClose }) {
             />
           </label>
           <label className="v3-service-agents-field">
+            <span>能做什么（公开应用必填）</span>
+            <textarea
+              value={form.description}
+              onChange={(event) => updateForm({ description: event.target.value })}
+              placeholder="例：把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。适合发布前的文稿；不处理图片。input.text 是要处理的正文。"
+              rows={4}
+            />
+            <span className="v3-service-agents-field-hint">
+              调用你的是另一个 Agent，它看不到你的内容、也没有你的对话上下文，
+              只能靠这段文字判断要不要用。写清：做什么 / 什么情况下该用 / 不该用 / 参数怎么填。
+            </span>
+          </label>
+          <label className="v3-service-agents-field">
             <span>调用名（工具名 catsco_&lt;调用名&gt;）</span>
             <input
               value={form.slug}
               onChange={(event) => updateForm({ slug: event.target.value })}
               placeholder="my-agent"
               spellCheck={false}
+              readOnly={Boolean(editingSlug)}
             />
             <span className="v3-service-agents-field-hint">
-              你的 bot 里就这样叫它：catsco_{form.slug || 'my-agent'}
+              {editingSlug
+                ? '调用名是分享出去的名字，编辑时不能改（改了就是另一个应用）。'
+                : `你的 bot 里就这样叫它：catsco_${form.slug || 'my-agent'}`}
             </span>
           </label>
           <details className="v3-service-agents-advanced">
             <summary className="v3-service-agents-advanced-head">
-              更多设置（默认：公开 · 在我的电脑上跑 · 免费分享）
-            </summary>
-            <div className="v3-service-agents-field">
+              更多设置（默认：公开 · 在我的环境跑 · 免费分享）
+            </summary>            <div className="v3-service-agents-field">
               <span>可见性</span>
               <div className="v3-service-agents-choices">
                 <label>
@@ -343,85 +499,51 @@ export default function ServiceAgentsPanel({ onClose }) {
                   <input
                     type="radio"
                     name="visibility"
+                    checked={form.visibility === 'friends'}
+                    onChange={() => updateForm({ visibility: 'friends' })}
+                  />
+                  好友（只有我的好友能看到、能调）
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="visibility"
                     checked={form.visibility === 'public'}
                     onChange={() => updateForm({ visibility: 'public' })}
                   />
-                  公开（别人也能调用）
+                  公开（谁都能找到、能调）
                 </label>
               </div>
             </div>
             <div className="v3-service-agents-field">
-              <span>执行位置</span>
-              <div className="v3-service-agents-choices">
-                <label>
-                  <input
-                    type="radio"
-                    name="runner"
-                    checked={form.runner === 'worker'}
-                    onChange={() => updateForm({ runner: 'worker' })}
-                  />
-                  我的电脑（推荐）
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="runner"
-                    checked={form.runner === 'http'}
-                    onChange={() => updateForm({ runner: 'http' })}
-                  />
-                  HTTP 服务
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="runner"
-                    checked={form.runner === 'mcp'}
-                    onChange={() => updateForm({ runner: 'mcp' })}
-                  />
-                  MCP 服务
-                </label>
-              </div>
+              {/* 面板只提供「分享 bot」这一种方式。历史上还有 http/mcp（要公网地址）
+                  与 worker（要用户自己写命令模板）—— 两条路都要求用户懂工程细节，
+                  而且调教好的 bot 本来就能干那些活。后端仍保留它们，老应用原样保存。 */}
+              <span>怎么接活</span>
+              {lockedRunner ? (
+                <div className="v3-service-agents-locked" role="status">
+                  {lockedRunner.type === 'worker' ? (
+                    <>
+                      这个应用用的是旧方式：在你自己的环境里跑一条固定命令
+                      （{lockedRunner.command || '未填命令'}）。面板已不再提供这种方式；
+                      本次保存只改名称/说明/价格，执行方式保持原样。
+                    </>
+                  ) : (
+                    <>
+                      这个应用用的是「平台直连
+                      {lockedRunner.type === 'mcp' ? ' MCP ' : ' HTTP '}
+                      服务」（{lockedRunner.url}）。这种接入方式需要公网可达地址，面板已不再提供；
+                      本次保存只改名称/说明/价格，连接方式保持原样。
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="v3-service-agents-field-hint">
+                  平台会把请求发给你选的那个 bot，由它自己处理。它不在线时调用会立刻失败
+                  —— 不需要公网 IP，也不用开端口。
+                </div>
+              )}
             </div>
-            {form.runner === 'http' || form.runner === 'mcp' ? (
-              <label className="v3-service-agents-field">
-                <span>{form.runner === 'mcp' ? 'MCP 服务地址' : '服务地址'}</span>
-                <input
-                  value={form.url}
-                  onChange={(event) => updateForm({ url: event.target.value })}
-                  placeholder={form.runner === 'mcp' ? 'https://your-host/mcp' : 'https://your-host/run'}
-                  spellCheck={false}
-                />
-                {form.runner === 'mcp' ? (
-                  <span className="v3-service-agents-field-hint">
-                    平台会当 MCP 客户端连它并调用工具，不需要你自己的 worker
-                  </span>
-                ) : null}
-              </label>
-            ) : (
-              <label className="v3-service-agents-field">
-                <span>本机执行命令（这个应用用哪个 agent 跑）</span>
-                <input
-                  value={form.command}
-                  onChange={(event) => updateForm({ command: event.target.value })}
-                  placeholder="claude -p {input_file}"
-                  spellCheck={false}
-                />
-                <span className="v3-service-agents-field-hint">
-                  每个应用各填各的；{'{input_file}'} 会替换成这次调用的输入文件。留空则调用时会报错。
-                </span>
-              </label>
-            )}
-            {form.runner === 'mcp' ? (
-              <label className="v3-service-agents-field">
-                <span>工具名（留空=对端只有一个工具时自动选）</span>
-                <input
-                  value={form.tool}
-                  onChange={(event) => updateForm({ tool: event.target.value })}
-                  placeholder="run"
-                  spellCheck={false}
-                />
-              </label>
-            ) : null}
             <div className="v3-service-agents-field">
               <span>计费方式（留空=免费分享）</span>
               <div className="v3-service-agents-choices">
@@ -482,20 +604,30 @@ export default function ServiceAgentsPanel({ onClose }) {
         <div className="v3-service-agents-published" role="status">
           <div>
             已发布 <code>catsco_{publishResult.slug}</code>
-            {publishResult.visibility === 'public' ? ' · 公开，别人也能调用' : ' · 仅自己可用'}
+            {publishResult.visibility === 'public'
+              ? ' · 公开，谁都能找到并调用'
+              : publishResult.visibility === 'friends'
+                ? ' · 仅好友可见，他们能在目录里找到并加进清单'
+                : ' · 仅自己可用'}
           </div>
           {publishResult.runner === 'worker' ? (
             <div className="v3-service-agents-published-hint">
               <div>
-                在<strong>要跑这个应用的那台电脑</strong>上打开小八并登录，它就会自动接单——
-                不用装别的东西、不用复制任何命令。换一台机器就在那台机器上登录小八。
+                这个应用还在用旧方式（在你自己的环境里跑固定命令）。面板已不再提供这种方式；
+                想换成分享 bot，重新发布时选一个 bot 即可。
               </div>
-              {publishResult.hasCommand ? null : (
-                <div>
-                  还差一步：在「更多设置」里填一条本机执行命令（比如 <code>claude -p {'{input_file}'}</code>），
-                  不填的话调用时会报「该应用没有声明本机执行命令」。
-                </div>
-              )}
+            </div>
+          ) : null}
+          {publishResult.runner === 'bot' ? (
+            <div className="v3-service-agents-published-hint">
+              <div>
+                谁来调都行，由那个 bot 自己处理。它<strong>在线时</strong>才接活；
+                不在线时调用会立刻报「不在线」（不会让你白等）。
+              </div>
+              <div>
+                别人调它可能要等一会儿（它要自己思考、可能还要动手）—— 平台会先把「已收到」回给调用方，
+                结果出来再补上，所以对方的对话不会被卡住。
+              </div>
             </div>
           ) : null}
           <div className="v3-service-agents-published-hint">
@@ -559,6 +691,18 @@ export default function ServiceAgentsPanel({ onClose }) {
           : 'CatsCo 定制 Agent（以工具形式接入）。添加的会出现在你的账号工具集中；删除的将被移除，调用也会被拒绝。'}
       </p>
       {scopeBotUid && scopeLoading ? <div className="v3-service-agents-empty">读取该 Agent 的工具清单…</div> : null}
+      {!loading && agents.length > 1 ? (
+        <div className="v3-service-agents-search">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索应用（名称或用途）"
+            aria-label="搜索应用"
+            spellCheck={false}
+          />
+        </div>
+      ) : null}
       {error && (
         <div className="v3-service-agents-error" role="alert">
           <AlertTriangle size={14} aria-hidden="true" />
@@ -603,11 +747,26 @@ export default function ServiceAgentsPanel({ onClose }) {
             刷新目录
           </button>
         </div>
+      ) : (visibleAgents.length === 0 ? (
+        <div className="v3-service-agents-placeholder" role="status">
+          <p className="v3-service-agents-placeholder-title">没有匹配的应用</p>
+          <p className="v3-service-agents-placeholder-text">
+            换个关键词试试，或者清空搜索看全部。
+          </p>
+          <button
+            type="button"
+            className="v3-service-agents-placeholder-action"
+            onClick={() => setQuery('')}
+          >
+            清空搜索
+          </button>
+        </div>
       ) : (
         <ul className="v3-service-agents-list">
-          {agents.map((agent) => {
+          {visibleAgents.map((agent) => {
             const busy = pending.has(agent.slug)
               || unpublishing.has(agent.slug)
+              || dismissingIntro.has(agent.slug)
               || (scopeBotUid && scopeLoading);
             const accountHidden = Boolean(agent.hidden);
             const selected = scopeBotUid
@@ -629,13 +788,76 @@ export default function ServiceAgentsPanel({ onClose }) {
                     {agent.visibility === 'private' ? (
                       <span className="v3-service-agent-badge is-private">私有</span>
                     ) : null}
+                    {agent.visibility === 'friends' ? (
+                      <span className="v3-service-agent-badge is-friends">好友</span>
+                    ) : null}
                   </div>
                   <div className="v3-service-agent-slug">catsco_{agent.slug}</div>
+                  {agent.description ? (
+                    // 这段就是调用方 Agent 看到的文字：写清楚才有人会用。
+                    <div className="v3-service-agent-desc" title={agent.description}>
+                      {agent.description}
+                    </div>
+                  ) : agent.mine ? (
+                    <div className="v3-service-agent-warn">
+                      没写「能做什么」：别的 Agent 只能靠名字猜，基本不会用它
+                      {/* 平台不会替应用生成描述；唯一的来源是应用自己在 run 结果里带 self_intro。
+                          所以这里告诉人「该怎么让应用学会」—— 而不是让人凭空编一段。 */}
+                      <div className="v3-service-agent-warn-hint">
+                        可以让它自己写：在你的 agent 提示词里加一句「跑完后在结果里带上
+                        self_intro」，它下次跑完就会在这里给出建议。
+                      </div>
+                    </div>
+                  ) : null}
+                  {agent.mine && agent.self_intro?.description ? (
+                    // 应用自己建议的对外描述。写这段的是模型，所以只建议 ——
+                    // 点「用它」会把内容填进编辑表单，人再确认发布。
+                    <div className="v3-service-agent-intro">
+                      <div className="v3-service-agent-intro-label">这个应用建议这样介绍自己</div>
+                      <div className="v3-service-agent-intro-text" title={agent.self_intro.description}>
+                        {agent.self_intro.description}
+                      </div>
+                      <div className="v3-service-agent-intro-actions">
+                        <button
+                          type="button"
+                          className="v3-service-agent-intro-accept"
+                          disabled={dismissingIntro.has(agent.slug)}
+                          onClick={() => startEdit(agent, { useSelfIntro: true })}
+                          aria-label={`用${agent.name || agent.slug}的自述`}
+                          title="把这段填进编辑表单，你确认后才会生效"
+                        >
+                          用它
+                        </button>
+                        <button
+                          type="button"
+                          className="v3-service-agent-intro-dismiss"
+                          disabled={dismissingIntro.has(agent.slug)}
+                          onClick={() => dismissSelfIntro(agent)}
+                          aria-label={`忽略${agent.name || agent.slug}的自述`}
+                        >
+                          {dismissingIntro.has(agent.slug) ? '忽略中…' : '忽略'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   {scopeBotUid && accountHidden ? (
                     <div className="v3-service-agent-note">账号清单中已移除</div>
                   ) : null}
                 </div>
                 <div className="v3-service-agent-actions">
+                  {agent.mine ? (
+                    <button
+                      type="button"
+                      className="v3-service-agent-edit"
+                      disabled={busy}
+                      onClick={() => startEdit(agent)}
+                      aria-label={`编辑${agent.name || agent.slug}`}
+                      title="编辑描述/执行方式后重新发布"
+                    >
+                      <Pencil size={15} />
+                      <span>编辑</span>
+                    </button>
+                  ) : null}
                   {agent.mine ? (
                     unpublishTarget === agent.slug ? (
                       <>
@@ -693,7 +915,7 @@ export default function ServiceAgentsPanel({ onClose }) {
             );
           })}
         </ul>
-      )}
+      ))}
     </aside>
   );
 }

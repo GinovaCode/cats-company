@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 root="${1:-/srv/catscompany-prod}"
 revision="${2:-}"
@@ -17,6 +17,15 @@ compose() {
   else
     docker compose "$@"
   fi
+}
+
+dump_deploy_failure() {
+  local status=$?
+  trap - ERR
+  echo "production rollout failed (exit $status); capturing container logs before rollback" >&2
+  compose -f "$compose_file" --env-file "$env_file" ps >&2 || true
+  compose -f "$compose_file" --env-file "$env_file" logs --no-color --tail 100 server >&2 || true
+  exit "$status"
 }
 
 wait_for_health() {
@@ -196,7 +205,12 @@ cd "$compose_dir"
 if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
   compose -f "$compose_file" --env-file "$env_file" pull server dreamina-worker web website
 fi
+trap dump_deploy_failure ERR
 compose -f "$compose_file" --env-file "$env_file" up -d
+
+# Startup schema work can delay readiness. Wait for the API before entering
+# its container; an immediate exec can race a restarting server process.
+wait_for_health "api" "$health_api"
 
 # Gateway tooling must understand both route kinds before public workers are
 # issued. Ship it through the same deployment as the control-plane scripts.
@@ -208,7 +222,6 @@ compose -f "$compose_file" --env-file "$env_file" ps
 
 printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
-wait_for_health "api" "$health_api"
 # The web container resolves `server` through the Docker DNS resolver on
 # every request (deploy/nginx/nginx.conf), so a server recreation no longer
 # strands nginx on the previous address and no follow-up web recreate is

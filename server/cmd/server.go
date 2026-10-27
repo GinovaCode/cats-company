@@ -947,6 +947,11 @@ func main() {
 	// orchestration (both PG and MySQL adapters do).
 	if serviceAgentStore, ok := db.(store.ServiceAgentStore); ok {
 		serviceAgentsMCPHandler := server.NewServiceAgentsMCPHandler(serviceAgentStore)
+		// 三级可见性（公开/好友/自用）里的「好友」需要一个关系源；
+		// 未注入时 friends 级应用只对发布者自己可见（fail-closed，不会变成公开）。
+		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
+			serviceAgentsMCPHandler.SetFriendReader(friendReader)
+		}
 		balanceChecker := server.NewServiceBalanceCheckerFromEnv()
 		// 待扣金额（外部 runner 已跑但还没结算的部分）也要算进已用额度，
 		// 否则没结算前调用方可以绕过预算反复调。
@@ -964,19 +969,37 @@ func main() {
 		serviceAgentsMCPHandler.SetExternalRunner(externalRunner)
 		// 进程重启后把「已创建但没转发成功」的外部 run 重新派发（否则永远卡在 submitted）。
 		externalRunner.StartPendingRecovery(time.Minute, 10*time.Second)
+		// bot-as-tool（runner.type=bot）：把 run 交给另一个 bot 执行，天生异步。
+		// 需要消息读写 + 推送，所以传完整 store（不是 ServiceAgentStore 子集）；
+		// 缺能力时构造结果为 nil，该能力自动关闭（老部署/测试替身不受影响）。
+		if botRunner := server.NewServiceBotRunner(db, hub); botRunner != nil {
+			// 谁能调这个应用由可见性（公开/好友/自用）决定，runner 只管执行 ——
+			// 不再单独限制 bot 归属：两套授权规则会互生矛盾。
+			serviceAgentsMCPHandler.SetBotRunner(botRunner)
+		}
 		mux.HandleFunc("/api/mcp", jwtAuthWithDB(serviceAgentsMCPHandler.ServeHTTP))
 		// 应用目录管理 API（设计 §3.3-9 目录与订阅）：网页 cats 的目录/管理界面数据面；
 		// 清单跟账号，变更即时同步在线 MCP 会话（list_changed）。
 		// 内测门（2026-10-16）：仅白名单 uid（CATSCO_SERVICE_CATALOG_UID_WHITELIST）可用。
 		catalogHandler := server.NewServiceAgentCatalogHandlerFromEnv(serviceAgentStore)
 		catalogHandler.SetSubscriptionNotifier(serviceAgentsMCPHandler)
+		if friendReader, ok := db.(server.ServiceAgentFriendReader); ok {
+			catalogHandler.SetFriendReader(friendReader)
+		}
 		mux.HandleFunc("GET /api/service-agents/catalog/access", jwtAuthWithDB(catalogHandler.HandleAccess))
 		mux.HandleFunc("GET /api/service-agents/catalog", jwtAuthWithDB(catalogHandler.HandleCatalog))
 		mux.HandleFunc("PUT /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleAdd))
 		mux.HandleFunc("DELETE /api/service-agents/{slug}/subscription", jwtAuthWithDB(catalogHandler.HandleRemove))
+		// 自述建议：只有「丢弃」这一个动作。采纳 = 面板预填编辑表单 + 人点发布，
+		// 不开第二条改动线上文案的写入路径。
+		mux.HandleFunc("DELETE /api/service-agents/{slug}/self-intro", jwtAuthWithDB(catalogHandler.HandleDismissSelfIntro))
 		// 用户自助上架（设计 §4.3 P2）：JWT + 同一套内测白名单；首次发布占位 owner，
 		// 之后仅本人可继续发版；平台内部 slug 不可抢占。
 		publishHandler := server.NewServiceAgentPublishHandlerFromEnv(serviceAgentStore)
+		// bot-as-tool：把 bot 分享成工具时，工具标签默认取 bot 自己的自我介绍。
+		if botProfiles, ok := db.(server.ServiceBotProfileReader); ok {
+			publishHandler.SetBotProfiles(botProfiles)
+		}
 		// 下架/上架都会改变目录可见性 → 让在线 MCP 会话立即收到 list_changed。
 		publishHandler.SetCatalogNotifier(serviceAgentsMCPHandler)
 		mux.HandleFunc("POST /api/service-agents/publish", jwtAuthWithDB(publishHandler.HandlePublish))
@@ -1154,6 +1177,7 @@ func main() {
 	mux.HandleFunc(server.SkillHubPublicationIntrospectionPath, publicationPeer.Handle)
 	mux.HandleFunc(server.SkillHubPublicationCloudReceiptPath, publicationPeer.Handle)
 	mux.HandleFunc(server.SkillHubPublicationCommitPermitPath, publicationPeer.Handle)
+	mux.HandleFunc(server.SkillHubPublicationDescriptionReleasePermitPath, publicationPeer.Handle)
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))

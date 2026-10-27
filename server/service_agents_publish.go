@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // 用户自助上架（设计 §4.3 P2）。
@@ -40,6 +42,48 @@ type ServiceAgentPublishHandler struct {
 	allowed   func(int64) bool
 	maxBundle int64
 	notifier  serviceAgentCatalogNotifier
+	// botProfiles：runner.type=bot 时用 bot 自己的描述当工具标签（可选能力）。
+	botProfiles ServiceBotProfileReader
+}
+
+// ServiceBotProfileReader 读 bot 自身资料。bot-as-tool 的「标签」默认取
+// `bot_config.description` —— 那就是 bot 在平台的自我介绍，发布者不用再手写一遍。
+// 可选能力：未注入时退回「作者必须自己写描述」的旧行为。
+type ServiceBotProfileReader interface {
+	GetBotConfig(uid int64) (*types.BotConfig, error)
+}
+
+// SetBotProfiles 注入 bot 资料读取器（线上由主库适配器实现）。
+func (h *ServiceAgentPublishHandler) SetBotProfiles(reader ServiceBotProfileReader) {
+	h.botProfiles = reader
+}
+
+// fillDescriptionFromBot 用 bot 自己的描述补上 definition.description。
+//
+// 失败一律返回 nil（调用方继续走「必须写描述」的校验）：
+// 读不到 bot 不是发布失败的理由，只是拿不到方便的默认值。
+func (h *ServiceAgentPublishHandler) fillDescriptionFromBot(botUID int64, definition json.RawMessage) json.RawMessage {
+	if h.botProfiles == nil || botUID <= 0 {
+		return nil
+	}
+	profile, err := h.botProfiles.GetBotConfig(botUID)
+	if err != nil || profile == nil {
+		return nil
+	}
+	description := strings.TrimSpace(profile.Description)
+	if description == "" {
+		return nil
+	}
+	var view map[string]any
+	if err := json.Unmarshal(definition, &view); err != nil || view == nil {
+		return nil
+	}
+	view["description"] = description
+	filled, err := json.Marshal(view)
+	if err != nil {
+		return nil
+	}
+	return filled
 }
 
 // serviceAgentCatalogNotifier 在目录/可见性变化后同步在线 MCP 会话的工具集（list_changed）。
@@ -85,6 +129,48 @@ type serviceAgentPublishRequest struct {
 	Force        bool   `json:"force,omitempty"`
 }
 
+// serviceAgentDefinitionDescription 取 definition 里的工具描述。
+// 作者（往往是 Agent 自己）在自己的定义/包里写，平台只做透传。
+func serviceAgentDefinitionDescription(definition json.RawMessage) string {
+	var view struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(definition, &view); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(view.Description)
+}
+
+// normalizeServiceAgentDefinition 校验并规范化 definition 里的 input_schema。
+//
+// 用户通道不传包，作者（面板或 Agent 自己）只能把 schema 写在 definition 里，
+// 所以这里必须与包通道（agent.json）同一套规则：否则线上会退化出
+// 「input 的类型是 string」这种看起来能用、实际没法传参的工具。
+// 返回空表示 definition 里没有 schema / 不是对象（保持原样，由后续逻辑判定）。
+func normalizeServiceAgentDefinition(definition json.RawMessage) (json.RawMessage, error) {
+	var view map[string]any
+	if err := json.Unmarshal(definition, &view); err != nil || len(view) == 0 {
+		return nil, nil
+	}
+	rawSchema, declared := view["input_schema"]
+	if !declared || rawSchema == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(rawSchema)
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeServiceAgentInputSchema(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if normalized == nil {
+		return nil, nil
+	}
+	view["input_schema"] = normalized
+	return json.Marshal(view)
+}
+
 // HandlePublish POST /api/service-agents/publish
 func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
@@ -127,9 +213,9 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 	if visibility == "" {
 		visibility = store.ServiceAgentVisibilityPublic
 	}
-	if visibility != store.ServiceAgentVisibilityPublic && visibility != store.ServiceAgentVisibilityPrivate {
+	if !serviceAgentVisibilityValid(visibility) {
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "invalid_visibility", "detail": "visibility 只能是 public / private",
+			"error": "invalid_visibility", "detail": "visibility 只能是 " + serviceAgentVisibilityAccepted(),
 		})
 		return
 	}
@@ -157,6 +243,44 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		writeServiceJSON(w, http.StatusBadRequest, map[string]any{"error": "bundle_required"})
 		return
 	}
+	// 入参 schema 与包通道（agent.json）同一套校验规则（对象 / 顶层 type / 8 KiB）。
+	// 先报格式错误再报内容缺失：让调用方一次改对，而不是先补描述再撞 schema。
+	if normalized, err := normalizeServiceAgentDefinition(req.Definition); err != nil {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid_input_schema", "detail": "definition.input_schema: " + err.Error(),
+		})
+		return
+	} else if len(normalized) > 0 {
+		req.Definition = normalized
+	}
+	// 分享给别人（公开 / 好友）就必须写描述：调用方是另一个 Agent，它看不到包内容、
+	// 也没有主 Agent 的上下文，description 是它判断「这个工具做什么、什么情况下该用」
+	// 的唯一依据。没有描述 = 分享出去也没人会用（线上真实症状：bot 反复说「看不到调用入口」）。
+	// 「自用」不强制：只有自己用，写不写不影响别人。
+	// 放在包校验之后：结构错误（缺包/坏 base64）先报，不然用户会被描述报错带偏。
+	//
+	// bot-as-tool 例外：把 bot 分享成工具时，标签本来就该是 bot 自己的自我介绍，
+	// 不该让发布者再手抄一遍 —— 没写就自动取 bot_config.description。
+	if botUID, isBot := ParseBotRunnerBotUID(req.Definition); isBot &&
+		serviceAgentDefinitionDescription(req.Definition) == "" {
+		if filled := h.fillDescriptionFromBot(botUID, req.Definition); len(filled) > 0 {
+			req.Definition = filled
+		}
+	}
+	description := serviceAgentDefinitionDescription(req.Definition)
+	if len([]rune(description)) > maxServiceAgentDescriptionRunes {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid_description", "detail": fmt.Sprintf("description 不超过 %d 字", maxServiceAgentDescriptionRunes),
+		})
+		return
+	}
+	if serviceAgentVisibilityShared(visibility) && description == "" {
+		writeServiceJSON(w, http.StatusBadRequest, map[string]any{
+			"error":  "description_required",
+			"detail": serviceAgentVisibilityLabel(visibility) + "应用必须写 description：说明它做什么、什么情况下该用（调用方 Agent 只能看到这段文字）",
+		})
+		return
+	}
 
 	ctx := r.Context()
 	if err := h.store.ClaimServiceAgentOwnership(ctx, slug, name, store.ServiceAgentOwnerUser, uid, visibility); err != nil {
@@ -181,6 +305,13 @@ func (h *ServiceAgentPublishHandler) HandlePublish(w http.ResponseWriter, r *htt
 		}
 		writeServiceJSON(w, http.StatusInternalServerError, map[string]any{"error": "publish_unavailable"})
 		return
+	}
+	// 发布即清掉待确认的自述建议：它就是针对上一版说的，新版发出去已经过时。
+	// 失败只记日志（与自述本身的容错口径一致：不能让一次成功发布回滚）。
+	if selfIntro, ok := h.store.(ServiceAgentSelfIntroStore); ok {
+		if err := selfIntro.ClearServiceAgentSelfIntro(ctx, slug); err != nil {
+			log.Printf("service agent publish: clear self intro slug=%s: %v", slug, err)
+		}
 	}
 
 	writeServiceJSON(w, http.StatusOK, map[string]any{

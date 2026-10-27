@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,37 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-const postgresMessageSearchQuery = `
-WITH normalized_messages AS (
+// Compute permissions once, then use ordered, bounded history lookups per topic.
+// The newest K global hits can only contain a topic's newest K hits; bounding each
+// topic before the final merge preserves ordering and avoids scanning every match.
+// Keep sender and content filters inside the lateral lookup, before its limit.
+// CASE defers full block-schema validation until the visible fields match.
+// The immutable document and trigram index prefilter rare/absent substrings;
+// the predicates below remain authoritative for visibility and exact matching.
+const postgresMessageSearchQueryPrefix = `
+WITH readable_topics AS MATERIALIZED (
+  SELECT t.id, COALESCE(g.name, t.name, '') AS topic_name
+  FROM users viewer
+  JOIN group_members gm ON gm.user_id = viewer.id
+  JOIN "groups" g ON g.id = gm.group_id
+  JOIN topics t ON t.type = 'group' AND t.id = 'grp_' || gm.group_id::text
+  WHERE viewer.id = $1 AND gm.user_id IS NOT NULL
+    AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed')
+  UNION ALL
+  SELECT t.id, COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '')
+  FROM users viewer
+  JOIN users peer ON peer.id <> viewer.id
+  JOIN topics t ON t.type = 'p2p'
+    AND t.id = 'p2p_' || LEAST(viewer.id, peer.id)::text || '_' || GREATEST(viewer.id, peer.id)::text
+  LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
+  LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
+  WHERE viewer.id = $1 AND peer.id IS NOT NULL AND (
+    viewer.account_type = 'bot' OR peer.account_type <> 'bot' OR peer_bot.owner_id = viewer.id OR EXISTS (
+      SELECT 1 FROM friends f
+      WHERE f.from_user_id = viewer.id AND f.to_user_id = peer.id AND f.status = 'accepted'
+    )
+  )
+), normalized_messages AS (
   SELECT messages.*,
          CASE
            WHEN msg_type <> 'file' OR NOT pg_input_is_valid(content, 'jsonb') THEN '{}'::jsonb
@@ -68,49 +98,51 @@ WITH normalized_messages AS (
          END AS search_blocks_valid
   FROM messages
 )
+SELECT m.id, m.topic_id, readable.topic_name,
+       m.from_uid, m.sender_name, m.content, m.msg_type, m.created_at, m.content_blocks
+FROM readable_topics readable
+CROSS JOIN LATERAL (
 SELECT m.id, m.topic_id,
-       CASE WHEN t.type = 'group' THEN COALESCE(g.name, t.name, '')
-            ELSE COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '') END AS topic_name,
-       m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
+       m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, '') AS sender_name,
        m.content, m.msg_type, m.created_at, m.content_blocks
 FROM normalized_messages m
-JOIN topics t ON t.id = m.topic_id
-JOIN users viewer ON viewer.id = $1
 JOIN users sender ON sender.id = m.from_uid
-LEFT JOIN group_members gm ON t.type = 'group'
-  AND t.id = 'grp_' || gm.group_id::text AND gm.user_id = viewer.id
-LEFT JOIN "groups" g ON g.id = gm.group_id
-LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
-  AND t.id = 'p2p_' || LEAST(viewer.id, peer.id)::text || '_' || GREATEST(viewer.id, peer.id)::text
-LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
-LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
-WHERE sender.account_type IN ('human', 'bot')
-AND (
-  (t.type = 'group' AND gm.user_id IS NOT NULL
-    AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed'))
-  OR
-  (t.type = 'p2p' AND peer.id IS NOT NULL AND (
-    viewer.account_type = 'bot' OR peer.account_type <> 'bot' OR peer_bot.owner_id = viewer.id OR EXISTS (
-      SELECT 1 FROM friends f
-      WHERE f.from_user_id = viewer.id AND f.to_user_id = peer.id AND f.status = 'accepted'
-    )
-  ))
-)
-AND (
+WHERE m.topic_id = readable.id AND sender.account_type IN ('human', 'bot')
+`
+
+const postgresMessageSearchIndexPrefilter = `AND message_search_document_v1(m.msg_type, m.content, m.content_blocks)
+    LIKE '%' || replace(replace(replace(lower($3), '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!'
+`
+
+const postgresMessageSearchQuerySuffix = `AND CASE WHEN (
   ($2 <> 'artifact' AND m.msg_type = 'text'
-    AND (m.content_blocks IS NULL OR jsonb_typeof(m.content_blocks) = 'null'
-      OR (m.search_blocks_valid
-      AND NOT EXISTS (
-        SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS block
-        WHERE block->>'type' IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan')
+    AND (
+      EXISTS (
+        SELECT 1 FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END
+        ) AS block
+        WHERE block->>'type' IN ('text', 'assistant_text')
+          AND STRPOS(LOWER(COALESCE(NULLIF(block->>'text', ''), block->>'content', '')), LOWER($3)) > 0
+      )
+      OR (
+        STRPOS(LOWER(m.content), LOWER($3)) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END
+          ) AS block
+          WHERE block->>'type' IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan', 'debug')
+            OR (block->>'type' IN ('text', 'assistant_text')
+              AND COALESCE(NULLIF(block->>'text', ''), block->>'content', '') <> '')
+        )
       )
     ))
-    AND STRPOS(LOWER(m.content), LOWER($3)) > 0)
   OR
   ($2 <> 'message' AND (
     (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array'
-      AND m.search_blocks_valid AND EXISTS (
-      SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS artifact
+      AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END
+      ) AS artifact
       WHERE artifact->>'type' IN ('file', 'image', 'audio', 'video')
         AND (
           STRPOS(LOWER(COALESCE(artifact->>'name', '')), LOWER($3)) > 0
@@ -139,14 +171,52 @@ AND (
           AND STRPOS(LOWER(legacy_file.content->>'title'), LOWER($3)) > 0)
     ))
   ))
-)
+) THEN m.search_blocks_valid ELSE FALSE END
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT ($4::int + $5::int)
+) m
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT $4 OFFSET $5`
 
+const postgresMessageSearchGramPrefilter = `AND message_search_grams_v1(message_search_document_v1(m.msg_type, m.content, m.content_blocks))
+    @> message_search_grams_v1(lower($3))
+`
+
+const postgresMessageSearchGramQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchGramPrefilter + postgresMessageSearchIndexPrefilter + postgresMessageSearchQuerySuffix
+
+const postgresMessageSearchQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchIndexPrefilter + postgresMessageSearchQuerySuffix
+
+// Omit the document predicate when the index could not be installed. Evaluating
+// the document for every history row would add work to the previous query.
+const postgresMessageSearchFallbackQuery = postgresMessageSearchQueryPrefix + postgresMessageSearchQuerySuffix
+
+// Force a value-specific plan inside the search transaction. A generic plan
+// cannot estimate substring selectivity and may scan/sort all common-term hits.
+const postgresMessageSearchPlanMode = `SET LOCAL plan_cache_mode = force_custom_plan`
+
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
-func (a *Adapter) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
-	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.Query(postgresMessageSearchQuery, viewerUID, searchType, query, pageSize, offset)
+func (a *Adapter) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
+	tx, err := a.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin message search: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, postgresMessageSearchPlanMode); err != nil {
+		return nil, fmt.Errorf("plan message search: %w", err)
+	}
+	searchSQL := postgresMessageSearchFallbackQuery
+	if a.messageSearchIndexReady.Load() {
+		searchSQL = postgresMessageSearchQuery
+	} else if a.messageSearchGramIndexReady.Load() {
+		searchSQL = postgresMessageSearchQuery
+		// Two ASCII characters have no byte triple. Use the document filter
+		// directly instead of evaluating an empty-array containment predicate.
+		if len(query) >= 3 {
+			searchSQL = postgresMessageSearchGramQuery
+		}
+	}
+	results, err := store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
+		rows, err := tx.QueryContext(ctx, searchSQL, viewerUID, searchType, query, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
@@ -160,6 +230,13 @@ func (a *Adapter) SearchMessages(viewerUID int64, query, searchType string, limi
 		}
 		return page, scanned, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("finish message search: %w", err)
+	}
+	return results, nil
 }
 
 func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit int) ([]*store.MessageSearchResult, int, error) {

@@ -1138,6 +1138,29 @@
   margin: 12px 14px 0;
 }
 
+/* 目录搜索：应用多了才出现，只有一两个时不占地方。 */
+.v3-service-agents-search {
+  flex: 0 0 auto;
+  margin: 10px 14px 0;
+}
+
+.v3-service-agents-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--cc-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--cc-surface, #fff);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.v3-service-agents-search input:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.35);
+  outline-offset: 1px;
+}
+
 .v3-service-agents-scope-label {
   font-size: 11px;
   font-weight: 600;
@@ -1249,10 +1272,42 @@
   color-scheme: dark;
 }
 
+/* 描述是多行文本：调用方 Agent 靠它判断要不要用，给足够空间写清楚。 */
+.v3-service-agents-field textarea {
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--v3-text-name, var(--cc-text, inherit));
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  color-scheme: dark;
+}
+
+.v3-service-agents-field textarea:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.55);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
 .v3-service-agents-field-hint {
   font-size: 10px;
   line-height: 1.5;
   opacity: 0.75;
+}
+
+/* 旧应用用的是平台直连（http/mcp）：面板不再提供这种接入方式，只提示「保持原样」。 */
+.v3-service-agents-locked {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(180, 83, 9, 0.10);
+  border: 1px solid rgba(180, 83, 9, 0.28);
+  color: #b45309;
 }
 
 /* 发布表单里的「更多设置」：默认收起，普通用户只需要填名称。 */
@@ -1499,6 +1554,123 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 工具描述：调用方 Agent 就是靠这段文字决定要不要用，所以要露出来。 */
+.v3-service-agent-desc {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--cc-muted, #6b7280);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 自己的应用没写描述：别人（另一个 Agent）只能猜，等于用不起来。 */
+.v3-service-agent-warn {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #b45309;
+}
+
+/* 「怎么让它自己写」的提示：是解法，不是警告，所以颜色退一档。 */
+.v3-service-agent-warn-hint {
+  margin-top: 2px;
+  color: #6b7280;
+}
+
+/* 自述建议（应用自己建议的对外描述）：等人确认才生效，所以视觉上要跟
+   「当前描述」区分开 —— 否则用户会以为它已经生效了。 */
+.v3-service-agent-intro {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px dashed rgba(59, 130, 246, 0.35);
+}
+
+.v3-service-agent-intro-label {
+  font-size: 10px;
+  color: #1d4ed8;
+  margin-bottom: 2px;
+}
+
+.v3-service-agent-intro-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: inherit;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.v3-service-agent-intro-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.v3-service-agent-intro-accept,
+.v3-service-agent-intro-dismiss {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.v3-service-agent-intro-accept {
+  border: 1px solid rgba(37, 99, 235, 0.45);
+  color: #1d4ed8;
+}
+
+.v3-service-agent-intro-accept:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.v3-service-agent-intro-dismiss {
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  color: var(--cc-muted, #6b7280);
+}
+
+.v3-service-agent-intro-dismiss:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.v3-service-agent-intro-accept:disabled,
+.v3-service-agent-intro-dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.v3-service-agent-edit {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--v3-border, var(--cc-border, #e5e7eb));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-muted, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.v3-service-agent-edit:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.14);
+  color: inherit;
+}
+
+.v3-service-agent-edit:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .v3-service-agent-unpublish {
@@ -1787,4 +1959,11 @@
 .v3-service-agent-badge.is-private {
   background: rgba(148, 163, 184, 0.2);
   color: var(--cc-muted, #6b7280);
+}
+
+/* 好友级：介于「公开（蓝）」和「私有（灰）」之间的存在感 ——
+   它是分享出去的，但只给认识的人，视觉上不该和公开一样醒目。 */
+.v3-service-agent-badge.is-friends {
+  background: rgba(16, 185, 129, 0.16);
+  color: #059669;
 }

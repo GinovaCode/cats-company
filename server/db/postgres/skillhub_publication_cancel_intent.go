@@ -45,6 +45,13 @@ func (a *Adapter) RequestSkillHubPublicationCancellation(ctx context.Context, ac
 	if e.State != "waiting_runtime" && e.State != "cancelled" {
 		return nil, store.ErrSkillHubPublicationConflict
 	}
+	var releaseStarted bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM skillhub_publication_description_release_permits WHERE entry_id=$1)`, id).Scan(&releaseStarted); err != nil {
+		return nil, err
+	}
+	if releaseStarted {
+		return nil, store.ErrSkillHubPublicationConflict
+	}
 	// The entry lock serializes with upload issuance/rotation, receipt recording
 	// and local cancellation. Internal commit-permit issuance shares it; the
 	// Cloud adapter must implement pending/too-late before either is enabled.

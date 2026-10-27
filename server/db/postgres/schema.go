@@ -19,9 +19,12 @@ func (a *Adapter) CreateSchema() error {
 		createConversationNotificationMutesTable,
 		createConversationDeviceSelectionsTable,
 		createMessagesTable,
+		createMessageSearchDocument,
+		createMessageSearchGrams,
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createConversationTaskRunsTable,
 		createAgentArtifactTagsTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
@@ -50,6 +53,10 @@ func (a *Adapter) CreateSchema() error {
 		createSkillHubPublicationUploadDeliveriesTable,
 		createSkillHubPublicationRepairTables,
 		createSkillHubPublicationDescriptionTables,
+		createSkillHubPublicationDescriptionApplicationTable,
+		createSkillHubPublicationDescriptionAcceptanceTable,
+		createSkillHubPublicationDescriptionReleaseIntentTable,
+		createSkillHubPublicationDescriptionReleasePermitTable,
 		createBotInviteCodesTable,
 		createBotSkillMutationsTable,
 		migrateBotSkillMutationsAddActivationFacts,
@@ -163,6 +170,8 @@ func (a *Adapter) CreateSchema() error {
 		createServiceRunEventsTable,
 		createServiceSessionCheckpointsTable,
 		createServiceInstancesTable,
+		migrateServiceInstancesAddOwnerUID,
+		migrateServiceAgentsAddSelfIntro,
 		createServiceWorkerTokensTable,
 		createServiceRunsCreatedAtIndex,
 		createServiceRunReceiptsTable,
@@ -187,6 +196,8 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialIndexes,
 		createChannelAgentIndexes,
 		createUpdatedAtTriggers,
+		createConversationTaskAggregateClock,
+		backfillConversationTaskRuns,
 		createSchemaMigrationsTable,
 		createSchemaMigrationsBaseline,
 	}
@@ -194,6 +205,11 @@ func (a *Adapter) CreateSchema() error {
 		if _, err := a.db.Exec(statement); err != nil {
 			return fmt.Errorf("postgres schema statement failed: %w", err)
 		}
+	}
+	// CONCURRENTLY must be a standalone statement outside a transaction. It
+	// lets an existing deployment continue writing while the index is built.
+	if err := a.ensureMessageSearchIndex(); err != nil {
+		return fmt.Errorf("message search index: %w", err)
 	}
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
@@ -595,14 +611,32 @@ CREATE TABLE IF NOT EXISTS service_session_checkpoints (
 );`
 
 // 实例心跳注册（000032 编号迁移镜像；设计 §7.1“实例在线数”数据源）。
+// owner_uid：这条 worker 属于哪个账号（心跳鉴权解出；0=平台内部 worker）。
+// 没有它就无法按账号预检「你这边有没有 worker」——claim 是 per-user 的，
+// 别人的 worker 对本应用毫无意义。
 const createServiceInstancesTable = `
 CREATE TABLE IF NOT EXISTS service_instances (
     instance_id VARCHAR(64) PRIMARY KEY,
+    owner_uid BIGINT NOT NULL DEFAULT 0,
     active_runs INT NOT NULL DEFAULT 0,
     metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );`
+
+// 已存在的 service_instances 不会被 CREATE TABLE IF NOT EXISTS 补列，必须显式 ALTER。
+// 历史行默认 0（平台内部），它们的 worker 下次心跳就会写入真实 owner。
+const migrateServiceInstancesAddOwnerUID = `
+ALTER TABLE service_instances
+ADD COLUMN IF NOT EXISTS owner_uid BIGINT NOT NULL DEFAULT 0;`
+
+// 自述（self_intro）：应用在跑完之后「建议」的自我描述，等人确认才写进 definition。
+// 单独存一列而不是直接改良 definition —— 因为写描述的是模型，不是人：
+// 它能建议，但不能替人决定对外文案。
+const migrateServiceAgentsAddSelfIntro = `
+ALTER TABLE service_agents
+    ADD COLUMN IF NOT EXISTS self_intro_description TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS self_intro_input_schema TEXT NOT NULL DEFAULT '';`
 
 // 用户自己的 worker 凭据（per-user）：worker 用它只能认领「自己拥有的应用」的 run，
 // 不再依赖全局实例 token（拿到就能领别人的 run）。库里只存 sha256，明文仅创建时返回。
@@ -1985,8 +2019,6 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_bot_skill_mutations_updated_at BEFORE UPDATE ON bot_skill_mutations
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE OR REPLACE TRIGGER trg_conversation_task_statuses_updated_at BEFORE UPDATE ON conversation_task_statuses
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_status_sources_updated_at BEFORE UPDATE ON conversation_task_status_sources
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

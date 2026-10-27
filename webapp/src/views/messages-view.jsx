@@ -76,8 +76,6 @@ import {
   createArtifactPreviewChatCoordinator,
   createArtifactPreviewLeaseStore,
   createArtifactViewerURL,
-  openBlankTab,
-  openTabAt,
   sameArtifactPreviewIdentity,
 } from '../artifact-preview-coordinator';
 import {
@@ -888,6 +886,13 @@ export default function MessagesView({
     && getAuthRevision() === snapshot.authRevision
     && getToken() === snapshot.token,
   );
+  // Handshake retry schedule, in ms after the first connect.
+  //
+  // A frame document installs its message listener asynchronously, so a
+  // connect that arrives too early is dropped with no error anywhere.
+  // Re-posting the same handshake is cheap and idempotent; giving up after a
+  // single attempt is what made the channel look intermittent.
+  const GATEWAY_ANNOTATION_HANDSHAKE_STEPS = [400, 1200, 2500, 4000];
   const clearGatewayAnnotationReadyTimer = () => {
     if (gatewayAnnotationReadyTimerRef.current) {
       window.clearTimeout(gatewayAnnotationReadyTimerRef.current);
@@ -1538,18 +1543,58 @@ export default function MessagesView({
     // otherwise keep the old token alive) and handshake into a fresh session.
     clearGatewayAnnotationReadyTimer();
     const generation = ++gatewayAnnotationBindingGenerationRef.current;
-    gatewayAnnotationHostRef.current?.deactivate?.();
-    gatewayAnnotationReadyTimerRef.current = window.setTimeout(() => {
-      if (gatewayAnnotationBindingGenerationRef.current !== generation) return;
-      if (gatewayAnnotationBindingRef.current !== binding) return;
+    const host = gatewayAnnotationHostRef.current;
+    host?.deactivate?.();
+
+    const isStale = () => gatewayAnnotationBindingGenerationRef.current !== generation
+      || gatewayAnnotationBindingRef.current !== binding;
+
+    const giveUp = () => {
+      if (isStale()) return;
+      // A ready that raced the last step means the channel works; reporting a
+      // failure here would retract a working session the user can already use.
+      if (host?.readyCapabilities?.().length) return;
       setGatewayAnnotationReady((previous) => (previous === null
         ? 'unavailable'
         : previous));
       setGatewayAnnotationCapabilityNote(
         '应用标注 runtime 未响应（可能被 CSP 禁止），详细标注不可用，请重新打开或联系发布者',
       );
-    }, 3000);
-    gatewayAnnotationHostRef.current?.connect?.(binding);
+    };
+
+    // A connect posted before the frame document installs its listener is
+    // dropped silently: nothing throws, nothing logs, and the channel stays
+    // shut until the panel is reopened. Re-post the SAME handshake on a short
+    // schedule — the SDK treats an unchanged session/request pair as one
+    // handshake and answers ready again — and report failure only after the
+    // last step. A second connect() would mint a new token and revoke the live
+    // session, so retries go through retransmit().
+    const scheduleStep = (index) => {
+      const elapsed = index === 0 ? 0 : GATEWAY_ANNOTATION_HANDSHAKE_STEPS[index - 1];
+      const atMs = GATEWAY_ANNOTATION_HANDSHAKE_STEPS[index];
+      gatewayAnnotationReadyTimerRef.current = window.setTimeout(() => {
+        if (isStale()) return;
+        // Ready ends the handshake: never re-arm past a completed session.
+        if (host?.readyCapabilities?.().length) return;
+        if (index === GATEWAY_ANNOTATION_HANDSHAKE_STEPS.length - 1) {
+          giveUp();
+          return;
+        }
+        host?.retransmit?.();
+        // A fast runtime answers the re-posted connect synchronously, so the
+        // readiness check above can already be true on the next line.
+        if (host?.readyCapabilities?.().length) return;
+        scheduleStep(index + 1);
+      }, atMs - elapsed);
+    };
+
+    // A failed first post (no target origin, no postMessage) cannot be fixed
+    // by re-posting, so report it instead of pretending it is in flight.
+    if (host?.connect?.(binding) === false) {
+      giveUp();
+      return;
+    }
+    scheduleStep(0);
   }, [cloudArtifactsAgentUID, resetGatewayAnnotationBinding, topic]);
 
   // Context resets: a new topic, a different agent viewer, or logout drop the
@@ -2425,28 +2470,17 @@ export default function MessagesView({
     const agentUid = Number(artifact?.agent_uid || artifact?.agentUid || 0);
     const appId = String(artifact?.id || artifact?.artifact_id || '').trim();
     if (agentUid <= 0 || !appId) return;
-    // A new tab opens the application's own address rather than the hosted
-    // viewer: the viewer URL carries this conversation and the owner, which is
-    // both a poor thing to hand to anyone and a poor thing to leave in the
-    // address bar. The tab is claimed while the click is still the active
-    // gesture, and the launch fills it in with an address that already carries
-    // the visitor's identity.
+    // A new tab opens the application's own address: that is the address to show,
+    // to bookmark, and to hand to anyone else. Identity arrives on its own, since
+    // the platform signs a domain cookie the browser also sends to the gateway
+    // host, so no one-shot launch code is needed on this path.
     if (newPage) {
-      const claimedTab = openBlankTab();
-      let destination = String(artifact?.url || '').trim();
-      try {
-        const launch = await api.requestArtifactLaunch({ app: appId, ...(topic ? { topic_id: topic } : {}) });
-        if (launch?.launch_url) destination = launch.launch_url;
-        // The tab is standalone, so it has no parent to annotate into and the
-        // capability would only linger.
-        const binding = normalizeArtifactOpenBinding(launch?.open_binding);
-        if (binding) void api.revokeArtifactOpenBinding(binding.open_ref).catch(() => {});
-      } catch {
-        // Keep the application's own address; it opens as a guest.
+      const destination = String(artifact?.url || '').trim();
+      if (!destination) {
+        feedback.notify({ tone: 'warning', message: '这个应用暂时没有可打开的地址。' });
+        return;
       }
-      if (!openTabAt(destination, claimedTab)) {
-        feedback.notify({ tone: 'warning', message: '当前浏览器暂时无法打开应用新标签页。' });
-      }
+      window.open(destination, '_blank', 'noopener,noreferrer');
       return;
     }
     setPendingArtifactRefresh(null);

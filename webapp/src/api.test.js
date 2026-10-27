@@ -54,6 +54,20 @@ describe('WebSocket connection recovery', () => {
     vi.useRealTimers();
   });
 
+  test('bounds a stalled message search request and preserves caller cancellation', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    })));
+    const timedOut = api.api.getMessageSearch('course2md').catch((error) => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await timedOut).toMatchObject({ code: 'REQUEST_TIMEOUT' });
+
+    const controller = new AbortController();
+    const cancelled = api.api.getMessageSearch('course2md', 'all', { signal: controller.signal }).catch((error) => error);
+    controller.abort();
+    expect(await cancelled).toMatchObject({ code: 'REQUEST_ABORTED' });
+  });
+
   test('reuses an open or connecting socket', () => {
     const onMessage = vi.fn();
 

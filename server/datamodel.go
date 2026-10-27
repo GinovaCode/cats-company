@@ -34,6 +34,8 @@ type ServerMessage struct {
 	SessionFork        *types.SessionForkControl     `json:"session_fork,omitempty"`
 	Ctrl               *MsgServerCtrl                `json:"ctrl,omitempty"`
 	Data               *MsgServerData                `json:"data,omitempty"`
+	TaskStatusSource   *types.ConversationTaskStatus `json:"task_status_source,omitempty"`
+	TaskStatusEventID  int64                         `json:"task_status_event_id,omitempty"`
 	TaskStatus         *types.ConversationTaskStatus `json:"task_status,omitempty"`
 	Pres               *MsgServerPres                `json:"pres,omitempty"`
 	Meta               *MsgServerMeta                `json:"meta,omitempty"`
@@ -61,15 +63,20 @@ type ServerMessage struct {
 // --- Client messages ---
 
 type MsgClientHi struct {
-	ID                 string             `json:"id,omitempty"`
-	UserAgent          string             `json:"ua,omitempty"`
-	Version            string             `json:"ver,omitempty"`
-	Lang               string             `json:"lang,omitempty"`
-	Visibility         string             `json:"visibility,omitempty"`
-	PushSubscriptionID string             `json:"push_subscription_id,omitempty"`
-	ActiveTopic        string             `json:"active_topic,omitempty"`
-	Focused            bool               `json:"focused,omitempty"`
-	Device             *MsgClientHiDevice `json:"device,omitempty"`
+	ID                 string `json:"id,omitempty"`
+	UserAgent          string `json:"ua,omitempty"`
+	Version            string `json:"ver,omitempty"`
+	Lang               string `json:"lang,omitempty"`
+	Visibility         string `json:"visibility,omitempty"`
+	PushSubscriptionID string `json:"push_subscription_id,omitempty"`
+	ActiveTopic        string `json:"active_topic,omitempty"`
+	Focused            bool   `json:"focused,omitempty"`
+	// RuntimeCapabilities are voluntarily declared by the authenticated
+	// WebSocket peer. They are connection-local, never stored in message
+	// metadata, and only enable an additive protocol after the server rollout
+	// gate has also opted the Bot in.
+	RuntimeCapabilities []string           `json:"runtime_capabilities,omitempty"`
+	Device              *MsgClientHiDevice `json:"device,omitempty"`
 }
 
 type MsgClientHiDevice struct {
@@ -119,10 +126,11 @@ type MsgClientPub struct {
 }
 
 type MsgClientGet struct {
-	ID    string `json:"id,omitempty"`
-	Topic string `json:"topic"`
-	What  string `json:"what,omitempty"`
-	SeqID int    `json:"seq,omitempty"` // For history requests: fetch messages after this seq
+	ID       string `json:"id,omitempty"`
+	Topic    string `json:"topic"`
+	What     string `json:"what,omitempty"`
+	SeqID    int    `json:"seq,omitempty"`       // For history requests: fetch messages after this seq
+	BeforeID int64  `json:"before_id,omitempty"` // Stable run cursor for get.what=task_statuses.
 }
 
 type MsgClientSet struct {

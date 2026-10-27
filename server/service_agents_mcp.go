@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,12 +27,14 @@ import (
 // 清单变更时对在线 MCP 会话做增量同步（AddTool/RemoveTools）→ SDK 自动发
 // notifications/tools/list_changed；客户端亦可随时重查 tools/list（刷新兜底）。
 type ServiceAgentsMCPHandler struct {
-	store    store.ServiceAgentStore
-	bots     ServiceAgentBotIdentity // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
-	external *ServiceExternalRunner  // 外部执行后端（runner.type=http；可选）
-	balance  *ServiceBalanceChecker  // 计费预检（可选；未设置=跳过，调用面单测不受影响）
-	syncWait time.Duration           // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
-	http     *mcp.StreamableHTTPHandler
+	store     store.ServiceAgentStore
+	bots      ServiceAgentBotIdentity  // bot 身份校验（可选；未注入=带 bot_uid 的调用被拒）
+	external  *ServiceExternalRunner   // 外部执行后端（runner.type=http；可选）
+	botRunner *ServiceBotRunner        // bot-as-tool（runner.type=bot；可选）
+	balance   *ServiceBalanceChecker   // 计费预检（可选；未设置=跳过，调用面单测不受影响）
+	friends   serviceAgentFriendReader // 好友判定源（friends 级可见性；可选）
+	syncWait  time.Duration            // 0=按 agent 定义阈值（封顶 maxServiceSyncWait）；测试可注入覆盖
+	http      *mcp.StreamableHTTPHandler
 
 	// liveMu/liveServers 跟踪每账号的在线 MCP 会话 server（getServer 每新会话调用一次，
 	// 每会话一个独立 *mcp.Server 实例）——清单变更时据此下发 list_changed。
@@ -78,10 +81,22 @@ func (h *ServiceAgentsMCPHandler) SetBotIdentity(identity ServiceAgentBotIdentit
 	h.bots = identity
 }
 
-// SetExternalRunner 注入外部执行后端（设计 §4.4 P3-a）：声明了 runner.type=http 的
-// agent 由平台把 run 转发到用户 endpoint；未注入 = 只支持平台自带执行。
+// SetExternalRunner 注入外部执行后端（设计 §4.4 P3-a）：声明了 runner.type=http 的// agent 由平台把 run 转发到用户 endpoint；未注入 = 只支持平台自带执行。
 func (h *ServiceAgentsMCPHandler) SetExternalRunner(runner *ServiceExternalRunner) {
 	h.external = runner
+}
+
+// SetBotRunner 注入 bot-as-tool 执行后端（runner.type=bot）。
+// 未注入 = 这类 run 不会被投递，调用方会拿到一个永远不会完成的句柄 ——
+// 所以装配层要保证生产环境一定注入了它。
+func (h *ServiceAgentsMCPHandler) SetBotRunner(runner *ServiceBotRunner) {
+	h.botRunner = runner
+}
+
+// SetFriendReader 注入好友判定源（friends 级可见性用）。
+// 未注入时 friends 级应用只对发布者自己可见 —— 少接一条线不会变成公开。
+func (h *ServiceAgentsMCPHandler) SetFriendReader(friends serviceAgentFriendReader) {
+	h.friends = friends
 }
 
 func (h *ServiceAgentsMCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -105,21 +120,22 @@ func (h *ServiceAgentsMCPHandler) visibleServiceAgents(ctx context.Context, call
 	if err != nil {
 		log.Printf("service mcp list hidden agents uid=%d: %v", callerUID, err)
 		// 只跳过「个人屏蔽」这一层过滤（它只是聚焦设置）；可见性过滤必须照旧执行。
-		return serviceAgentsVisibleOnly(agents, callerUID, nil)
+		return h.serviceAgentsVisibleOnly(agents, callerUID, nil)
 	}
 	hidden := make(map[int64]struct{}, len(hiddenIDs))
 	for _, id := range hiddenIDs {
 		hidden[id] = struct{}{}
 	}
-	return serviceAgentsVisibleOnly(agents, callerUID, hidden)
+	return h.serviceAgentsVisibleOnly(agents, callerUID, hidden)
 }
 
 // serviceAgentsVisibleOnly 按可见性（+ 可选个人屏蔽集）过滤 agent 清单。
-func serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
+func (h *ServiceAgentsMCPHandler) serviceAgentsVisibleOnly(agents []store.ServiceAgentDescriptor, callerUID int64, hidden map[int64]struct{}) []store.ServiceAgentDescriptor {
+	// 可见性按访问者求值（friends 级需要好友关系）；同一请求内同一发布者最多查一次。
+	resolver := newServiceAgentViewerResolver(h.friends, callerUID)
 	visible := make([]store.ServiceAgentDescriptor, 0, len(agents))
 	for _, agent := range agents {
-		// 可见性（设计 L2）：private 只对 owner 本人可见，不进别人的 tools/list。
-		if !store.ServiceAgentVisibleTo(agent, callerUID) {
+		if !resolver.allows(agent) {
 			continue
 		}
 		if _, blocked := hidden[agent.ID]; blocked {
@@ -248,19 +264,110 @@ type serviceInvokeToolArgs struct {
 func (h *ServiceAgentsMCPHandler) addAgentTool(srv *mcp.Server, agent store.ServiceAgentDescriptor, callerUID int64) {
 	tool := &mcp.Tool{
 		Name:        "catsco_" + agent.Slug,
-		Description: fmt.Sprintf("%s（CatsCo 定制应用，slug=%s，版本 v%d）", agent.Name, agent.Slug, agent.Version),
+		Description: serviceAgentToolDescription(agent),
+	}
+	// 作者声明了入参 schema：用组合 schema 覆盖通用写法。
+	// 否则 input 只能是「任意 JSON」，调用方模型等于没被告知该怎么传参。
+	if schema, ok := composeServiceAgentToolSchema(agent.InputSchema); ok {
+		tool.InputSchema = schema
+		srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var args serviceInvokeToolArgs
+			if raw := req.Params.Arguments; len(raw) > 0 && string(raw) != "null" {
+				if err := json.Unmarshal(raw, &args); err != nil {
+					// 参数不合 schema：作为工具错误返回，让模型看到原因后自行修正重试。
+					return serviceToolError("invalid_arguments: " + err.Error()), nil
+				}
+			}
+			result, structured, err := h.invoke(ctx, agent, callerUID, args)
+			if err != nil {
+				return result, err
+			}
+			// Server.AddTool 是低层 API，不会自动填 structuredContent，必须自己带。
+			if result != nil && structured != nil && result.StructuredContent == nil {
+				result.StructuredContent = structured
+			}
+			return result, nil
+		})
+		return
 	}
 	mcp.AddTool(srv, tool, func(ctx context.Context, _ *mcp.CallToolRequest, args serviceInvokeToolArgs) (*mcp.CallToolResult, any, error) {
 		return h.invoke(ctx, agent, callerUID, args)
 	})
 }
 
+// serviceAgentToolDescription 生成调用方模型看到的工具描述。
+//
+// 描述只放「模型做决定需要的信息」：这个应用干什么、什么时候该用/不该用。
+// slug/版本是平台实现细节，对模型是噪音，不放进描述（之前写成
+// "名字（CatsCo 定制应用，slug=…，版本 v…）"，等于什么都没说）。
+func serviceAgentToolDescription(agent store.ServiceAgentDescriptor) string {
+	if description := strings.TrimSpace(agent.Description); description != "" {
+		return description
+	}
+	// 没写描述：明说信息不足，别让模型凭名字瞎猜（也提示调用方先把需求原文传进去）。
+	return fmt.Sprintf(
+		"%s（作者未说明这个应用能做什么；建议只在用户明确点名 catsco_%s 时调用，并把需求原文放入 input）",
+		agent.Name, agent.Slug,
+	)
+}
+
+// composeServiceAgentToolSchema 把作者给的 input schema 包进完整的工具参数 schema。
+//
+// 作者的 schema 描述的是 input 字段（业务入参）；session_id/client_token/bot_uid 是
+// 平台协议字段，由平台补全，不占用作者的 schema。
+func composeServiceAgentToolSchema(raw string) (map[string]any, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, false
+	}
+	var authorSchema map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &authorSchema); err != nil || len(authorSchema) == 0 {
+		return nil, false
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input": authorSchema,
+			"session_id": map[string]any{
+				"type":        "string",
+				"description": "续聊会话 id（同一任务的追问才带）；不传=新会话",
+			},
+			"client_token": map[string]any{
+				"type":        "string",
+				"description": "幂等键（同会话同 token 重发返回同一 run）",
+			},
+			"bot_uid": map[string]any{
+				"type":        "integer",
+				"description": "调用方 bot 身份（可选）；传了就按该 bot 归属校验并写入会话",
+			},
+		},
+		"required": []string{"input"},
+	}, true
+}
+
 func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.ServiceAgentDescriptor, callerUID int64, args serviceInvokeToolArgs) (*mcp.CallToolResult, any, error) {
 	if callerUID == 0 {
 		return serviceToolError("unauthorized"), nil, nil
 	}
-	// 可见性准入：private agent 即便被猜到 slug 也不能调用（tools/list 里也不会出现）。
-	if !store.ServiceAgentVisibleTo(agent, callerUID) {
+	// 可见性准入：不可见的 agent（自用 / 好友级但非好友）即便被猜到 slug 也不能调用
+	// （tools/list 里也不会出现）。
+	//
+	// 用**当前**归属与级别判定，不用工具闭包里的会话快照：发布者把应用从「好友」
+	// 改成「自用」之后，已在线的会话必须立刻失去调用权。拿快照判定的话，改设置
+	// 不生效 —— 那是安全上最不能接受的一种「不生效」（用户以为收回了，实际没有）。
+	current := agent
+	if reader, ok := h.store.(serviceAgentAccessReader); ok {
+		owner, visibility, err := reader.GetServiceAgentAccess(ctx, agent.Slug)
+		if err != nil {
+			if errors.Is(err, store.ErrServiceAgentNotFound) {
+				return serviceToolError("agent_not_found: 该应用已被发布者收回"), nil, nil
+			}
+			return serviceToolError("service_unavailable: 应用状态校验失败，请稍后重试"), nil, nil
+		}
+		current.OwnerUID = owner
+		current.Visibility = visibility
+	}
+	if !newServiceAgentViewerResolver(h.friends, callerUID).allows(current) {
 		return serviceToolError("agent_not_found"), nil, nil
 	}
 	// 上架状态实时校验：这条兜底覆盖「list_changed 尚未送达客户端」的窗口期
@@ -296,7 +403,7 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 	// 本机 worker 型应用：先确认有在线实例能接单，否则用户要白等一个完整同步窗口
 	// 才知道「自己电脑上的 worker 根本没开」。查不到监控数据时放行（fail-open）。
 	if h.isWorkerRunner(ctx, agent) {
-		if err := h.checkWorkerOnline(ctx, agent.Slug); err != nil {
+		if err := h.checkWorkerOnline(ctx, agent); err != nil {
 			var offline *ServiceWorkerOfflineError
 			if errors.As(err, &offline) {
 				return serviceToolError(serviceWorkerOfflineToolError(offline)), nil, nil
@@ -330,6 +437,13 @@ func (h *ServiceAgentsMCPHandler) invoke(ctx context.Context, agent store.Servic
 		// 外部执行后端（runner.type=http）：异步转发到用户 endpoint，结果写成 result 事件；
 		// 平台自带执行（codex）不声张，照旧由 worker claim。
 		h.external.MaybeDispatch(ctx, agent, run, callerUID, botUID)
+		// bot-as-tool（runner.type=bot）：把 input 发给另一个 bot，等它回话后写回结果。
+		h.botRunner.MaybeDispatch(ctx, agent, run, callerUID)
+	}
+	// bot 回合是分钟级的（上下文压缩 + 多轮推理），同步等只会把主 Agent 卡住，
+	// 所以这里直接返回运行句柄：调用方拿 run_id 自己去问 catsco_run_status，或等回执。
+	if _, isBot := ParseBotRunnerBotUID(json.RawMessage(agent.DefinitionJSON)); isBot {
+		return h.serviceRunHandleResult(session.SessionID, run), nil, nil
 	}
 	return h.awaitRun(ctx, session.SessionID, run, agent.AsyncThresholdSeconds)
 }
@@ -394,6 +508,19 @@ func (h *ServiceAgentsMCPHandler) resolveSession(ctx context.Context, agent stor
 		return store.ServiceSession{}, errServiceRunNotOwned
 	}
 	return session, nil
+}
+
+// serviceRunHandleResult 立即返回运行句柄（不等终态）。
+// 给「天生慢」的执行后端用：干等只会把调用它的主 Agent 卡住，
+// 而它拿到的句柄足够自己决定是去干别的还是去轮询。
+func (h *ServiceAgentsMCPHandler) serviceRunHandleResult(sessionID string, run store.ServiceRun) *mcp.CallToolResult {
+	envelope := ServiceRunEnvelope{
+		ContractVersion: serviceRunAsyncContractVersion,
+		RunID:           run.RunID,
+		SessionID:       sessionID,
+		Status:          ServiceRunRunning,
+	}
+	return serviceRunToolResult(envelope)
 }
 
 func (h *ServiceAgentsMCPHandler) awaitRun(ctx context.Context, sessionID string, run store.ServiceRun, thresholdSeconds int) (*mcp.CallToolResult, any, error) {
@@ -472,10 +599,31 @@ func serviceRunTerminalEnvelope(run store.ServiceRun) (bool, ServiceRunEnvelope)
 		return true, ServiceRunEnvelope{
 			ContractVersion: serviceRunResultContractVersion,
 			RunID:           run.RunID, SessionID: run.SessionID,
-			Status: ServiceRunState(run.State), Error: "run terminated",
+			Status: ServiceRunState(run.State), Error: serviceRunErrorText(run),
 		}
 	}
 	return false, ServiceRunEnvelope{}
+}
+
+// serviceRunErrorText 把 run 的失败原因翻成调用方 Agent 能直接转告用户的一句话。
+//
+// 只回 "run terminated" 是不够的：调用方既不知道这是谁的问题，也不知道该不该重试，
+// 只能原样复述「失败了」，用户拿不到任何可行动信息。
+func serviceRunErrorText(run store.ServiceRun) string {
+	code := strings.TrimSpace(run.ErrorText)
+	switch code {
+	case "not_picked_up":
+		// 预检通过后 worker 掉线，或根本没起来：责任在发布者那一侧，重试无用。
+		return "not_picked_up: 发布者那边一直没有 worker 认领这个任务（执行环境不在线）。这是发布者那一侧的问题，与调用参数无关——重试不会变好，请把这条原因转告用户：在跑这个应用的那台机器上（电脑或云服务器）启动小八并登录。"
+	case "no_command":
+		return "no_command: 这个应用没有声明执行命令（runner.command）。请转告发布者：在「Agent 工具」里编辑该应用，补一条执行命令。"
+	case "worker_offline":
+		return "worker_offline: 发布者那边没有在线的 worker。请转告发布者在跑这个应用的那台机器上启动小八并登录。"
+	}
+	if code != "" {
+		return code + ": run terminated"
+	}
+	return "run terminated"
 }
 
 type serviceRunStatusArgs struct {

@@ -19,6 +19,9 @@ func TestJSONBytesSupportsDriverRepresentations(t *testing.T) {
 
 func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 	required := []string{
+		"WITH readable_topics AS MATERIALIZED",
+		"CROSS JOIN LATERAL (",
+		"LIMIT ($4::int + $5::int)",
 		"gm.user_id = viewer.id",
 		"gm.user_id IS NOT NULL",
 		"viewer.account_type <> 'human'",
@@ -35,9 +38,13 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"typed_block->'payload' ? 'filename'",
 		"m.search_blocks_valid",
 		"m.msg_type = 'text'",
-		"jsonb_array_elements(m.content_blocks)",
+		"CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END",
 		"artifact->>'type' IN ('file', 'image', 'audio', 'video')",
 		"artifact->'payload'->>'filename'",
+		"block->>'type' IN ('text', 'assistant_text')",
+		"NULLIF(block->>'text', '')",
+		"block->>'content'",
+		"'debug'",
 		"'tool_use'",
 		"'tool_result'",
 		"'thinking'",

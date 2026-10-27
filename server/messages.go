@@ -562,9 +562,10 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
 	publicMetadata := metadataWithoutXiaobaRuntime(metadataWithoutArtifactContext(withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)))
-	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
+	explicitTargetsEnabled := xiaobaRuntimeV2EnabledForClient(h.getClient(recipientUID))
+	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata, ExplicitTargetsEnabled: &explicitTargetsEnabled}))
 	if !nativeChannelGroup {
-		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID, sourceMetadata))
+		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadataWithExplicitTargets(uid, recipientUID, topicID, explicitTargetsEnabled, sourceMetadata))
 	}
 	metadata = withArtifactContextDeliveryRef(
 		metadata,
@@ -664,6 +665,54 @@ func (h *Hub) DeliverShimoLoginResume(resume ShimoLoginResume) bool {
 		message.Data.Mentions = []string{formatUID(resume.AgentUID)}
 	}
 	h.SendToUser(resume.AgentUID, message)
+	return true
+}
+
+// DeliverServiceBotPrompt 把「另一个 bot 想请你处理这件事」的请求推给目标 bot。
+//
+// 这是 bot-as-tool 的投递半边：平台已经把消息落库（调用方可见、bot 侧有历史），
+// 这里只负责让在线的 bot 立刻收到。返回 false = 本节点上没有它的连接，
+// 调用方据此如实失败（而不是让 run 卡到一个超时）。
+//
+// 只有平台内部的 runner 会调它：权限（是不是自己的 bot / 有没有开放分享）
+// 已经在嵌入之前判过，这里不再重复鉴权。
+//
+// botSessionID 是「这次调用属于哪个会话」（run 的 service session id）。
+// **必须随推送一起发**：bot 收的是 WS 实时消息，不会去轮询消息表 ——
+// 只把它写进库而漏了推送，bot 就只能按 topic 分会话，上下文会串。
+func (h *Hub) DeliverServiceBotPrompt(callerUID, botUID int64, topicID, text string, msgID int64, botSessionID string) bool {
+	if h == nil || callerUID <= 0 || botUID <= 0 || msgID <= 0 {
+		return false
+	}
+	if strings.TrimSpace(topicID) == "" || strings.TrimSpace(text) == "" {
+		return false
+	}
+	if len(h.getClients(botUID)) == 0 {
+		return false
+	}
+	botCallMetadata := map[string]interface{}{
+		// 让 bot 侧能分辨「这是另一个 Agent 通过工具调用发来的」，
+		// 从而按「有人派活」而不是「主人闲聊」来处理。
+		"catsco_bot_call":   true,
+		"catsco_caller_uid": callerUID,
+	}
+	if sessionID := strings.TrimSpace(botSessionID); sessionID != "" {
+		// 键名与落库时一致：bot 侧据此算会话身份，一次调用一个会话。
+		botCallMetadata[botSessionMetadataKey] = sessionID
+	}
+	payload := &normalizedMessagePayload{
+		StoredContent:  text,
+		DisplayContent: text,
+		StoredType:     "text",
+		DisplayType:    "text",
+		Metadata:       botCallMetadata,
+	}
+	message := h.messageForRecipient(callerUID, botUID, topicID, 0, payload, msgID)
+	if message == nil || message.Data == nil {
+		return false
+	}
+	message.Data.SeqID = int(msgID)
+	h.SendToUser(botUID, message)
 	return true
 }
 
@@ -844,6 +893,10 @@ func withSkillConnectorMetadata(metadata map[string]interface{}, connectors map[
 }
 
 func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, topicID string, sourceMetadata ...map[string]interface{}) map[string]interface{} {
+	return h.buildXiaobaRuntimeMetadataWithExplicitTargets(actorUID, recipientUID, topicID, xiaobaRuntimeV2EnabledForBot(recipientUID), sourceMetadata...)
+}
+
+func (h *Hub) buildXiaobaRuntimeMetadataWithExplicitTargets(actorUID int64, recipientUID int64, topicID string, explicitTargetsEnabled bool, sourceMetadata ...map[string]interface{}) map[string]interface{} {
 	if h == nil || h.db == nil || h.userDevices == nil || actorUID <= 0 || recipientUID <= 0 || !h.isBotUser(recipientUID) {
 		return nil
 	}
@@ -876,7 +929,7 @@ func (h *Hub) buildXiaobaRuntimeMetadata(actorUID int64, recipientUID int64, top
 			"status":   status,
 		})
 	}
-	if !xiaobaRuntimeV2EnabledForBot(recipientUID) {
+	if !explicitTargetsEnabled {
 		// v1 consumers assume every entry is ready. During the compatibility
 		// phase, only advertise routable devices and keep the v1 wire shape.
 		ready := make([]map[string]interface{}, 0, len(devices))
@@ -934,12 +987,22 @@ type catscoIdentityMetadataOptions struct {
 	Replay           bool
 	SourceMetadata   map[string]interface{}
 	IdentityUsers    map[int64]*types.User
+	// ExplicitTargetsEnabled is supplied only by a live delivery path after
+	// checking the authenticated Bot connection's handshake capability. Nil
+	// retains a gate-only, fail-open fallback for focused registry tests, not
+	// live delivery. TestLiveDeviceMetadataCallersRequireNegotiation prevents
+	// production callers from omitting this decision (except inert replay).
+	ExplicitTargetsEnabled *bool
 }
 
 func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64, messageText string, options ...catscoIdentityMetadataOptions) map[string]interface{} {
 	opts := catscoIdentityMetadataOptions{}
 	if len(options) > 0 {
 		opts = options[0]
+	}
+	explicitTargetsEnabled := xiaobaRuntimeV2EnabledForBot(recipientUID)
+	if opts.ExplicitTargetsEnabled != nil {
+		explicitTargetsEnabled = *opts.ExplicitTargetsEnabled
 	}
 	topicType := topicTypeForID(topicID)
 	identity := map[string]interface{}{
@@ -1036,7 +1099,7 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 				permissions["device_owner_source"] = deviceOwnerSource
 			}
 			knownDevices, unavailableDevices := h.classifyUserDevices(deviceOwnerUID, humanToolTargetDevices(h.userDevices.list(deviceOwnerUID)))
-			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices)
+			deviceContext := h.userDevices.turnContextForOwnerDevicesWithExplicitTargets(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, routableDevices(knownDevices), unavailableDevices, explicitTargetsEnabled)
 			if len(deviceContext.Grants) > 0 {
 				identity["device_grants"] = deviceContext.Grants
 			}

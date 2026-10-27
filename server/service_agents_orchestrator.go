@@ -496,6 +496,9 @@ func (o *ServiceRunOrchestrator) handleComplete(w http.ResponseWriter, r *http.R
 		return
 	}
 	if completed {
+		// 自述建议：应用可以在结果里建议自己的对外描述（等人确认才生效）。
+		// 放在收尾之后、且失败只记日志 —— 调用方等的是任务结果，不是这段文案。
+		o.recordSelfIntro(r.Context(), runID, req.Result)
 		// 生命周期回注：终态已落（含回执）→ 唤醒投递（在线即推）。
 		o.kickReceiptDelivery()
 	}
@@ -583,7 +586,9 @@ func (o *ServiceRunOrchestrator) handleInstanceHeartbeat(w http.ResponseWriter, 
 	if err != nil || len(metrics) == 0 {
 		metrics = json.RawMessage(`{}`)
 	}
-	if err := o.store.RecordServiceInstanceHeartbeat(r.Context(), instanceID, req.ActiveRuns, metrics); err != nil {
+	// owner 来自鉴权层（cwk_ / worker 券解出的 uid，实例 token 为 0），**不信 payload**：
+	// 否则任何人都能宣称自己的 worker 服务别人的应用，让对方的离线预检形同虚设。
+	if err := o.store.RecordServiceInstanceHeartbeat(r.Context(), instanceID, serviceWorkerUID(r.Context()), req.ActiveRuns, metrics); err != nil {
 		log.Printf("service instance heartbeat persist instance=%s: %v", instanceID, err)
 	}
 	writeServiceJSON(w, http.StatusOK, map[string]any{"ok": true})
