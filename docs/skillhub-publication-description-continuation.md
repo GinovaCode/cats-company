@@ -100,6 +100,14 @@ The authorize client uses a separate default-off
 shares a bounded service concurrency budget with planning. No production route,
 RPC, worker, model call or actual publication is wired by this slice.
 
+The internal release-flow coordinator only consumes a release intent that was
+already durably recorded by a separately authenticated human release action.
+It never creates that intent from description confirmation or from the
+`confirmVersionPublish` policy flag. It then replays continuation and planning
+under the current checkpoint before asking Cloud for the permit. This keeps
+description approval, version-policy selection and release authorization as
+three distinct facts; the coordinator remains an internal default-off adapter.
+
 The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
 Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing
 dependencies or any skipped case fail. It pairs actual Cloud intake, retention,
