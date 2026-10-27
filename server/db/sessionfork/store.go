@@ -93,23 +93,27 @@ func countCompleteTurns(messages []message, agentUID int64) int64 {
 	return turns
 }
 
-// endsWithOpenTurn reports whether the range ends in a user message that no agent
-// message has answered yet.
+// anchorClosesTurn reports whether the anchor is the last message of its turn.
 //
-// This is the property a copy boundary must avoid, and it is stated directly
-// rather than by comparing turn counts: comparing a range against the same range
-// minus its last row rejects a legal anchor that lands on the last of several
-// agent messages in one turn, where the count does not change.
-func endsWithOpenTurn(messages []message, agentUID int64) bool {
-	open, answered := false, false
-	for _, m := range messages {
-		if m.from != agentUID {
-			open, answered = true, false
-		} else if open {
-			answered = true
-		}
+// The runtime cuts whole turns, so a boundary anywhere inside a turn copies less
+// history than the runtime keeps: the copy's visible messages and its model
+// context would disagree. That is reachable, not theoretical — a reply longer than
+// the 4000-character segment limit is stored as several messages, so one turn can
+// read [user, agent, agent, agent] in the cloud. An anchor on the first agent
+// segment is "answered" but not the turn's end, and accepting it truncated the copy
+// while the runtime kept the rest.
+//
+// A turn ends when the next user message arrives, so the anchor must be an agent
+// message that is either the last message overall or followed by a user message.
+func anchorClosesTurn(all []message, anchor int, agentUID int64) bool {
+	if anchor < 0 || anchor >= len(all) {
+		return false
 	}
-	return open && !answered
+	if all[anchor].from != agentUID {
+		// The anchor is a user message: its turn has no answer yet.
+		return false
+	}
+	return anchor+1 >= len(all) || all[anchor+1].from != agentUID
 }
 
 func (s SQLStore) GetSessionFork(ctx context.Context, uid int64, request, topic string) (*types.SessionFork, error) {
@@ -192,8 +196,8 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 		return nil, err
 	}
 	messages := all
+	anchor := -1
 	if req.UntilMessageID > 0 {
-		anchor := -1
 		for index, m := range all {
 			if m.id == req.UntilMessageID {
 				anchor = index
@@ -216,14 +220,13 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 			return nil, store.ErrSessionForkForbidden
 		}
 	}
-	// The copied range must not end in an open, unanswered turn: the runtime cuts at
-	// a turn boundary and would keep less than the server copied, so the copy's
-	// visible history and its model context would disagree. Comparing the range's
-	// count against the count without the last row would reject a legal anchor that
-	// lands on the last of several agent messages in one turn, so state the property
-	// directly instead: after the last row, no user message may be awaiting an
-	// answer.
-	if req.UntilMessageID > 0 && endsWithOpenTurn(messages, req.AgentUID) {
+	// The anchor must be the last message of its turn. The runtime cuts whole
+	// turns, so a boundary inside a turn copies less history than the runtime
+	// keeps and the copy's visible messages and model context disagree. A reply
+	// longer than the 4000-character segment limit is stored as several messages,
+	// so a single turn can read [user, agent, agent, agent]: an anchor on the first
+	// agent segment is answered but is not the turn's end.
+	if req.UntilMessageID > 0 && !anchorClosesTurn(all, anchor, req.AgentUID) {
 		return nil, store.ErrSessionForkSource
 	}
 	title := req.Name

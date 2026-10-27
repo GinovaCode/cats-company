@@ -57,26 +57,35 @@ func TestCountCompleteTurnsOnProductionShape(t *testing.T) {
 	}
 }
 
-// The copy boundary must not end in a turn that is still waiting for an answer,
-// and it must not reject a legal anchor either. Comparing "count of range" with
-// "count without the last row" got the second case wrong: an anchor on the last of
-// several agent messages leaves the count unchanged.
-func TestEndsWithOpenTurn(t *testing.T) {
+// A copy may only be cut where the turn actually ends. The regression this
+// guards: a reply longer than the 4000-character segment limit is stored as
+// several messages, so one turn reads [user, agent, agent, agent] in the cloud. An
+// anchor on the first agent segment is "answered" but is not the turn's end, and
+// accepting it truncated the copy while the runtime kept the whole turn — the very
+// mismatch between visible history and model context this feature must avoid.
+func TestAnchorClosesTurn(t *testing.T) {
+	segmented := []message{human(), bot(), bot(), bot()}
 	for _, tc := range []struct {
-		name     string
-		messages []message
-		want     bool
+		name   string
+		all    []message
+		anchor int
+		want   bool
 	}{
-		{"answered turn", []message{human(), bot()}, false},
-		{"trailing user message", []message{human(), bot(), human()}, true},
-		{"anchor on last of several agent messages", []message{human(), bot(), bot()}, false},
-		{"only a user message", []message{human()}, true},
-		{"empty range", nil, false},
-		{"agent first", []message{bot(), human(), bot()}, false},
+		{"single answer closes the turn", []message{human(), bot()}, 1, true},
+		// The regression: the first of three reply segments must be rejected.
+		{"first of three reply segments", segmented, 1, false},
+		{"middle of three reply segments", segmented, 2, false},
+		{"last of three reply segments", segmented, 3, true},
+		{"anchor on the user message", []message{human(), bot()}, 0, false},
+		{"more turns follow", []message{human(), bot(), human(), bot()}, 1, true},
+		{"anchor on trailing user message", []message{human(), bot(), human()}, 2, false},
+		{"agent message before more agent work", []message{human(), bot(), bot(), human()}, 1, false},
+		{"out of range", []message{human(), bot()}, 5, false},
+		{"empty conversation", nil, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := endsWithOpenTurn(tc.messages, agentUID); got != tc.want {
-				t.Fatalf("endsWithOpenTurn(%s) = %v, want %v", tc.name, got, tc.want)
+			if got := anchorClosesTurn(tc.all, tc.anchor, agentUID); got != tc.want {
+				t.Fatalf("anchorClosesTurn(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
