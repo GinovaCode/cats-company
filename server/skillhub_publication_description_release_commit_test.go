@@ -10,15 +10,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 func TestPublicationDescriptionReleaseCommitClientHTTPS(t *testing.T) {
-	app, intent, permit := releaseAuthorizeClientFixture(t, "https://cloud.example")
+	var app store.SkillHubPublicationDescriptionApplication
+	var intent store.SkillHubPublicationDescriptionReleaseIntent
+	var permit publicationDescriptionCloudReleasePermit
+	var want publicationDescriptionCloudReleaseAdmission
 	var calls int
-	want := publicationDescriptionCloudReleaseAdmission{SchemaVersion: 1, ApplicationID: app.ID,
-		TaskID: app.Input.Receipt.TaskID, PermitID: permit.PermitID, State: "queued"}
-	replayed := false
-	want.Replayed = &replayed
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.Method != http.MethodPost || r.URL.Path != publicationDescriptionReleaseCommitPath ||
@@ -35,6 +36,11 @@ func TestPublicationDescriptionReleaseCommitClientHTTPS(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(want)
 	}))
 	defer s.Close()
+	app, intent, permit = releaseAuthorizeClientFixture(t, s.URL)
+	want = publicationDescriptionCloudReleaseAdmission{SchemaVersion: 1, ApplicationID: app.ID,
+		TaskID: app.Input.Receipt.TaskID, PermitID: permit.PermitID, State: "queued"}
+	replayed := false
+	want.Replayed = &replayed
 	cfg := derivationClientConfig(s)
 	cfg.PlanEnabled, cfg.ReleaseAuthorizeEnabled, cfg.ReleaseCommitEnabled = true, true, true
 	c, err := NewPublicationDescriptionDerivationClient(cfg)
@@ -112,5 +118,56 @@ func TestPublicationDescriptionReleaseCommitClientIsDefaultOff(t *testing.T) {
 	c := &PublicationDescriptionDerivationClient{}
 	if got, err := c.AdmitRetainedRelease(context.Background(), app, intent, permit); got != nil || !errors.Is(err, ErrSkillHubPublicationDescriptionReleaseCommitDisabled) {
 		t.Fatalf("disabled client admitted a release: got=%+v err=%v", got, err)
+	}
+}
+
+func TestPublicationDescriptionReleaseCommitClientPreservesDenial(t *testing.T) {
+	var app store.SkillHubPublicationDescriptionApplication
+	var intent store.SkillHubPublicationDescriptionReleaseIntent
+	var permit publicationDescriptionCloudReleasePermit
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"code":"skillhub.publication_description_derivation_denied","message":"denied"}}`)
+	}))
+	defer s.Close()
+	app, intent, permit = releaseAuthorizeClientFixture(t, s.URL)
+	cfg := derivationClientConfig(s)
+	cfg.PlanEnabled, cfg.ReleaseAuthorizeEnabled, cfg.ReleaseCommitEnabled = true, true, true
+	c, err := NewPublicationDescriptionDerivationClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.AdmitRetainedRelease(context.Background(), app, intent, permit); got != nil || !errors.Is(err, store.ErrSkillHubPublicationDenied) {
+		t.Fatalf("Cloud denial was not preserved: got=%+v err=%v", got, err)
+	}
+}
+
+func TestPublicationDescriptionReleaseCommitClientChecksReceiptPeerIdentity(t *testing.T) {
+	var app store.SkillHubPublicationDescriptionApplication
+	var intent store.SkillHubPublicationDescriptionReleaseIntent
+	var permit publicationDescriptionCloudReleasePermit
+	calls := 0
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer s.Close()
+	app, intent, permit = releaseAuthorizeClientFixture(t, s.URL)
+	cfg := derivationClientConfig(s)
+	cfg.PlanEnabled, cfg.ReleaseAuthorizeEnabled, cfg.ReleaseCommitEnabled = true, true, true
+	c, err := NewPublicationDescriptionDerivationClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Input.Receipt.Query.Issuer = "https://unexpected.example"
+	if got, err := c.AdmitRetainedRelease(context.Background(), app, intent, permit); got != nil || !errors.Is(err, ErrSkillHubPublicationDescriptionReleaseCommitPeer) {
+		t.Fatalf("mismatched peer identity was accepted: got=%+v err=%v", got, err)
+	}
+	if calls != 0 {
+		t.Fatalf("request reached Cloud %d times", calls)
 	}
 }

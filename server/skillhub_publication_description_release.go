@@ -75,6 +75,8 @@ type publicationDescriptionAdmittedRelease struct {
 
 // Admission is a distinct, irreversible handoff. It is reachable only after
 // the actor's exact release intent and Cloud permit have both been verified.
+// A valid replay may report a terminal state; callers must inspect State
+// instead of interpreting a nil error as an in-progress publication.
 func admitConfirmedPublicationDescriptionReleaseFlow(ctx context.Context, db publicationDescriptionReleaseStore,
 	actor int64, id string, ports publicationDescriptionReleasePorts,
 ) (*publicationDescriptionAdmittedRelease, error) {
@@ -113,5 +115,8 @@ func admitConfirmedPublicationDescriptionReleaseFlow(ctx context.Context, db pub
 		admission.Replayed == nil || !oneOf(admission.State, "queued", "publishing", "committing", "published", "publish_failed") {
 		return nil, store.ErrSkillHubPublicationConflict
 	}
-	return &publicationDescriptionAdmittedRelease{authorized: authorized, admission: *admission}, nil
+	admissionSnapshot := *admission
+	replayed := *admission.Replayed
+	admissionSnapshot.Replayed = &replayed
+	return &publicationDescriptionAdmittedRelease{authorized: authorized, admission: admissionSnapshot}, nil
 }

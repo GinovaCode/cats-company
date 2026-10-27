@@ -184,7 +184,8 @@ func (c *PublicationDescriptionDerivationClient) AdmitRetainedRelease(ctx contex
 		return nil, err
 	}
 	app = snapshotPublicationDescriptionApplication(app)
-	if permit.validateFor(app, intent) != nil {
+	if validatePublicationDescriptionCopyApplication(app) != nil || app.Input.Receipt.Query.Issuer != c.issuer ||
+		app.Input.Receipt.Query.Audience != c.audience || permit.validateFor(app, intent) != nil {
 		return nil, ErrSkillHubPublicationDescriptionReleaseCommitPeer
 	}
 	if c.planActive.Add(1) > 2 {
@@ -241,6 +242,15 @@ func (c *PublicationDescriptionDerivationClient) AdmitRetainedRelease(ctx contex
 		return nil, ErrSkillHubPublicationDescriptionReleaseCommitPeer
 	}
 	if resp.StatusCode != http.StatusOK {
+		parts, parseErr := publicationExactObject(raw, "error")
+		if parseErr == nil {
+			e, parseErr := publicationExactObject(parts["error"], "code", "message")
+			var code, message string
+			if parseErr == nil && json.Unmarshal(e["code"], &code) == nil && json.Unmarshal(e["message"], &message) == nil &&
+				resp.StatusCode == http.StatusForbidden && code == "skillhub.publication_description_derivation_denied" {
+				return nil, store.ErrSkillHubPublicationDenied
+			}
+		}
 		return nil, ErrSkillHubPublicationDescriptionReleaseCommitPeer
 	}
 	parts, err := publicationExactObject(raw, "schemaVersion", "applicationId", "taskId", "permitId", "state", "replayed")

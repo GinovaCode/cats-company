@@ -127,7 +127,10 @@ automatic invocation. Cloud's own commit-admission switch remains independently
 default-off. When later wired and both sides are enabled, admission can start
 the asynchronous isolated publication worker; it is not merely a status read
 or a reversible preview. It never enters the legacy original-candidate commit
-path. Production activation and user-facing wiring are later steps.
+path. An idempotent replay can also return a terminal `published` or
+`publish_failed` state; callers must inspect the returned state, and a nil
+error alone does not mean publication is still in progress. Production
+activation and user-facing wiring are later steps.
 
 The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
 Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing
