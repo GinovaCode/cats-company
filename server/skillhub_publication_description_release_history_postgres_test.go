@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/db/postgres"
 	"github.com/openchat/openchat/server/store"
@@ -98,7 +100,7 @@ func verifyDescriptionReleaseHistoryPostgres(t *testing.T, db *postgres.Adapter,
 		t.Fatal("GET created release evidence")
 	}
 	status := releaseStatusFixture(c.Application, publicationDescriptionCloudReleasePermit{SchemaVersion: 1, ApplicationID: c.Application.ID,
-		EntryID: id, Target: target, IntentHash: o.Intent.IdentityHash, PermitID: o.Permit.ID, AuthorizedAt: o.Permit.AuthorizedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")})
+		EntryID: id, Target: target, IntentHash: o.Intent.IdentityHash, PermitID: o.Permit.ID, AuthorizedAt: o.Permit.AuthorizedAt.UTC().Format(time.RFC3339Nano)})
 	status.State = "published"
 	status.Result = &PublicationCommitCloudResult{SkillID: target.SkillID, Version: target.Version, PublishedAt: target.ReleaseAt,
 		PackageID: "pkg_12345678-1234-4123-8123-123456789abc", Checksum: strings.Repeat("a", 64)}
@@ -119,6 +121,11 @@ func verifyDescriptionReleaseHistoryPostgres(t *testing.T, db *postgres.Adapter,
 	if json.Unmarshal(published, &projected) != nil || projected.History.Stage != "published" || projected.History.Result == nil || projected.History.Result.SkillID != target.SkillID {
 		t.Fatal("terminal projection", string(published))
 	}
+	// Check the actual permit fence while actor is still the live Bot Owner;
+	// after transfer a generic denied result would not prove this invariant.
+	if _, err := db.CancelSkillHubPublicationEntry(ctx, actor, id); !errors.Is(err, store.ErrSkillHubPublicationConflict) {
+		t.Fatal("history read cleared cancellation fence", err)
+	}
 	if _, err := sqlDB.Exec(`UPDATE bot_config SET owner_id=$1,enabled=false,body_id='offline' WHERE user_id=$2`, other, bot); err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +136,6 @@ func verifyDescriptionReleaseHistoryPostgres(t *testing.T, db *postgres.Adapter,
 	call(other, 404)
 	if counts() != before {
 		t.Fatal("history reads mutated publication state")
-	}
-	if _, err := db.CancelSkillHubPublicationEntry(ctx, actor, id); err == nil {
-		t.Fatal("history read cleared cancellation fence")
 	}
 	if err := db.UpdateUserState(actor, 1); err != nil {
 		t.Fatal(err)
