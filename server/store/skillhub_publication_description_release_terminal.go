@@ -82,8 +82,13 @@ func (r SkillHubPublicationDescriptionReleaseTerminalReceipt) ValidateFor(o Skil
 	return nil
 }
 
-type SkillHubPublicationDescriptionReleaseTerminalStore interface {
+// Historical reads never authorize a run or reconcile Cloud as a side effect.
+type SkillHubPublicationDescriptionReleaseTerminalReader interface {
 	SkillHubPublicationDescriptionReleaseObservationReader
-	RecordSkillHubPublicationDescriptionReleaseTerminal(context.Context, int64, SkillHubPublicationDescriptionReleaseObservation, SkillHubPublicationDescriptionReleaseTerminal) (*SkillHubPublicationDescriptionReleaseTerminalReceipt, error)
 	GetSkillHubPublicationDescriptionReleaseTerminal(context.Context, int64, string) (*SkillHubPublicationDescriptionReleaseTerminalReceipt, error)
+}
+
+type SkillHubPublicationDescriptionReleaseTerminalStore interface {
+	SkillHubPublicationDescriptionReleaseTerminalReader
+	RecordSkillHubPublicationDescriptionReleaseTerminal(context.Context, int64, SkillHubPublicationDescriptionReleaseObservation, SkillHubPublicationDescriptionReleaseTerminal) (*SkillHubPublicationDescriptionReleaseTerminalReceipt, error)
 }
