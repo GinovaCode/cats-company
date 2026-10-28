@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -143,6 +144,38 @@ func TestPostgresSkillHubPublicationDescriptionTerminalFailureAndMigration(t *te
 	}
 	if err := db.CreateSchema(); err != nil {
 		t.Fatal(err)
+	}
+	// Exercise the SQL guard directly, not only the Go validation path.
+	for _, mode := range []string{"progress", "wrong-target", "wrong-permit", "private-error", "extra-field"} {
+		raw, err := json.Marshal(terminal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		switch mode {
+		case "progress":
+			payload["state"] = "queued"
+		case "wrong-target":
+			payload["target"].(map[string]any)["version"] = "2.0.0"
+		case "wrong-permit":
+			payload["permitId"] = "pubdescpermit_" + strings.Repeat("f", 32)
+		case "private-error":
+			payload["state"], payload["result"], payload["errorCode"] = "publish_failed", nil, "/private/error"
+		case "extra-field":
+			payload["privatePath"] = "/private/source"
+		}
+		raw, err = json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.Exec(`INSERT INTO skillhub_publication_description_release_terminals
+			(application_id,entry_id,permit_id,intent_identity_hash,payload,identity_hash) VALUES($1,$2,$3,$4,$5,$6)`,
+			terminal.ApplicationID, terminal.EntryID, terminal.PermitID, terminal.IntentHash, raw, strings.Repeat("a", 64)); err == nil {
+			t.Fatal("SQL accepted invalid terminal", mode)
+		}
 	}
 	terminal.State, terminal.Result, terminal.ErrorCode = "publish_failed", nil, "skillhub.publication_description_release_commit_rejected"
 	r, err := db.RecordSkillHubPublicationDescriptionReleaseTerminal(context.Background(), actor, o, terminal)
