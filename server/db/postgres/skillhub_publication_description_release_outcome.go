@@ -24,8 +24,19 @@ func (a *Adapter) GetSkillHubPublicationDescriptionReleaseObservation(ctx contex
 		return nil, err
 	}
 	defer tx.Rollback()
+	out, err := readDescriptionReleaseObservation(ctx, tx, actor, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func readDescriptionReleaseObservation(ctx context.Context, tx *sql.Tx, actor int64, id string) (*store.SkillHubPublicationDescriptionReleaseObservation, error) {
 	var found string
-	err = tx.QueryRowContext(ctx, `SELECT e.entry_id FROM skillhub_publication_entries e
+	err := tx.QueryRowContext(ctx, `SELECT e.entry_id FROM skillhub_publication_entries e
 		JOIN users u ON u.id=e.actor_uid AND u.account_type='human' AND u.state=0
 		WHERE e.entry_id=$1 AND e.actor_uid=$2`, id, actor).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -91,9 +102,6 @@ func (a *Adapter) GetSkillHubPublicationDescriptionReleaseObservation(ctx contex
 	}
 	if entry != id || hash != intent.IdentityHash || out.ValidateFor(actor, id) != nil {
 		return nil, store.ErrSkillHubPublicationConflict
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
 	}
 	return out, nil
 }
