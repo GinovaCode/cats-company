@@ -53,17 +53,25 @@ describe('bounded copy anchor', () => {
   });
 
   it('has no anchor for a streaming placeholder', () => {
-    // A streaming reply is a local placeholder: its id is `stream:<id>` and its
-    // seq_id is a wall-clock timestamp, not a message row id. The server cannot
-    // resolve it, and answering "the conversation changed" would be misleading.
+    // A streaming reply is a local placeholder: its id is `stream:<id>` and it
+    // has no server-side row id yet. The server cannot resolve it, and
+    // answering "the conversation changed" would be misleading.
+    //
+    // The seq_id here is a small number on purpose: the streaming flag and the
+    // timestamp range are two separate guards, and only a small id lets the
+    // first one be the reason the anchor is refused.
     const streaming = {
       type: 'text',
       assistantAuthored: true,
-      message: { id: 'stream:s1', seq_id: Date.now(), _streaming: true },
-      sourceMessages: [{ id: 'stream:s1', seq_id: Date.now(), _streaming: true }],
+      message: { id: 'stream:s1', seq_id: 30, _streaming: true },
+      sourceMessages: [{ id: 'stream:s1', seq_id: 30, _streaming: true }],
     };
     expect(forkAnchorMessageId(streaming)).toBe(0);
-    // The same holds for a timestamp-shaped id without the streaming flag.
+  });
+
+  it('has no anchor for an id that cannot be a message row id', () => {
+    // A timestamp-shaped id is a local identifier the server cannot resolve,
+    // even when nothing marks the message as streaming.
     expect(forkAnchorMessageId({
       type: 'text', assistantAuthored: true, message: {}, sourceMessages: [{ seq_id: 1793154059347 }],
     })).toBe(0);

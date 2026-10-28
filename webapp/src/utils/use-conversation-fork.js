@@ -18,7 +18,7 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   const scope = `${userId}:${topic}`;
   const owner = useMemo(() => {
     const key = `cc:conversation-fork:${scope}`;
-    return { key, payload: storedPayload(key, topic), active: true, busy: false, refreshRequested: false, targetRevision: 0 };
+    return { key, payload: storedPayload(key, topic), active: true, busy: false, refreshRequested: false, targetRevision: 0, lastAnchor: 0 };
   }, [scope, topic]);
   const current = useRef(owner);
   current.current = owner;
@@ -80,7 +80,12 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
       const result = await api.getConversationFork({ requestId: owner.payload.request_id }, requestOptions);
       acceptSource(normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic }));
     } catch (error) {
-      if (isCurrent()) setSource(state => ({ ...(state?.owner === owner ? state : {}), owner, error: error.message || '无法确认复制结果，请重试。', busy: false }));
+      if (isCurrent()) setSource(state => ({
+        ...(state?.owner === owner ? state : {}), owner,
+        error: error.message || '无法确认复制结果，请重试。',
+        errorStatus: Number(error?.status) || 0,
+        busy: false,
+      }));
     } finally {
       owner.busy = false;
       if (owner.refreshRequested && isCurrent()) {
@@ -147,7 +152,14 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     // before the request left stays dangling. It would be picked up as an
     // identity by any later click, so it has to go when the request failed
     // that way.
-    const anchor = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
+    const requested = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
+    // The last anchor the user picked stays remembered on the hook instance.
+    // "Retry" in the notice carries no anchor of its own, and after a rejection
+    // the stored payload is gone — so without this the retry would go out
+    // unbounded and copy the whole conversation, while the user believes they
+    // are still copying from the point they chose.
+    if (requested > 0) owner.lastAnchor = requested;
+    const anchor = requested || Number(owner.lastAnchor || 0);
     const storedAnchor = Number(owner.payload?.until_message_id || 0);
     const anchorChanged = Boolean(owner.payload) && storedAnchor !== anchor;
     // A different anchor is a different copy, so it has to go through even
@@ -183,7 +195,11 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
         removeStorageValue(owner.key);
         owner.payload = null;
       }
-      if (isCurrent()) setSource(state => ({ ...state, owner, busy: false, error: error.message || '复制请求未确认，请重试。' }));
+      if (isCurrent()) setSource(state => ({
+        ...state, owner, busy: false,
+        error: error.message || '复制请求未确认，请重试。',
+        errorStatus: Number(error?.status) || 0,
+      }));
     } finally {
       owner.busy = false;
       window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
@@ -243,7 +259,7 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
   }, [isCurrent, onActivateTopic, operation, owner]);
 
   return {
-    operation, error: sourceState.error || '', busy: sourceState.busy || false,
+    operation, error: sourceState.error || '', errorStatus: sourceState.errorStatus || 0, busy: sourceState.busy || false,
     provenance: targetState.record || null, targetError: targetState.error || '',
     checking: needsTargetCheck && (!targetState.checked || targetState.checking),
     blocked: Boolean(blocked), create, open, cancel, checkTarget,

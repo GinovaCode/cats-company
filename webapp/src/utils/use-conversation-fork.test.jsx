@@ -286,3 +286,34 @@ it('keeps the stored payload when the failure is not a rejection', async () => {
   // so the request ID has to survive: retrying it is the only way to find out.
   expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).not.toBeNull();
 });
+
+// The notice's "retry" carries no anchor of its own. After a rejection the
+// stored payload is gone, so without remembering the user's choice the retry
+// would go out unbounded and copy the whole conversation — while the user
+// believes they are still copying from the point they picked. This is the
+// common case: a fifth of recent replies end with tool output, and pointing at
+// one of those always gets rejected.
+it('retries with the anchor the user picked after a rejection', async () => {
+  api.forkConversation.mockRejectedValueOnce(Object.assign(new Error('session_fork_anchor_not_turn_end'), { status: 409 }))
+    .mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await mount();
+  await act(async () => value.create({ newRequest: true, untilMessageId: 20 }));
+  expect(api.forkConversation.mock.calls[0][0].until_message_id).toBe(20);
+  // The retry carries no anchor of its own.
+  await act(async () => value.create());
+  const retry = api.forkConversation.mock.calls[1][0];
+  expect(retry.until_message_id).toBe(20);
+  expect(retry.request_id).not.toBe(api.forkConversation.mock.calls[0][0].request_id);
+});
+
+// An entry point that never had an anchor stays unbounded: the header and
+// sidebar copy the whole conversation, and they must not inherit a point that
+// was picked somewhere else.
+it('does not invent an anchor for a copy that never had one', async () => {
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await mount();
+  await act(async () => value.create({ newRequest: true }));
+  expect(api.forkConversation.mock.calls[0][0].until_message_id).toBeUndefined();
+  await act(async () => value.create());
+  expect(api.forkConversation.mock.calls[1][0].until_message_id).toBeUndefined();
+});

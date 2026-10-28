@@ -4,6 +4,15 @@ import { describeForkError } from '../utils/conversation-fork';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import '../css/conversation-fork.css';
 
+// A rejection and an unconfirmed result are different situations and the
+// wording has to say which one happened: "复制没有开始" tells the user the copy
+// never began, while "复制结果未确认" is for the case where the request may or
+// may not have been carried out.
+function forkErrorPrefix(fork) {
+  const status = Number(fork?.errorStatus) || 0;
+  return status >= 400 && status < 500 ? '复制没有开始' : '复制结果未确认';
+}
+
 export function ConversationForkAction({ eligible, busy, pending, onCreate }) {
   const [open, setOpen] = useState(false);
   const root = useRef(null);
@@ -84,7 +93,7 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
       </div>}
       {(operation || busy || error) && <div className="cc-fork-notice" role={error || operation?.state === 'failed' ? 'alert' : 'status'}>
         {busy && <LoaderCircle size={16} className="is-spinning" aria-hidden="true" />}
-        <span>{error ? `复制结果未确认：${describeForkError(error)}` : busy ? '正在处理会话复制…'
+        <span>{error ? `${forkErrorPrefix(fork)}：${describeForkError(error)}` : busy ? '正在处理会话复制…'
           : operation?.state === 'failed' ? `复制失败：${describeForkError(operation.error) || '未能复制 Agent 上下文，请重新创建。'}`
             : operation?.state === 'ready' ? '新会话已就绪。' : '等待 Agent 初始化副本；若长时间未完成，请确认 Agent 在线且已更新到支持会话复制的版本。'}</span>
         {operation?.state === 'ready' && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.open()}>
