@@ -626,6 +626,95 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
   });
 
+  it('previews three paid plans with matching purchase amounts and nested rights', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'preview', label: '预览' }],
+      plans: [
+        { id: -59, slug: 'preview-basic', name: '基础版', price_fen: 5900, duration_days: 30 },
+        { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 9900, duration_days: 30 },
+        { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 15900, duration_days: 30 },
+      ],
+    });
+    await renderModal({ showFreePlan: false, planPresentationOverrides: {
+      'preview-basic': {
+        kicker: 'CATSCO BASIC', actionLabel: '获取 CatsCo 基础版', highlights: [{ kind: 'capacity', label: 'Token 额度', value: '5 亿', unit: 'Token' }], featuresLabel: false,
+        features: [
+          { label: 'Office 文件处理', details: ['文档阅读与写作', '表格整理与数据汇总'] },
+          '查看任务过程与交付结果',
+        ],
+      },
+      'catsco-personal': { features: [{ label: '基础版中的全部权益，以及：', emphasis: true }, 'Agent 后台任务，持续执行'] },
+      'catsco-pro': { recommended: false, features: ['Agent 多任务并行'] },
+    } });
+    await openPlanChooser();
+    const cards = [...container.querySelectorAll('.relay-access-plan-row')];
+    expect(cards).toHaveLength(3);
+    expect(cards.map(card => card.querySelector('.relay-access-plan-price > strong').textContent)).toEqual(['59', '99', '159']);
+    expect(container.querySelector('del')).toBeNull();
+    expect(container.querySelector('.relay-access-plan-badge')).toBeNull();
+    expect(container.textContent).not.toContain('免费版');
+    expect(cards[0].querySelector('dl dt').textContent).toBe('Token 额度');
+    expect(cards[0].querySelector('dl dd').textContent).toBe('5 亿Token');
+    expect(cards[0].querySelector('.relay-access-plan-includes')).toBeNull();
+    expect(Array.from(cards[0].querySelectorAll('.relay-access-plan-feature-details > li')).map(item => item.textContent)).toEqual(['文档阅读与写作', '表格整理与数据汇总']);
+    expect(cards[0].querySelector('.relay-access-plan-features > li:last-child').textContent).toBe('查看任务过程与交付结果');
+    expect(cards[1].querySelector('.relay-access-plan-feature-inherited').textContent).toBe('基础版中的全部权益，以及：');
+    expect(cards[2].querySelector('.relay-access-plan-includes').textContent).toBe('包含');
+    for (const [name, price] of [['基础版', '¥59'], ['个人版', '¥99'], ['专业版', '¥159']]) {
+      await clickButton(name === '基础版' ? '获取 CatsCo 基础版' : `选择${name}`);
+      expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain(price);
+      await clickButton('返回');
+    }
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('uses an enterprise preview override without changing personal plan selection', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'preview', label: '预览' }],
+      plans: [{ id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 }],
+    });
+    await renderModal({ enterprisePlanContent: <section aria-label="企业布局预览">定制企业服务内容</section> });
+    await openPlanChooser();
+    await clickButton('企业');
+    expect(container.querySelector('[aria-label="企业布局预览"]')?.textContent).toBe('定制企业服务内容');
+    expect(container.querySelector('.relay-access-enterprise-card')).toBeNull();
+    await clickButton('个人');
+    await clickButton('选择个人版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥399');
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('opens purchase confirmation directly from each plan and returns to the chooser', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'preview', label: '预览' }],
+      plans: [
+        { id: -59, slug: 'preview-basic', name: '基础版', price_fen: 5900, duration_days: 30 },
+        { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30 },
+        { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30 },
+      ],
+    });
+    await renderModal({ showFreePlan: false });
+    await openPlanChooser();
+    expect(container.querySelector('.relay-access-plan-row.recommended')).not.toBeNull();
+    expect(container.querySelector('.is-selected')).toBeNull();
+    expect(container.querySelector('.relay-access-plan-selection-footer')).toBeNull();
+    expect(container.textContent).not.toContain('下一步');
+    for (const [name, price] of [['基础版', '¥59'], ['个人版', '¥399'], ['专业版', '¥799']]) {
+      await clickButton(`选择${name}`);
+      expect(container.querySelector('#relay-access-plan-chooser')).toBeNull();
+      expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain(price);
+      expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain(name);
+      await clickButton('返回');
+      expect(container.querySelector('.relay-access-purchase-confirm')).toBeNull();
+      expect(container.querySelector('#relay-access-plan-chooser')).not.toBeNull();
+      expect(container.querySelector('.relay-access-plan-selection-footer')).toBeNull();
+    }
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
   it('keeps an allowlisted gray plan visible alongside the official catalog', async () => {
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
