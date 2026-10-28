@@ -5001,7 +5001,7 @@
         },
         {
           "file": "widgets/conversation-device-picker.jsx",
-          "line": 172,
+          "line": 178,
           "props": {
             "size": 16
           },
@@ -7656,7 +7656,7 @@
         },
         {
           "file": "widgets/conversation-device-picker.jsx",
-          "line": 135,
+          "line": 141,
           "props": {
             "size": 16
           },
@@ -10200,7 +10200,7 @@
         },
         {
           "file": "widgets/conversation-device-picker.jsx",
-          "line": 176,
+          "line": 182,
           "props": {
             "size": 18
           },

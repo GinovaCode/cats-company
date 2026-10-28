@@ -584,7 +584,7 @@ export default function DesktopConnectModal({ userId, onClose, onConnected, onSt
 
           {busy && !connectionReady && <LoadingState kind="connect" className="catsco-connect-motion" label="正在连接电脑" compact />}
 
-          {computersMode && (!hasConversationSelection || state === 'selection' || selectingDesktopDevice) && (
+          {computersMode && !hasConversationSelection && (
             <div className="cc-computer-list-region" data-loading-region="" aria-busy={!devicesLoaded}>
               {!devicesLoaded
                 ? <LoadingState kind="connect" className="cc-computer-list-loading" label="正在读取电脑" compact />
