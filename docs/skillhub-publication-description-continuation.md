@@ -192,10 +192,30 @@ I/O, validates even alternate adapters, freezes pointer-bearing records, and
 discards the response if the publisher is disabled or the observation changes.
 
 It distinguishes in-progress states from `published`/`publish_failed` terminal
-evidence. This slice does not persist terminal observations or rewrite the
-original repair state/budget, clear cancellation fences, poll automatically,
-project data into a browser, or activate a publication entry point. Persisting
-and exposing outcomes remain subsequent steps. No schema migration is needed.
+evidence. The reader alone does not persist observations or rewrite repair
+state/budget, clear cancellation fences, poll automatically, project data into a
+browser, or activate a publication entry point. Durable receipt storage is
+described below; browser projection remains a subsequent step.
+
+## Durable terminal receipts
+
+The internal `recordConfirmedPublicationDescriptionReleaseTerminal` first uses
+the guarded outcome reader. Queued/publishing/committing observations produce no
+write; network failures remain unknown, never a synthetic publication failure.
+Only exact published/publish_failed evidence can enter the independent
+`skillhub_publication_description_release_terminals` table (migration 000064).
+The transaction checks the active original publisher, the same retained
+observation and existing permit. A unique application row recovers identical
+concurrent/lost-response retries; a changed result conflicts. The stored digest
+covers the full terminal payload and immutable derived target.
+
+Published results whitelist skill/version/package/checksum/time; failures use
+the same static code allowlist as Cloud. Database guards bind entry, intent,
+permit and exact target, prohibit updates/deletes, and refuse nonempty rollback.
+The original repair task, round budget, legacy commit path and cancellation
+fences remain unchanged. Historical receipt reads still require the original
+active human publisher but not a live Bot or source. No browser route, automatic
+polling, worker registration or production gate activation is included.
 
 ## Verification and remaining work
 
