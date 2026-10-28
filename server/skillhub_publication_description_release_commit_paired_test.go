@@ -28,7 +28,8 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 		t.Skip("use the mandatory pinned PostgreSQL paired runner")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	// Registered first so the fixture cleanup below runs before cancellation.
+	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, node, filepath.Join("..", "scripts", "fixtures", "publication-description-plan-cloud.mjs"), root)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
