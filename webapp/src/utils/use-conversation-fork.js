@@ -83,6 +83,9 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
       if (isCurrent()) setSource(state => ({
         ...(state?.owner === owner ? state : {}), owner,
         error: error.message || '无法确认复制结果，请重试。',
+        // Set from this failure, not carried over: a previous create may have
+        // been rejected with a 4xx, and a network failure here would then be
+        // reported as a rejection.
         errorStatus: Number(error?.status) || 0,
         busy: false,
       }));
@@ -137,7 +140,7 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     return () => clearTimeout(timer);
   }, [checkTarget, targetState]);
 
-  const create = useCallback(async ({ newRequest = false, untilMessageId = 0 } = {}) => {
+  const create = useCallback(async ({ newRequest = false, untilMessageId } = {}) => {
     if (owner.busy || !isCurrent()) return;
     // The header and sidebar are two controls for the same operation. Reuse
     // an unseen request instead of allocating a competing copy from stale UI.
@@ -152,14 +155,24 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     // before the request left stays dangling. It would be picked up as an
     // identity by any later click, so it has to go when the request failed
     // that way.
-    const requested = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
-    // The last anchor the user picked stays remembered on the hook instance.
-    // "Retry" in the notice carries no anchor of its own, and after a rejection
-    // the stored payload is gone — so without this the retry would go out
-    // unbounded and copy the whole conversation, while the user believes they
-    // are still copying from the point they chose.
-    if (requested > 0) owner.lastAnchor = requested;
-    const anchor = requested || Number(owner.lastAnchor || 0);
+    //
+    // Three cases, and the difference matters:
+    //
+    //   undefined — a retry of this copy. It inherits the anchor this copy was
+    //               made with, from memory or from the stored payload, because
+    //               the user is retrying the same thing.
+    //   0         — an explicit "copy everything" request from the header or
+    //               the sidebar. Those entry points never had a point.
+    //   > 0       — a point picked on a message.
+    //
+    // The retry case has to read the stored payload too: the anchor lives in
+    // memory only until the page is reloaded, and after a reload the stored
+    // payload is the only place it is left.
+    const explicit = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
+    if (explicit > 0) owner.lastAnchor = explicit;
+    const anchor = untilMessageId === undefined
+      ? (Number(owner.lastAnchor || 0) || Number(owner.payload?.until_message_id || 0))
+      : explicit;
     const storedAnchor = Number(owner.payload?.until_message_id || 0);
     const anchorChanged = Boolean(owner.payload) && storedAnchor !== anchor;
     // A different anchor is a different copy, so it has to go through even

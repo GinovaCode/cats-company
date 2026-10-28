@@ -317,3 +317,29 @@ it('does not invent an anchor for a copy that never had one', async () => {
   await act(async () => value.create());
   expect(api.forkConversation.mock.calls[1][0].until_message_id).toBeUndefined();
 });
+
+// The anchor lives in memory only until the page is reloaded. After a reload the
+// stored payload is the only place it is left, so a retry has to read it from
+// there: otherwise the retry goes out unbounded and the whole conversation is
+// copied while the user believes they are still copying from their point.
+it('retries with the stored anchor after a remount', async () => {
+  localStorage.setItem('cc:conversation-fork:1:p2p_1_2',
+    JSON.stringify({ source_topic_id: 'p2p_1_2', request_id: 'old', until_message_id: 20 }));
+  api.getConversationFork.mockImplementation(async ({ requestId }) => ({ ...record, request_id: requestId }));
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await mount();
+  await act(async () => value.create());
+  expect(api.forkConversation.mock.calls[0][0].until_message_id).toBe(20);
+});
+
+// The header and sidebar copy the whole conversation on purpose. They say so
+// explicitly, so they never inherit a point picked on a message.
+it('keeps the header and sidebar copies unbounded', async () => {
+  localStorage.setItem('cc:conversation-fork:1:p2p_1_2',
+    JSON.stringify({ source_topic_id: 'p2p_1_2', request_id: 'old', until_message_id: 20 }));
+  api.getConversationFork.mockImplementation(async ({ requestId }) => ({ ...record, request_id: requestId }));
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await mount();
+  await act(async () => value.create({ newRequest: true, untilMessageId: 0 }));
+  expect(api.forkConversation.mock.calls[0][0].until_message_id).toBeUndefined();
+});

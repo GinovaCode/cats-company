@@ -54,7 +54,7 @@ export function ConversationForkMenuItem({ topic, userId, name, onActivateTopic 
   return <>
     <button type="button" role="menuitem" aria-label={`复制为新会话 ${name}`}
       disabled={fork.blocked || fork.busy || pending}
-      onClick={() => void fork.create({ newRequest: true })}>
+      onClick={() => void fork.create({ newRequest: true, untilMessageId: 0 })}>
       <Copy size={14} aria-hidden="true" /><span>复制为新会话</span>
     </button>
     <div className="cc-fork-sidebar-status">
