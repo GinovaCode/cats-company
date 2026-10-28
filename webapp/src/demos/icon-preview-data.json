@@ -4594,7 +4594,7 @@
         },
         {
           "file": "widgets/loading-state.jsx",
-          "line": 10,
+          "line": 11,
           "props": {
             "size": 25
           },
@@ -5026,7 +5026,7 @@
         },
         {
           "file": "widgets/loading-state.jsx",
-          "line": 10,
+          "line": 11,
           "props": {
             "size": 28
           },

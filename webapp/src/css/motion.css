@@ -35,9 +35,17 @@
 
 /* Overlapping shapes keep opaque faces while following the same rhythm. */
 @keyframes cc-loading-layer-assemble {
-  0%, 5%, 90%, 100% { background: var(--cc-loading-layer-rest); transform: translateY(3px); }
-  19%, 68% { background: var(--cc-loading-layer-face); transform: translateY(0); }
+  0%, 5%, 90%, 100% { fill: var(--cc-loading-layer-rest); transform: translateY(3px); }
+  19%, 68% { fill: var(--cc-loading-layer-face); transform: translateY(0); }
 }
+
+/* Mask cutouts follow their foreground layer through the entire cycle. */
+@keyframes cc-loading-layer-position {
+  0%, 5%, 90%, 100% { transform: translateY(3px); }
+  19%, 68% { transform: translateY(0); }
+}
+.cc-loading-layer-cutout { animation: cc-loading-layer-position var(--cc-loading-cycle) infinite both; }
+.cc-loading-layer-line { transform-box: fill-box; transform-origin: left center; animation: cc-loading-write var(--cc-loading-cycle) infinite both; }
 
 @keyframes cc-loading-write {
   0%, 12% { opacity: 0; transform: scaleX(.4); }
