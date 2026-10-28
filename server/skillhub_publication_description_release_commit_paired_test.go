@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +141,7 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
 	defer transport.CloseIdleConnections()
 	client, err := NewPublicationDescriptionDerivationClient(PublicationDescriptionDerivationClientConfig{
-		Enabled: true, PlanEnabled: true, ReleaseAuthorizeEnabled: true, ReleaseCommitEnabled: true,
+		Enabled: true, PlanEnabled: true, ReleaseAuthorizeEnabled: true, ReleaseCommitEnabled: true, ReleaseStatusEnabled: true,
 		URL: ready.Origin + publicationDescriptionDerivationPath, Issuer: "https://cats.example", Audience: ready.Origin,
 		PeerSecret: "pubderive_" + strings.Repeat("a", 64), Timeout: 10 * time.Second,
 		HTTPClient: &http.Client{Transport: transport},
@@ -199,5 +200,22 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 	replay, err := client.AdmitRetainedRelease(ctx, app, *flowDB.intent, got.authorized.permit)
 	if err != nil || replay == nil || replay.State != "queued" || replay.Replayed == nil || !*replay.Replayed {
 		t.Fatal("admission replay did not recover the durable row", err, replay)
+	}
+	before := command(map[string]any{"action": "stats"})
+	status, err := client.ReadRetainedRelease(ctx, app, *flowDB.intent, got.authorized.permit)
+	if err != nil || status == nil || status.State != "queued" || status.Target != planned.plan.Target ||
+		status.PublicationReceipt != ready.PublicationReceipt || status.Result != nil || status.ErrorCode != nil {
+		t.Fatal("real Cloud status did not match retained admission", status, err)
+	}
+	command(map[string]any{"action": "lose-next"})
+	if observed, err := client.ReadRetainedRelease(ctx, app, *flowDB.intent, got.authorized.permit); observed != nil || !errors.Is(err, ErrSkillHubPublicationDescriptionReleaseStatusPeer) {
+		t.Fatal("lost status response accepted", observed, err)
+	}
+	observed, err := client.ReadRetainedRelease(ctx, app, *flowDB.intent, got.authorized.permit)
+	if err != nil || !reflect.DeepEqual(observed, status) {
+		t.Fatal("status recovery changed evidence", observed, err)
+	}
+	if after := command(map[string]any{"action": "stats"}); !reflect.DeepEqual(before, after) {
+		t.Fatal("status reads changed publication rows", before, after)
 	}
 }

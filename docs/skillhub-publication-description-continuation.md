@@ -150,6 +150,29 @@ accepted report and Runtime source remain synthetic, not dual-database or
 production/paid-model E2E evidence. The private Cloud repository hosts the pinned
 CI job so public CatsCo PRs receive no private-repository credential.
 
+## Read-only derived release outcome
+
+`ReadRetainedRelease` reads Cloud's exact retained application/permit outcome
+under the independent default-off
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_STATUS_ENABLED` gate plus the
+base derivation gate. Planning, authorization, commit admission and copy-read
+gates need not be enabled to recover historical evidence. The request carries
+the complete original upload receipt; its source hash is never replaced by the
+derived candidate hash. The response must match that receipt, application,
+task, permit and the exact confirmed derived target. Published results require
+the exact target skill/version/time, a valid package ID and SHA-256 checksum.
+Only terminal failures accept a static allowlist of error codes. Unknown/null/
+duplicate/extra fields and unsafe HTTPS responses fail closed.
+
+Reads never automatically retry, re-admit, authorize, publish, call a model,
+refresh current source authority or clear cancellation fences. Receipt expiry
+does not erase a completed result. This private client is historical evidence,
+not current execution authorization; a future human-facing caller must check
+its current actor before exposing it. No browser route or production wiring is
+added. The mandatory commit paired fixture also calls the real Cloud status
+route, loses a reply, recovers the same evidence and checks unchanged row counts.
+Cloud's real PostgreSQL tests separately cover terminal publication and expiry.
+
 ## Verification and remaining work
 
 Domain tests cover exact task/draft/application/report binding and earlier-round

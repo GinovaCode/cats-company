@@ -5,12 +5,12 @@ import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cloud = path.resolve(process.env.SKILLHUB_REPO || path.join(root, '..', 'skillhub'));
-const pin = '18c7dbac8b83fac9bea6600d7f332ed319b78691';
+const pin = 'b1d9f49c50738da3213c9effc2a15e1439beb8c7';
 const revision = spawnSync('git', ['-C', cloud, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
 if (revision.status !== 0 || revision.stdout.trim() !== pin) throw Error(`Cloud checkout must equal ${pin}`);
 if (!process.env.SKILLHUB_TEST_DATABASE_URL) throw Error('Real Cloud PostgreSQL is mandatory');
 for (const file of ['apps/api/publication-description-derivation.js', 'packages/publication-description-derivations/commit-admission.js',
-  'packages/publication-description-derivations/release-plan.js', 'infra/migrations/026_publication_description_release_active_source.sql',
+  'packages/publication-description-derivations/release-plan.js', 'packages/publication-description-derivations/release-status.js', 'infra/migrations/026_publication_description_release_active_source.sql',
   'tests/helpers/description-copy.js', 'node_modules/yaml/package.json']) {
   if (!fs.existsSync(path.join(cloud, file))) throw Error(`Missing mandatory Cloud dependency: ${file}`);
 }

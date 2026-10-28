@@ -38,6 +38,7 @@ try {
   const config = loadConfig({ databaseUrl: url.href, nodeEnv: 'test', publicationTasksEnabled: true, publicationPublishingEnabled: true,
     publicationDescriptionDerivationEnabled: true, publicationDescriptionPlanEnabled: true,
     publicationDescriptionCommitAdmissionEnabled: true, publicationDescriptionReleasePermitEnabled: true,
+    publicationDescriptionReleaseStatusEnabled: true,
     publicationDescriptionDerivationIssuer: issuer, publicationDescriptionDerivationAudience: origin,
     publicationDescriptionDerivationPeerSecret: 'pubderive_' + 'a'.repeat(64), publicationDescriptionDerivationTrustedProxyAddresses: [] });
   const store = createStore(config), copy = descriptionCopyFixture();
