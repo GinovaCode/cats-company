@@ -219,6 +219,40 @@ polling, worker registration or production gate activation is included.
 
 ## Verification and remaining work
 
+### Private local terminal history
+
+`GET /api/skillhub/publications/entries/{id}/description-release-history`
+requires both `CATSCO_SKILLHUB_PUBLICATION_READS_ENABLED` and the new independent
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_HISTORY_ENABLED` (default off).
+Capabilities advertise `descriptionReleaseHistoryReadsEnabled` only when both
+gates and the historical reader adapter are available. This does not enable
+publishing, background reconciliation or paid calls.
+
+The route shares active-human Bearer authentication, original-publisher entry
+checks, private/no-store headers, a five-second deadline and the existing actor,
+entry and concurrency limits. Observation/receipt/observation checks validate
+adapter output and reject changed history or disabled actors. It never calls
+Cloud, creates a receipt, issues a permit, resets repair rounds, clears a fence
+or falls back to the legacy commit path. Bot offline/transfer does not erase
+history, and the new Owner does not inherit it.
+
+The response has `schemaVersion`, `entryRequestId` and
+`descriptionReleaseHistory`. Its stage is `not_recorded`, `published` or
+`publish_failed`. `not_recorded` means a valid retained permit exists but no
+local terminal receipt has been recorded; it does NOT claim that Cloud is
+queued, running, failed or successful. Missing/invalid release-chain evidence
+returns an unavailable error, not a fabricated execution state. A terminal view
+adds `recordedAt`, plus either result `{skillId,version,publishedAt}` or a static
+allowlisted failure code. Package IDs, checksums, application/permit IDs, target,
+hashes, source selectors and private bytes never reach the response.
+
+The real JWT/HTTPS/PostgreSQL history contract reconstructs the adapter and
+handler after persisting a terminal, verifies transfer/offline access isolation,
+disabled original-publisher rejection and unchanged publication row counts.
+Cloud result/derivation/report and Runtime source are synthetic test ports; it
+is not real Cloud completion or paid-model/user publishing acceptance. There
+is no browser UI consumer or production gate activation in this slice.
+
 Domain tests cover exact task/draft/application/report binding and earlier-round
 progress. Coordinator tests cover recovery at committed checkpoints, stable
 replay, source/authority changes, invalid bytes, context cancellation and pointer

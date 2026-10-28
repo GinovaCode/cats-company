@@ -267,7 +267,7 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
           test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server -run '^TestSkillHubPublication(DeliveryPostgres|CaptureTransportPostgres|CaptureDispatcher|PeerCommitPostgres)' -count=1 -v
+          go test -race ./server -run '^TestSkillHubPublication(DeliveryPostgres|CaptureTransportPostgres|CaptureDispatcher|PeerCommitPostgres|DescriptionReleaseHistoryPostgres)' -count=1 -v
 
       - name: Test PostgreSQL service agent store
         env:
