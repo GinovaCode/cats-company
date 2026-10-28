@@ -137,16 +137,35 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     // The header and sidebar are two controls for the same operation. Reuse
     // an unseen request instead of allocating a competing copy from stale UI.
     owner.payload = storedPayload(owner.key, topic) || owner.payload;
-    if (!newRequest && ['ready', 'failed'].includes(operation?.state)) return;
-    if (newRequest && operation && !['ready', 'failed'].includes(operation.state)) return;
-    // An anchor makes this a different copy than the unbounded one, so a stored
-    // payload from a previous unbounded request cannot be reused for it: the
-    // server compares the anchor against the stored one and would answer 409.
+    // The anchor is part of the request's identity: the server compares it
+    // against the stored one and answers 409 on a mismatch. Reusing a payload
+    // whose anchor differs would therefore either fail again with the same
+    // reason or — worse — drop the anchor entirely and copy the whole
+    // conversation while the user believes they picked a point.
+    //
+    // A 4xx never creates a server-side record, so a payload that was written
+    // before the request left stays dangling. It would be picked up as an
+    // identity by any later click, so it has to go when the request failed
+    // that way.
     const anchor = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
-    if (!owner.payload || (newRequest && operation?.request_id === owner.payload.request_id && ['ready', 'failed'].includes(operation?.state))) {
+    const storedAnchor = Number(owner.payload?.until_message_id || 0);
+    const anchorChanged = Boolean(owner.payload) && storedAnchor !== anchor;
+    // A different anchor is a different copy, so it has to go through even
+    // while another copy of this conversation is still pending: the user is
+    // answering the mistake they just made, not asking for that copy again.
+    if (anchorChanged) {
       owner.payload = { source_topic_id: topic, request_id: crypto.randomUUID() };
       if (anchor > 0) owner.payload.until_message_id = anchor;
       writeStorageValue(owner.key, JSON.stringify(owner.payload));
+    } else {
+      if (!newRequest && ['ready', 'failed'].includes(operation?.state)) return;
+      if (newRequest && operation && !['ready', 'failed'].includes(operation.state)) return;
+      if (!owner.payload
+        || (newRequest && operation?.request_id === owner.payload.request_id && ['ready', 'failed'].includes(operation?.state))) {
+        owner.payload = { source_topic_id: topic, request_id: crypto.randomUUID() };
+        if (anchor > 0) owner.payload.until_message_id = anchor;
+        writeStorageValue(owner.key, JSON.stringify(owner.payload));
+      }
     }
     owner.busy = true;
     window.dispatchEvent(new CustomEvent(forkChangedEvent, { detail: { key: owner.key, owner } }));
@@ -155,6 +174,15 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
       const result = await api.forkConversation(owner.payload, requestOptions);
       acceptSource(normalizeForkRecord(result, { requestId: owner.payload.request_id, sourceTopic: topic }));
     } catch (error) {
+      // A 4xx never creates a server-side record: the request was rejected, so
+      // no session fork exists to be found later. The payload was written
+      // before the request left, which would leave a request id that no server
+      // knows about — and the next click would reuse it as its identity, so the
+      // same rejection would repeat with no way out. Drop it.
+      if (error?.status >= 400 && error?.status < 500 && owner.payload) {
+        removeStorageValue(owner.key);
+        owner.payload = null;
+      }
       if (isCurrent()) setSource(state => ({ ...state, owner, busy: false, error: error.message || '复制请求未确认，请重试。' }));
     } finally {
       owner.busy = false;

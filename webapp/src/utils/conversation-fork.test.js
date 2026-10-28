@@ -51,6 +51,27 @@ describe('bounded copy anchor', () => {
   it('has no anchor when the message carries no usable id', () => {
     expect(forkAnchorMessageId({ type: 'text', assistantAuthored: true, message: {}, sourceMessages: [{}] })).toBe(0);
   });
+
+  it('has no anchor for a streaming placeholder', () => {
+    // A streaming reply is a local placeholder: its id is `stream:<id>` and its
+    // seq_id is a wall-clock timestamp, not a message row id. The server cannot
+    // resolve it, and answering "the conversation changed" would be misleading.
+    const streaming = {
+      type: 'text',
+      assistantAuthored: true,
+      message: { id: 'stream:s1', seq_id: Date.now(), _streaming: true },
+      sourceMessages: [{ id: 'stream:s1', seq_id: Date.now(), _streaming: true }],
+    };
+    expect(forkAnchorMessageId(streaming)).toBe(0);
+    // The same holds for a timestamp-shaped id without the streaming flag.
+    expect(forkAnchorMessageId({
+      type: 'text', assistantAuthored: true, message: {}, sourceMessages: [{ seq_id: 1793154059347 }],
+    })).toBe(0);
+  });
+
+  it('explains that the copy point has to be the end of a reply', () => {
+    expect(describeForkError('session_fork_anchor_not_turn_end')).toContain('最后一条');
+  });
 });
 
 describe('fork wire records', () => {

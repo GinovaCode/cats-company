@@ -18,8 +18,17 @@ export function forkAnchorMessageId(group) {
   if (!group.assistantAuthored) return 0;
   const sourceMessages = group.sourceMessages || [group.message];
   const last = sourceMessages[sourceMessages.length - 1];
-  const id = Number(last?.seq_id || last?.id || 0);
-  return Number.isSafeInteger(id) && id > 0 ? id : 0;
+  // A streaming placeholder has no server-side identity yet: its id is
+  // `stream:<id>` and its seq_id is a wall-clock timestamp, not a message row
+  // id. Sending it as an anchor would make the server look for a message that
+  // does not exist and answer "the conversation changed" — the one misleading
+  // message this split was meant to remove.
+  if (!last || last._streaming) return 0;
+  const id = Number(last.seq_id || last.id || 0);
+  // Real message ids are row ids, far below any timestamp. A value this large
+  // is a local identifier the server cannot resolve.
+  if (!Number.isSafeInteger(id) || id <= 0 || id > 1e12) return 0;
+  return id;
 }
 
 export function canForkConversation({ topic, userId, agents = [], members = [] }) {
@@ -80,8 +89,10 @@ export function describeForkError(error) {
     session_fork_request_conflict: '请求标识与原请求不一致，请重新查询原复制结果。',
     session_fork_source_unavailable: '原会话不可用或已变化，请检查原会话后重试。',
     // The chosen spot is not the end of a reply. Plain wording: pick the place
-    // where the answer finishes.
-    session_fork_anchor_not_turn_end: '这个位置不是回复结束的地方，没法从这里复制。请点在这段回复的最后一条消息上再试。',
+    // where the answer finishes. The second sentence covers the case where the
+    // reply ends with tool output instead of text: there is no last text
+    // message to pick, and the next reply is the only place that works.
+    session_fork_anchor_not_turn_end: '这个位置不是回复结束的地方，没法从这里复制。请点在这段回复的最后一条消息上再试；如果这段回复之后还有工具执行过程，请点下一条回复。',
     session_fork_unavailable: '暂时无法复制会话，请稍后重试。',
     session_fork_not_found: '尚未找到此复制请求，可以使用原请求重试。',
     session_fork_ack_timeout: '运行该 Agent 的设备长时间没有响应，可能版本过旧或已离线。请确认设备在线并升级到支持会话复制的版本后，重新创建副本。',

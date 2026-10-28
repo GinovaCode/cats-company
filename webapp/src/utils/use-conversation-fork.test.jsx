@@ -232,3 +232,57 @@ it('sends no cancellation request without a stored request ID and surfaces a fai
   expect(value.error).toContain('offline');
   expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).toBeTruthy();
 });
+
+// The anchor is part of the request's identity. A stored payload whose anchor
+// differs must not be reused: the server would reject the mismatch with the
+// same reason forever, or — worse — the anchor would be dropped and the whole
+// conversation copied while the user believes they picked a point.
+it('starts a new request when the anchor differs from the stored one', async () => {
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await mount();
+  await act(async () => value.create({ newRequest: true, untilMessageId: 10 }));
+  const first = api.forkConversation.mock.calls[0][0];
+  expect(first.until_message_id).toBe(10);
+  // A different anchor is a different copy, even while the first one is
+  // still pending: the user is answering the mistake they just made.
+  await act(async () => value.create({ newRequest: true, untilMessageId: 20 }));
+  const second = api.forkConversation.mock.calls[1][0];
+  expect(second.request_id).not.toBe(first.request_id);
+  expect(second.until_message_id).toBe(20);
+});
+
+it('carries the anchor of an unbounded request into a bounded one', async () => {
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await mount();
+  await act(async () => value.create({ newRequest: true }));
+  expect(api.forkConversation.mock.calls[0][0].until_message_id).toBeUndefined();
+  await act(async () => value.create({ newRequest: true, untilMessageId: 33 }));
+  expect(api.forkConversation.mock.calls[1][0].until_message_id).toBe(33);
+});
+
+// A 4xx never creates a server-side record, so the payload written before the
+// request left is dangling. Left in storage it becomes the identity of every
+// later click, which pins the conversation to one rejection until the user
+// clears storage by hand.
+it('drops the stored payload when the request is rejected outright', async () => {
+  api.forkConversation.mockRejectedValue(Object.assign(new Error('session_fork_anchor_not_turn_end'), { status: 409 }));
+  await mount();
+  await act(async () => value.create({ newRequest: true, untilMessageId: 10 }));
+  expect(api.forkConversation).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).toBeNull();
+  // The next click starts from scratch and can carry a different anchor.
+  api.forkConversation.mockImplementation(async payload => ({ ...record, request_id: payload.request_id }));
+  await act(async () => value.create({ newRequest: true, untilMessageId: 20 }));
+  const second = api.forkConversation.mock.calls[1][0];
+  expect(second.until_message_id).toBe(20);
+  expect(second.request_id).not.toBe(api.forkConversation.mock.calls[0][0].request_id);
+});
+
+it('keeps the stored payload when the failure is not a rejection', async () => {
+  api.forkConversation.mockRejectedValueOnce(new Error('network interrupted'));
+  await mount();
+  await act(async () => value.create({ newRequest: true, untilMessageId: 10 }));
+  // A network failure says nothing about whether the server created the record,
+  // so the request ID has to survive: retrying it is the only way to find out.
+  expect(localStorage.getItem('cc:conversation-fork:1:p2p_1_2')).not.toBeNull();
+});
