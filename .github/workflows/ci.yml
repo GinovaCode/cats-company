@@ -139,6 +139,13 @@ jobs:
         # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
         run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
 
+      - name: Test retained derived publication outcome access
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionReleaseOutcomeHistoricalRead$' -count=1 -v
+
   backend_db:
     name: Backend DB contracts
     runs-on: ubuntu-latest

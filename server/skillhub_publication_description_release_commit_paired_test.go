@@ -215,6 +215,30 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(observed, status) {
 		t.Fatal("status recovery changed evidence", observed, err)
 	}
+	// The internal outcome flow consumes the saved local permit; it must not
+	// obtain one through AuthorizeCloud or need a running Runtime to read.
+	authorizedAt, err := time.Parse(time.RFC3339Nano, got.authorized.permit.AuthorizedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &descriptionOutcomeTestReader{observation: store.SkillHubPublicationDescriptionReleaseObservation{
+		Continuation: got.authorized.checkpoint, Intent: got.authorized.intent,
+		Permit: store.SkillHubPublicationDescriptionReleasePermit{Intent: got.authorized.intent,
+			ID: got.authorized.permit.PermitID, AuthorizedAt: authorizedAt}}}
+	outcomePorts := publicationDescriptionReleaseOutcomePorts{ReadCloud: client.ReadRetainedRelease}
+	outcome, err := readConfirmedPublicationDescriptionReleaseOutcome(ctx, reader, 1, app.Input.Receipt.Query.EntryID, outcomePorts)
+	if err != nil || outcome == nil || outcome.terminal() || !reflect.DeepEqual(outcome.status, *status) {
+		t.Fatal("internal outcome flow lost exact Cloud evidence", outcome, err)
+	}
+	reader.onRead = func(n int) error {
+		if n >= 4 {
+			return store.ErrSkillHubPublicationDenied
+		}
+		return nil
+	}
+	if outcome, err := readConfirmedPublicationDescriptionReleaseOutcome(ctx, reader, 1, app.Input.Receipt.Query.EntryID, outcomePorts); outcome != nil || !errors.Is(err, store.ErrSkillHubPublicationDenied) {
+		t.Fatal("outcome exposed after actor lost access during peer read", outcome, err)
+	}
 	if after := command(map[string]any{"action": "stats"}); !reflect.DeepEqual(before, after) {
 		t.Fatal("status reads changed publication rows", before, after)
 	}

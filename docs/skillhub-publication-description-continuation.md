@@ -173,6 +173,30 @@ added. The mandatory commit paired fixture also calls the real Cloud status
 route, loses a reply, recovers the same evidence and checks unchanged row counts.
 Cloud's real PostgreSQL tests separately cover terminal publication and expiry.
 
+## Internal outcome consumption
+
+`readConfirmedPublicationDescriptionReleaseOutcome` consumes that private
+status without replaying the derivation/plan/authorization/admission flow.
+Its dedicated PostgreSQL reader uses a read-only repeatable-read transaction
+to recover the retained task/draft/application/acceptance, separate human
+release intent and already-issued local permit. Missing permits are conflicts;
+reads cannot issue or recover them through an authorizing operation.
+
+Historical viewing follows the existing publication-history rule: the original
+publisher must still be an active human account. A new Bot owner cannot inherit
+that publisher's history. Bot transfer, disabling, body changes and offline
+Runtime do not invalidate historical evidence. This is deliberately separate
+from current continuation/execution authority and cannot authorize another run.
+The coordinator checks this same immutable observation before and after peer
+I/O, validates even alternate adapters, freezes pointer-bearing records, and
+discards the response if the publisher is disabled or the observation changes.
+
+It distinguishes in-progress states from `published`/`publish_failed` terminal
+evidence. This slice does not persist terminal observations or rewrite the
+original repair state/budget, clear cancellation fences, poll automatically,
+project data into a browser, or activate a publication entry point. Persisting
+and exposing outcomes remain subsequent steps. No schema migration is needed.
+
 ## Verification and remaining work
 
 Domain tests cover exact task/draft/application/report binding and earlier-round
