@@ -135,9 +135,9 @@ activation and user-facing wiring are later steps.
 The mandatory paired contract is run with
 `node scripts/test-publication-description-commit-paired.mjs`. It pins the
 reviewed Cloud commit, requires a real PostgreSQL DSN, and exercises the
-actual Cloud permit/admission handler with this CatsCo client/coordinator.
-The fixture is synthetic and does not publish a user Skill or enable any
-production gate.
+actual Cloud authorize/admission endpoints with this CatsCo client/coordinator;
+the release-permit issuer is stubbed inside the disposable fixture. The test
+does not publish a user Skill or enable any production gate.
 
 The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
 Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing

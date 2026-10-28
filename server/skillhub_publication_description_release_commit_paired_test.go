@@ -45,8 +45,17 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = in.Close()
-		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-			t.Errorf("Cloud fixture failed: %v %s", err, stderr.String())
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Cloud fixture failed: %v %s", err, stderr.String())
+			}
+		case <-time.After(5 * time.Second):
+			cancel()
+			err := <-done
+			t.Errorf("Cloud fixture did not settle: %v %s", err, stderr.String())
 		}
 	})
 	decoder := json.NewDecoder(io.LimitReader(out, 256*1024))
@@ -145,7 +154,8 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 		t.Fatal("real Cloud plan failed", err)
 	}
 	flowDB.intent = releaseFlowIntent(planned.checkpoint, planned.plan.Target)
-	command(map[string]any{"action": "set-intent-hash", "intentHash": flowDB.intent.IdentityHash})
+	command(map[string]any{"action": "set-intent-hash", "intentHash": flowDB.intent.IdentityHash,
+		"authorizedAt": flowDB.intent.RequestedAt.Add(time.Second).Format(time.RFC3339Nano)})
 	ports := publicationDescriptionReleasePorts{publicationDescriptionContinuationPorts: publicationDescriptionContinuationPorts{
 		VerifySource: func(context.Context, store.SkillHubPublicationDescriptionApplication) error { return nil },
 	},
