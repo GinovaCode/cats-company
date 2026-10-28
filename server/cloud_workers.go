@@ -1162,6 +1162,28 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	return report
 }
 
+// cloudWorkerRenewArgs builds the provider renewal invocation for one lifecycle.
+//
+// One renewal event buys exactly one more paid month, so the increment is pinned
+// rather than inherited from a deployment snapshot that may record a multi-month
+// creation purchase.
+//
+// The expiry is forwarded because a packed container has no cloud subscription:
+// the deployment adapter cannot derive a new expiry from a subscription cycle and
+// used to fall back to a hard-coded +30 days, silently handing a 7-day package
+// three extra weeks. The account's paid window is the authoritative value.
+//
+// It is only forwarded when it actually extends the row — a stale entitlement
+// must never pull an already-paid window backwards. When the store cannot report
+// a package expiry (manual perpetual grants) the adapter keeps its own fallback.
+func (h *CloudWorkerHandler) cloudWorkerRenewArgs(uid int64, lifecycle CloudWorkerLifecycle) []string {
+	args := []string{"--name", lifecycle.TenantName, "--cycle-count", "1"}
+	if paidUntil := h.cloudWorkerPaidUntil(uid, nil); !paidUntil.IsZero() && lifecycle.PackageExpiresAt.Before(paidUntil) {
+		args = append(args, "--expires-at", paidUntil.UTC().Format(time.RFC3339))
+	}
+	return args
+}
+
 // renewOneCloudWorker runs the provider renewal for a single lifecycle and
 // reports the outcome; it never creates a replacement instance.
 func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
@@ -1178,7 +1200,7 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 	// One renewal event buys exactly one more paid month. A tenant's
 	// deployment snapshot can record a multi-month creation purchase, so
 	// pin the monthly step explicitly instead of inheriting that count.
-	out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
+	out, err := h.runScript(h.renewScript, h.cloudWorkerRenewArgs(uid, lifecycle)...)
 	if err != nil {
 		item.Status = types.CloudWorkerRenewFailed
 		item.Message = err.Error()
@@ -1485,7 +1507,11 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	deployment, deploymentErr := h.deploymentForProfile(profile)
-	if deploymentErr == nil {
+	if deploymentErr == nil && deployment.Profile != types.CloudWorkerPackedShared {
+		// Machine-level billing belongs to the dedicated ECS fleet: that script
+		// buys a subscription and pre-pays whole monthly cycles. A packed worker
+		// runs in an already-owned container, so emitting these variables would
+		// only invite someone to read them as a real billing decision.
 		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
 		if billing == types.CloudWorkerMonthly {
 			// Tianyi prepaid instances are sold in whole monthly cycles. Prepay
@@ -1832,7 +1858,15 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	var rebuildOwners []int64
 	queuedRebuild := map[int64]bool{}
 	for _, item := range items {
-		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
+		// The on-demand branch exists to drive ECS subscription billing:
+		// convert a trial into a paid month, or suspend it at trial expiry.
+		// A packed worker has no subscription, and billing-worker.sh lives only
+		// on the ECS script path — routing it here fails every sweep and
+		// `continue`s past the normal expire/archive step, so the worker would
+		// never expire at all. Treat shared containers as plain package
+		// lifecycles and keep billing_mode collapsed to month at the boundaries.
+		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") &&
+			!h.tenantRunsOnPackedShared(item.TenantName) {
 			action := "suspend"
 			if item.ConversionPending {
 				action = "convert"
