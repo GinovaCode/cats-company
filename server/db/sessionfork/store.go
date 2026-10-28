@@ -239,7 +239,7 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	// so a single turn can read [user, agent, agent, agent]: an anchor on the first
 	// agent segment is answered but is not the turn's end.
 	if req.UntilMessageID > 0 && !anchorClosesTurn(all, anchor, req.AgentUID) {
-		return nil, store.ErrSessionForkSource
+		return nil, store.ErrSessionForkAnchor
 	}
 	title := req.Name
 	if title == "" {

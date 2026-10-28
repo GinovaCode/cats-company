@@ -2,7 +2,10 @@ package sessionfork
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 // Production does not write role='user': the plain-text send path stores only
@@ -96,5 +99,21 @@ func TestAnchorClosesTurn(t *testing.T) {
 				t.Fatalf("anchorClosesTurn(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// An anchor that is not a turn's end must be reported separately from "the
+// conversation changed": the user can act on the first one by picking a
+// different spot, while the second needs a reload. Collapsing both into
+// `session_fork_source_unavailable` made a mis-picked anchor look like a bug.
+func TestAnchorNotTurnEndIsItsOwnError(t *testing.T) {
+	if !errors.Is(store.ErrSessionForkAnchor, store.ErrSessionForkAnchor) {
+		t.Fatal("anchor error must be matchable on its own")
+	}
+	if errors.Is(store.ErrSessionForkAnchor, store.ErrSessionForkSource) {
+		t.Fatal("anchor error must not be reported as a changed conversation")
+	}
+	if store.ErrSessionForkAnchor.Error() != "session_fork_anchor_not_turn_end" {
+		t.Fatalf("unexpected error code: %s", store.ErrSessionForkAnchor.Error())
 	}
 }

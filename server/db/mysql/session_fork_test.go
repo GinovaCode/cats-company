@@ -219,8 +219,10 @@ func TestSessionForkMySQLAnchorMustCloseATurn(t *testing.T) {
 			mock.ExpectRollback()
 			got, err := (&Adapter{db: db}).CreateSessionFork(context.Background(), types.SessionForkRequest{RequestID: "mid", SourceTopicID: "p2p_7_9", ActorUserID: 7, AgentUID: 9, BodyID: "body", UntilMessageID: anchor})
 			// The runtime cuts at a turn boundary, so accepting this would make the
-			// copy's visible history and its model context disagree.
-			if !errors.Is(err, store.ErrSessionForkSource) || got != nil {
+			// copy's visible history and its model context disagree. The failure is
+			// reported as its own reason, because the user can act on it by
+			// picking the end of the reply instead of reloading the conversation.
+			if !errors.Is(err, store.ErrSessionForkAnchor) || got != nil {
 				t.Fatalf("anchor inside a turn must fail closed: %#v %v", got, err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {

@@ -1118,7 +1118,7 @@ export function fileAnnotationSourceForPreview(message, payload, topicId = '') {
   return index < 0 ? null : { topic_id: topic, message_id: messageId, attachment_index: index };
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, executionState, executionNote, replyPending, replyStreaming, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, mentionDisplayNames = {}, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, onCreateConversationFork, conversationForkDisabled = false, conversationForkAnchorId = 0, showThinking = true, isConsecutive, onPreviewFile: onPreviewFileCallback, annotationTopicId = '', activePreviewFile, knownArtifacts = [], imageGallery = null, onOpenImage, onOpenArtifactApp }) {
   const liquidConversation = useLiquidConversation();
   const [replyRevealing, setReplyRevealing] = useState(false);
   const softStream = liquidConversation && !isSelf && Boolean(message._streaming) && !message._stopped
@@ -1342,7 +1342,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     if (conversationForkDisabled) return;
     setMoreActionsOpen(false);
     moreActionsTriggerRef.current?.focus({ preventScroll: true });
-    onCreateConversationFork?.();
+    onCreateConversationFork?.(conversationForkAnchorId);
   };
 
   useEffect(() => {
@@ -1611,7 +1611,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                     {onCreateConversationFork && <button
                       type="button"
                       role="menuitem"
-                      disabled={conversationForkDisabled}
+                      disabled={conversationForkDisabled || conversationForkAnchorId <= 0}
                       onClick={handleCreateConversationForkClick}
                     >
                       <Copy size={15} aria-hidden="true" />

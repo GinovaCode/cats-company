@@ -3,6 +3,25 @@ function uid(value) {
   return /^\d+$/.test(text) && Number(text) > 0 ? text.replace(/^0+/, '') : '';
 }
 
+// The anchor for a bounded copy has to be the last message of a complete turn.
+//
+// A reply longer than the segment limit is stored as several messages, so one
+// turn can read [user, agent, agent, agent]. The server refuses an anchor that
+// is not a turn's end, because the runtime cuts whole turns: an anchor in the
+// middle would copy less visible history than the model keeps in context.
+//
+// The displayed group already merges those segments into one row, and the
+// merged message is the group's last original message. So the anchor is that
+// message's id, and it is zero whenever the group is not an agent reply at all.
+export function forkAnchorMessageId(group) {
+  if (!group || group.type === 'working') return 0;
+  if (!group.assistantAuthored) return 0;
+  const sourceMessages = group.sourceMessages || [group.message];
+  const last = sourceMessages[sourceMessages.length - 1];
+  const id = Number(last?.seq_id || last?.id || 0);
+  return Number.isSafeInteger(id) && id > 0 ? id : 0;
+}
+
 export function canForkConversation({ topic, userId, agents = [], members = [] }) {
   const actor = uid(userId);
   if (!actor) return false;
@@ -60,6 +79,9 @@ export function describeForkError(error) {
     session_fork_forbidden: '只能复制你参与的一人一 Agent 会话，请确认该 Agent 仍在好友列表中。',
     session_fork_request_conflict: '请求标识与原请求不一致，请重新查询原复制结果。',
     session_fork_source_unavailable: '原会话不可用或已变化，请检查原会话后重试。',
+    // The chosen spot is not the end of a reply. Plain wording: pick the place
+    // where the answer finishes.
+    session_fork_anchor_not_turn_end: '这个位置不是回复结束的地方，没法从这里复制。请点在这段回复的最后一条消息上再试。',
     session_fork_unavailable: '暂时无法复制会话，请稍后重试。',
     session_fork_not_found: '尚未找到此复制请求，可以使用原请求重试。',
     session_fork_ack_timeout: '运行该 Agent 的设备长时间没有响应，可能版本过旧或已离线。请确认设备在线并升级到支持会话复制的版本后，重新创建副本。',

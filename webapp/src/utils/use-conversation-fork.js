@@ -132,15 +132,20 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     return () => clearTimeout(timer);
   }, [checkTarget, targetState]);
 
-  const create = useCallback(async ({ newRequest = false } = {}) => {
+  const create = useCallback(async ({ newRequest = false, untilMessageId = 0 } = {}) => {
     if (owner.busy || !isCurrent()) return;
     // The header and sidebar are two controls for the same operation. Reuse
     // an unseen request instead of allocating a competing copy from stale UI.
     owner.payload = storedPayload(owner.key, topic) || owner.payload;
     if (!newRequest && ['ready', 'failed'].includes(operation?.state)) return;
     if (newRequest && operation && !['ready', 'failed'].includes(operation.state)) return;
+    // An anchor makes this a different copy than the unbounded one, so a stored
+    // payload from a previous unbounded request cannot be reused for it: the
+    // server compares the anchor against the stored one and would answer 409.
+    const anchor = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
     if (!owner.payload || (newRequest && operation?.request_id === owner.payload.request_id && ['ready', 'failed'].includes(operation?.state))) {
       owner.payload = { source_topic_id: topic, request_id: crypto.randomUUID() };
+      if (anchor > 0) owner.payload.until_message_id = anchor;
       writeStorageValue(owner.key, JSON.stringify(owner.payload));
     }
     owner.busy = true;

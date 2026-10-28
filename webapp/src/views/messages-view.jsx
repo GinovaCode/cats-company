@@ -13,7 +13,7 @@ import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag
 import ChatComposer from '../widgets/chat-composer';
 import HistoryLoadingState from '../widgets/history-loading-state';
 import { ConversationForkNotice } from '../widgets/conversation-fork';
-import { canForkConversation, forkComposerNotice } from '../utils/conversation-fork';
+import { canForkConversation, forkAnchorMessageId, forkComposerNotice } from '../utils/conversation-fork';
 import PublicationRepairPanel from '../widgets/skillhub-publication-repair-panel';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import CommandPalette, { commandMatchesDraft } from '../widgets/command-palette';
@@ -5095,8 +5095,8 @@ export default function MessagesView({
     topic, userId: user.uid, agents: availableAgents,
     group: String(groupInfo?.id) === String(groupId) ? groupInfo : null, members,
   });
-  const createConversationFork = useCallback(() => {
-    void conversationFork.create({ newRequest: true });
+  const createConversationFork = useCallback((untilMessageId = 0) => {
+    void conversationFork.create({ newRequest: true, untilMessageId });
   }, [conversationFork.create]);
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -7003,6 +7003,7 @@ export default function MessagesView({
                   : undefined}
                 onCreateConversationFork={forkEligible && !conversationShareMode ? createConversationFork : undefined}
                 conversationForkDisabled={conversationFork.busy || conversationFork.operation?.state === 'pending'}
+                conversationForkAnchorId={forkAnchorMessageId(group)}
                 showThinking={showThinking}
                 isConsecutive={showThinking || liquidConversation
                   ? group.isConsecutive
