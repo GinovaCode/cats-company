@@ -158,6 +158,22 @@ func TestPublicationDescriptionReleaseCommitPairedCloud(t *testing.T) {
 		"authorizedAt": flowDB.intent.RequestedAt.Add(time.Second).Format(time.RFC3339Nano)})
 	ports := publicationDescriptionReleasePorts{publicationDescriptionContinuationPorts: publicationDescriptionContinuationPorts{
 		VerifySource: func(context.Context, store.SkillHubPublicationDescriptionApplication) error { return nil },
+		// The Cloud fixture has already completed and retained this application.
+		// Continue must still receive the full trusted adapter set because the
+		// release flow revalidates an existing result before authorization.
+		DeriveAndRetain: func(_ context.Context, app store.SkillHubPublicationDescriptionApplication) (store.SkillHubPublicationDescriptionApplicationResult, error) {
+			if app.Result == nil {
+				return store.SkillHubPublicationDescriptionApplicationResult{}, store.ErrSkillHubPublicationConflict
+			}
+			return *app.Result, nil
+		},
+		ReadValidationReport: func(_ context.Context, app store.SkillHubPublicationDescriptionApplication) (*PublicationValidationReport, error) {
+			report := descriptionDerivedReport(app)
+			return &report, nil
+		},
+		ReadRetainedCopy: func(context.Context, store.SkillHubPublicationDescriptionApplication) ([]byte, error) {
+			return []byte(ready.DerivedRawJson), nil
+		},
 	},
 		PlanRetainedCopy: client.PlanRetainedCopy,
 		AuthorizeCloud: func(ctx context.Context, app store.SkillHubPublicationDescriptionApplication, intent store.SkillHubPublicationDescriptionReleaseIntent) (*publicationDescriptionCloudReleasePermit, error) {
