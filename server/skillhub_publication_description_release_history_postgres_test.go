@@ -108,8 +108,29 @@ func verifyDescriptionReleaseHistoryPostgres(t *testing.T, db *postgres.Adapter,
 		store.SkillHubPublicationDescriptionReleaseIntent, publicationDescriptionCloudReleasePermit) (*publicationDescriptionCloudReleaseStatus, error) {
 		return &status, nil
 	}}
-	if _, err := recordConfirmedPublicationDescriptionReleaseTerminal(ctx, db, actor, id, ports); err != nil {
-		t.Fatal("record result", err)
+	w := &PublicationDescriptionReconciler{enabled: true, scope: store.SkillHubPublicationCancellationScope{Issuer: in.Receipt.Query.Issuer, Audience: in.Receipt.Query.Audience}, ledger: db, ports: ports}
+	// The real persistent scheduler observes progress without producing a
+	// terminal, then a reconstructed worker records only the peer terminal.
+	status.State, status.Result = "committing", nil
+	if err := w.RunOnce(ctx); err != nil {
+		t.Fatal("progress reconciliation", err)
+	}
+	if !strings.Contains(string(call(actor, 200)), `"stage":"not_recorded"`) {
+		t.Fatal("progress fabricated terminal")
+	}
+	if _, err := sqlDB.Exec(`UPDATE skillhub_publication_description_reconciles SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE application_id=$1`, c.Application.ID); err != nil {
+		t.Fatal(err)
+	}
+	status.State = "published"
+	status.Result = &PublicationCommitCloudResult{SkillID: target.SkillID, Version: target.Version, PublishedAt: target.ReleaseAt,
+		PackageID: "pkg_12345678-1234-4123-8123-123456789abc", Checksum: strings.Repeat("a", 64)}
+	w = &PublicationDescriptionReconciler{enabled: true, scope: w.scope, ledger: reopen(), ports: ports}
+	if err := w.RunOnce(ctx); err != nil {
+		t.Fatal("terminal reconciliation", err)
+	}
+	var reconcileState string
+	if err := sqlDB.QueryRow(`SELECT state FROM skillhub_publication_description_reconciles WHERE application_id=$1`, c.Application.ID).Scan(&reconcileState); err != nil || reconcileState != "recorded" {
+		t.Fatal("terminal scheduler settlement", reconcileState, err)
 	}
 	// Reconstruct both adapter and handler, not an in-memory copy of the result.
 	current.Store(NewSkillHubPublicationReadHandlerFromEnv(reopen()))
@@ -145,5 +166,5 @@ func verifyDescriptionReleaseHistoryPostgres(t *testing.T, db *postgres.Adapter,
 	if counts() != before {
 		t.Fatal("denied history read mutated publication state")
 	}
-	t.Log("real JWT/HTTPS/PostgreSQL derived history: not_recorded, durable published result after adapter/handler reconstruction, Bot transfer/offline keeps original publisher history, new Owner/disabled publisher denied, read-only row counts and cancellation fence preserved; synthetic Cloud/Runtime, no paid model or real publication")
+	t.Log("real JWT/HTTPS/PostgreSQL derived history and reconciliation: committing remains not_recorded, reconstructed worker records durable published result, reconstructed handler recovers history, Bot transfer/offline keeps original publisher history, new Owner/disabled publisher denied, read-only row counts and cancellation fence preserved; synthetic Cloud/Runtime, no paid model or real publication")
 }

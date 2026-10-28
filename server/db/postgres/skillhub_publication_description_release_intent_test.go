@@ -166,5 +166,5 @@ func descriptionReleasePermitMigration(t *testing.T) string {
 		t.Fatal(err)
 	}
 	// Roll back later FK dependants first, without changing applied 000061.
-	return descriptionReleaseTerminalMigration(t, "down") + string(b)
+	return descriptionReconcileMigration(t, "down") + descriptionReleaseTerminalMigration(t, "down") + string(b)
 }
