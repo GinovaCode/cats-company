@@ -132,6 +132,13 @@ path. An idempotent replay can also return a terminal `published` or
 error alone does not mean publication is still in progress. Production
 activation and user-facing wiring are later steps.
 
+The mandatory paired contract is run with
+`node scripts/test-publication-description-commit-paired.mjs`. It pins the
+reviewed Cloud commit, requires a real PostgreSQL DSN, and exercises the
+actual Cloud permit/admission handler with this CatsCo client/coordinator.
+The fixture is synthetic and does not publish a user Skill or enable any
+production gate.
+
 The strict `scripts/test-publication-description-plan-paired.mjs` runner pins
 Cloud's reviewed planner revision and requires a real PostgreSQL DSN; missing
 dependencies or any skipped case fail. It pairs actual Cloud intake, retention,
