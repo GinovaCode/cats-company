@@ -40,6 +40,7 @@ type PublicationDescriptionDerivationClientConfig struct {
 	PlanEnabled             bool
 	ReleaseAuthorizeEnabled bool
 	ReleaseCommitEnabled    bool
+	ReleaseStatusEnabled    bool
 	URL                     string
 	Issuer                  string
 	Audience                string
@@ -55,6 +56,7 @@ type PublicationDescriptionDerivationClient struct {
 	planEnabled             bool
 	releaseAuthorizeEnabled bool
 	releaseCommitEnabled    bool
+	releaseStatusEnabled    bool
 	planActive              atomic.Int32
 	endpoint                *url.URL
 	secret                  string
@@ -95,7 +97,7 @@ func NewPublicationDescriptionDerivationClient(cfg PublicationDescriptionDerivat
 	client.Timeout = cfg.Timeout
 	return &PublicationDescriptionDerivationClient{enabled: true, readEnabled: cfg.ReadEnabled, validationEnabled: cfg.ValidationEnabled,
 		planEnabled: cfg.PlanEnabled, releaseAuthorizeEnabled: cfg.ReleaseAuthorizeEnabled,
-		releaseCommitEnabled: cfg.ReleaseCommitEnabled, endpoint: endpoint,
+		releaseCommitEnabled: cfg.ReleaseCommitEnabled, releaseStatusEnabled: cfg.ReleaseStatusEnabled, endpoint: endpoint,
 		secret: cfg.PeerSecret, issuer: cfg.Issuer, audience: cfg.Audience, client: client}, nil
 }
 
@@ -120,6 +122,7 @@ func NewPublicationDescriptionDerivationClientFromEnv() (*PublicationDescription
 		PlanEnabled:             strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_PLAN_ENABLED")) == "1",
 		ReleaseAuthorizeEnabled: strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_AUTHORIZE_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_AUTHORIZE_ENABLED")) == "1",
 		ReleaseCommitEnabled:    strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_COMMIT_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_COMMIT_ENABLED")) == "1",
+		ReleaseStatusEnabled:    strings.EqualFold(strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_STATUS_ENABLED")), "true") || strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_STATUS_ENABLED")) == "1",
 		URL:                     strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_URL")),
 		Issuer:                  strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_ISSUER")),
 		Audience:                strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_DERIVATION_AUDIENCE")),
