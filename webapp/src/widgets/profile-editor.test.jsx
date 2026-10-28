@@ -149,6 +149,18 @@ describe('ProfileEditor appearance settings', () => {
     expect(onOpenFeedback).toHaveBeenCalledTimes(1);
   });
 
+  it('opens the onboarding guide from mobile settings and closes settings first', async () => {
+    const onOpenOnboardingGuide = vi.fn();
+    const onClose = vi.fn();
+    await renderEditor({ onOpenOnboardingGuide, onClose });
+    const guide = [...container.querySelectorAll('.oc-profile-mobile-home button')].find(button => button.textContent.includes('新手指引'));
+    expect(guide).toBeTruthy();
+    await act(async () => Simulate.click(guide));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onOpenOnboardingGuide).toHaveBeenCalledTimes(1);
+    expect(onClose.mock.invocationCallOrder[0]).toBeLessThan(onOpenOnboardingGuide.mock.invocationCallOrder[0]);
+  });
+
   it('opens password verification instead of selecting a locked liquid theme', async () => {
     const onThemeChange = vi.fn();
     const onUnlockLiquidTheme = vi.fn().mockResolvedValue({ ok: true });

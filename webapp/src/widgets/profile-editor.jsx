@@ -11,6 +11,7 @@ import useDialogBehavior from '../utils/use-dialog-behavior';
 import {
   ArrowLeft,
   BellRing,
+  BookOpen,
   BrainCircuit,
   Check,
   ChevronRight,
@@ -61,6 +62,7 @@ export default function ProfileEditor({
   onOpenFeedback,
   onOpenDownload,
   onOpenDesktopConnect,
+  onOpenOnboardingGuide,
   onOpenAgentManager,
   onAddAssistant,
   onLogout,
@@ -282,10 +284,17 @@ export default function ProfileEditor({
               </div>
             </section>
 
-            {(onOpenDesktopConnect || onOpenDownload || onOpenFeedback) && (
+            {(onOpenDesktopConnect || onOpenDownload || onOpenFeedback || onOpenOnboardingGuide) && (
               <section className="oc-profile-mobile-home-section" aria-labelledby="mobile-settings-support-title">
                 <h4 id="mobile-settings-support-title">连接与支持</h4>
                 <div className="oc-profile-mobile-home-card">
+                  {onOpenOnboardingGuide && (
+                    <button type="button" onClick={() => openMobileDestination(onOpenOnboardingGuide)}>
+                      <span className="oc-profile-mobile-home-icon" aria-hidden="true"><BookOpen size={24} /></span>
+                      <span>新手指引</span>
+                      <ChevronRight size={21} aria-hidden="true" />
+                    </button>
+                  )}
                   {onOpenDesktopConnect && (
                     <button type="button" onClick={() => openMobileDestination(onOpenDesktopConnect)}>
                       <span className="oc-profile-mobile-home-icon" aria-hidden="true"><Laptop size={24} /></span>

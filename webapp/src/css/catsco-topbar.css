@@ -57,7 +57,7 @@
 .v3-model-menu-chevron {
   flex: 0 0 auto;
   color: var(--cc-muted);
-  transition: transform 140ms ease;
+  transition: transform var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-model-status-button[aria-expanded='true'] .v3-model-menu-chevron {
@@ -66,8 +66,8 @@
 
 .v3-model-switch-spinner {
   flex: 0 0 auto;
-  color: var(--cc-accent);
-  animation: v3-model-spin 850ms linear infinite;
+  color: var(--cc-text-secondary);
+  animation: v3-model-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
 }
 
 @keyframes v3-model-spin {
@@ -181,18 +181,12 @@
 .v3-model-reasoning-item:hover,
 .v3-model-reasoning-item:focus-visible {
   outline: none;
-  background: color-mix(in srgb, var(--cc-accent) 9%, transparent);
+  background: var(--cc-batch-hover-bg);
 }
 
 .v3-model-menu-item.selected,
 .v3-model-reasoning-item.selected {
   color: var(--cc-accent-text);
-  background: transparent;
-}
-
-.v3-model-menu-item.selected:hover,
-.v3-model-reasoning-item.selected:hover {
-  background: var(--cc-hover);
 }
 
 .v3-model-menu-item:disabled,
@@ -381,7 +375,7 @@
   color: var(--cc-text);
   box-shadow: 0 12px 30px color-mix(in srgb, #000 22%, transparent), 0 2px 8px color-mix(in srgb, #000 10%, transparent);
   transform-origin: top center;
-  animation: cc-select-menu-in 120ms ease-out;
+  animation: cc-select-menu-in var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-custom-model-select-options.is-top {
@@ -389,7 +383,7 @@
 }
 
 @keyframes cc-select-menu-in {
-  from { opacity: 0; transform: translateY(-2px); }
+  from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -467,7 +461,7 @@
 .v3-custom-model-select-chevron {
   flex: 0 0 auto;
   color: var(--cc-muted);
-  transition: color 140ms ease, transform 140ms ease;
+  transition: color var(--cc-motion-enter) var(--cc-motion-ease), transform var(--cc-motion-enter) var(--cc-motion-ease);
 }
 
 .v3-custom-model-select-trigger[aria-expanded='true'] .v3-custom-model-select-chevron {
@@ -479,6 +473,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .v3-model-switch-spinner { animation: none; }
+  .v3-model-menu-chevron { transition: none; }
   .v3-custom-model-select-options {
     animation: none;
   }
@@ -1783,8 +1779,14 @@
   text-align: center;
 }
 
+.v3-service-agents-header-actions button.is-spinning { animation: none; }
+
 .v3-service-agents-header-actions button.is-spinning svg {
-  animation: v3-service-agents-spin 0.9s linear infinite;
+  animation: v3-service-agents-spin var(--cc-control-spin-cycle, 900ms) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-service-agents-header-actions button.is-spinning svg { animation: none; }
 }
 
 @keyframes v3-service-agents-spin {

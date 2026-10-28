@@ -6809,6 +6809,7 @@ export default function MessagesView({
                 </button>
               </header>
             )}
+            {!historyLoaded && <HistoryLoadingState />}
             <div className="v3-timeline-inner" data-loading-content="">
               {conversationShareMode && (
                 <section className="cc-conversation-share-toolbar" aria-label="对话分享图选择">
@@ -6845,10 +6846,6 @@ export default function MessagesView({
               {historyLoaded && <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>}
-
-        {!historyLoaded && (
-          <HistoryLoadingState />
-        )}
 
         {historyLoaded && historyError && messages.length === 0 && (
           <div className="v3-history-state" role="alert">
