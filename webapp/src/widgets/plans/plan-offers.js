@@ -90,7 +90,12 @@ export function resolvePlanOffers(offers, catalog, enabled = true) {
 // catalogue's presentation too, so old prices never inherit draft quota claims.
 export function salePlansForOffers(offers, catalog, enabled = true) {
   const resolved = resolvePlanOffers(offers, catalog, enabled);
-  const fromCatalog = plan => ({ ...plan, useCatalogPresentation: true, ...(!enabled ? { catalogUnavailable: true } : {}) });
+  const fromCatalog = plan => {
+    // Closing sales must not discard approved copy for an otherwise exact
+    // product match. Different prices and legacy products keep catalogue copy.
+    const presented = resolvePlanOffers(offers, [plan]).find(item => !item.catalogUnavailable);
+    return { ...(presented || plan), useCatalogPresentation: !presented, ...(!enabled ? { catalogUnavailable: true } : {}) };
+  };
   if (catalog.length && !resolved.some(plan => !plan.catalogUnavailable)) {
     return catalog.map(fromCatalog);
   }

@@ -10,6 +10,7 @@ export default function CatsCoPlansModal(props) {
     {...props}
     showFreePlan={false}
     planOffers={personalPlanOffers}
+    personalPlanExcludedSlugs={[teamPlanOffer.slug]}
     planPresentationOverrides={planPresentationOverrides}
     planChooserNote={tokenEstimateNote}
     enterprisePlanContent={({ onSelectPlan, catalogPlans, catalogEnabled }) => <>

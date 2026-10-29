@@ -250,12 +250,55 @@ describe('RelayAccessModal commercial rollout', () => {
   it('keeps unmatched draft offers blocked when there is no server catalogue', async () => {
     await renderIntegratedPlans();
     await openPlanChooser();
-    // With no catalogue there is no current commercial plan, so the panel falls
-    // back to the plain layout and prints the currency inline.
-    expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['¥59', '¥99', '¥159']);
+    // Layout stays identical to the approved preview even before sales open.
+    expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['59', '99', '159']);
+    expect(container.querySelector('.relay-access-plan-list-chooser.current-catalog')).not.toBeNull();
+    expect(container.querySelectorAll('.relay-access-plan-row.official.has-highlights')).toHaveLength(3);
     await clickButton('获取 CatsCo 个人版');
     expect(findButton('暂未开放购买').disabled).toBe(true);
     await clickButton('暂未开放购买');
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('keeps the complete live catalogue split into three personal cards and the enterprise team offer', async () => {
+    const plans = [...personalPlanOffers, teamPlanOffer].map((plan, index) => ({ ...plan, id: 890 + index }));
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
+    api.createCommercialOrder.mockResolvedValue({ order: null });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    const personal = container.querySelector('#relay-access-personal-plan-panel');
+    expect(personal.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
+    expect([...personal.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['5 亿Token', '约 10 亿Token', '约 20 亿Token']);
+    expect(personal.textContent).not.toContain('团队版');
+    await clickButton('企业');
+    expect(container.querySelectorAll('.enterprise-team')).toHaveLength(1);
+    expect(container.textContent).toContain('最多 10 人');
+    expect(container.textContent).toContain('8 核 CPU · 16 GB 内存');
+    expect(container.querySelector('.enterprise-reference-relief')).not.toBeNull();
+    await clickButton('获取 CatsCo 团队版');
+    expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
+    await clickButton('确认购买');
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(893, 'test', expect.any(String), expect.any(Object));
+  });
+
+  it('retains the approved presentation when the catalogue is gated or has no tier metadata', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: false, channels: [], plans: personalPlanOffers.map((plan, index) => ({ ...plan, id: 890 + index, plan_tier: undefined })) });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    expect(container.querySelectorAll('.relay-access-plan-row.official.has-highlights')).toHaveLength(3);
+    await clickButton('获取 CatsCo 基础版');
+    expect(findButton('暂未开放购买').disabled).toBe(true);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('keeps personal drafts visible when only the team product is on sale', async () => {
+    api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans: [{ ...teamPlanOffer, id: 893 }] });
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    expect([...container.querySelectorAll('.relay-access-plan-price > strong')].map(el => el.textContent)).toEqual(['59', '99', '159']);
+    expect(container.querySelector('#relay-access-personal-plan-panel').textContent).not.toContain('团队版');
+    await clickButton('获取 CatsCo 基础版');
+    expect(findButton('暂未开放购买').disabled).toBe(true);
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 

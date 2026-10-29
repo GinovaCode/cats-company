@@ -22,7 +22,7 @@ html[data-theme="liquid"] .relay-access-plan-modal { --plans-canvas: #161616; --
 .relay-access-plan-modal-header h3 { margin: 0; font-size: 28px; }
 .relay-access-plan-modal-header > button { position: absolute; top: 24px; right: 24px; }
 .relay-access-plan-modal-body { flex: 1; padding: 12px clamp(24px, 4vw, 64px) 40px; background: var(--plans-canvas); }
-.relay-access-plan-list.current-catalog.relay-access-plan-list-chooser { max-width: 1320px; margin: 28px auto 0; column-gap: 20px; }
+.relay-access-plan-list.current-catalog.relay-access-plan-list-chooser { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 1320px; margin: 28px auto 0; column-gap: 20px; }
 .relay-access-plan-audience-tabs { background: var(--cc-control-surface); }
 .relay-access-plan-audience-tabs > button { color: var(--cc-text-secondary); }
 .relay-access-plan-audience-tabs > button.active { background: var(--cc-panel); color: var(--cc-text); }
