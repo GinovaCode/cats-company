@@ -106,7 +106,10 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
           && (error && operation?.state !== 'ready' && operation?.state !== 'failed' || operation?.state === 'pending') && (
           <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create()}><RefreshCw size={15} aria-hidden="true" />重试复制</button>
         )}
-        {fork.cancel && (operation?.state === 'pending' || error) && (
+        {/* Cancelling acts on a request that exists. An anchor verdict already
+            ended this attempt and dropped the stored request, so cancel would send
+            nothing — the same dead control as retry, only quieter. */}
+        {fork.cancel && (operation?.state === 'pending' || (error && !isForkAnchorError(error))) && (
           <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.cancel()}>
             <X size={15} aria-hidden="true" />取消复制
           </button>

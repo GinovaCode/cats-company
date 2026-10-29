@@ -3,6 +3,7 @@ package sessionfork
 import (
 	"database/sql"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -131,32 +132,56 @@ func TestCopySuffix(t *testing.T) {
 	}
 }
 
-// escape-free: the highest existing suffix wins, so siblings never collide even
-// when some are deleted and re-created.
+// nextCopyTitle is the function that produces the stored name, so this calls it
+// rather than repeating its arithmetic: the arithmetic being right proves nothing
+// about the name that actually reaches the column.
 func TestNextCopyTitle(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		base     string
-		existing []string
-		want     string
+		name string
+		base string
+		next int64
+		want string
 	}{
-		{"first copy", "周报", nil, "周报(1)"},
-		{"second copy", "周报", []string{"周报(1)"}, "周报(2)"},
-		{"fills the gap after the highest", "周报", []string{"周报(1)", "周报(3)"}, "周报(4)"},
-		{"ignores other conversations", "周报", []string{"日报(1)", "周报 归档"}, "周报(1)"},
-		{"takes a name ending in (n) whole", "周报(1)", []string{"周报(1)(1)"}, "周报(1)(2)"},
-		{"ignores a malformed suffix", "周报", []string{"周报(一)"}, "周报(1)"},
+		{"first copy", "周报", 1, "周报(1)"},
+		{"second copy", "周报", 2, "周报(2)"},
+		{"wide suffix", "周报", 42, "周报(42)"},
+		{"takes a name ending in (n) whole", "周报(1)", 2, "周报(1)(2)"},
 	} {
-		// existing names are matched against the base the same way copyTitle does
-		taken := int64(0)
-		for _, name := range tc.existing {
-			if suffix, ok := copySuffix(tc.base, name); ok && suffix > taken {
-				taken = suffix
-			}
-		}
-		got := tc.base + "(" + strconv.FormatInt(taken+1, 10) + ")"
-		if got != tc.want {
+		if got := nextCopyTitle(tc.base, tc.next); got != tc.want {
 			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A source name may already fill the column. Appending a suffix without trimming
+// would overflow groups.name/topics.name (VARCHAR(128)); MySQL runs in strict mode
+// here, so the insert would fail and the user would get a generic 500 instead of a
+// copy. Trimming must be by rune, or a multi-byte character gets cut in half.
+func TestNextCopyTitleRespectsColumnWidth(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		baseRunes int
+		next      int64
+		wantRunes int
+	}{
+		{"a short name is untouched", 10, 1, 13},
+		{"exactly fills the column", 125, 1, 128},
+		{"one over", 126, 1, 128},
+		{"a full-width name", 128, 1, 128},
+		{"a long suffix leaves less room", 128, 100, 128},
+	} {
+		base := strings.Repeat("周", tc.baseRunes)
+		got := nextCopyTitle(base, tc.next)
+		if n := len([]rune(got)); n != tc.wantRunes {
+			t.Fatalf("%s: %d runes, want %d (%q)", tc.name, n, tc.wantRunes, got)
+		}
+		if n := len([]rune(got)); n > copyNameLimit {
+			t.Fatalf("%s: %d runes exceeds the column width %d", tc.name, n, copyNameLimit)
+		}
+		// The suffix has to survive the trim, or the name no longer identifies a copy.
+		wantSuffix := "(" + strconv.FormatInt(tc.next, 10) + ")"
+		if !strings.HasSuffix(got, wantSuffix) {
+			t.Fatalf("%s: %q lost its suffix %q", tc.name, got, wantSuffix)
 		}
 	}
 }

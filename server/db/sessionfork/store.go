@@ -702,7 +702,28 @@ func (s SQLStore) copyTitle(ctx context.Context, tx *sql.Tx, req types.SessionFo
 	if err = rows.Err(); err != nil {
 		return "", err
 	}
-	return base + "(" + strconv.FormatInt(taken+1, 10) + ")", nil
+	return nextCopyTitle(base, taken+1), nil
+}
+
+// copyNameLimit is the width of groups.name and topics.name (VARCHAR(128)).
+const copyNameLimit = 128
+
+// nextCopyTitle builds 「base(n)」, keeping the result inside the column width.
+//
+// The suffix has to fit: a source name may already use the whole column, and
+// appending "(1)" to it would overflow. MySQL runs in strict mode here, so the
+// insert would fail and the user would see a generic 500 instead of a copy. The
+// base is therefore truncated by runes, not bytes, so a multi-byte character is
+// never cut in half.
+//
+// next is the suffix to use, already resolved from the names that exist.
+func nextCopyTitle(base string, next int64) string {
+	suffix := "(" + strconv.FormatInt(next, 10) + ")"
+	runes := []rune(base)
+	if room := copyNameLimit - len([]rune(suffix)); len(runes) > room {
+		runes = runes[:room]
+	}
+	return string(runes) + suffix
 }
 
 // copySuffix reports the n in "base(n)" and whether name has that shape at all.
