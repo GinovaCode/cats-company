@@ -103,23 +103,6 @@ describe('DesktopConnectModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  test('places computers above the actions without exposing tool capabilities', async () => {
-    api.getDevices.mockResolvedValue({ devices: [{
-      deviceId: 'office-pc', displayName: 'Office PC', runtimeRole: 'desktop', routable: true,
-      capabilities: ['read_file', 'execute_shell'],
-    }] });
-    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
-    const devices = container.querySelector('.catsco-device-section');
-    const actions = container.querySelector('.catsco-connect-actions');
-    expect(devices.textContent).toContain('我的电脑');
-    expect(devices.textContent).toContain('Office PC');
-    expect(devices.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(container.querySelector('[aria-label="设备能力"]')).toBeNull();
-    expect(container.textContent).not.toContain('read_file');
-    expect(container.textContent).not.toContain('execute_shell');
-    expect(devices.querySelector('[aria-label="解绑设备 Office PC"]')).not.toBeNull();
-  });
-
   test.each(['p2p_38_42', 'grp_38'])('keeps one conversation device list during multi-desktop connection and reselection (%s)', async topicId => {
     vi.useFakeTimers();
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
@@ -180,6 +163,7 @@ describe('DesktopConnectModal', () => {
     expect(container.textContent).not.toContain('execute_shell');
     expect(devices.querySelector('[aria-label="解绑设备 Office PC"]')).not.toBeNull();
   });
+
   test('loads computers before showing a list or empty state and preserves it during refresh', async () => {
     vi.useFakeTimers();
     let finish;
