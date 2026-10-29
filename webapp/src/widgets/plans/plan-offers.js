@@ -1,7 +1,7 @@
 export const personalPlanOffers = [
   { id: -59, slug: 'catsco-basic', name: '基础版', description: '适合提炼资料重点、起草邮件和文案。', price_fen: 5900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
-  { id: 21, slug: 'catsco-personal', name: '个人版', description: '适合每天整理文件、汇总数据和处理待办。', price_fen: 9900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
-  { id: 22, slug: 'catsco-pro', name: '专业版', description: '适合多项工作并行、持续推进复杂项目。', price_fen: 15900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
+  { id: -99, slug: 'catsco-standard', name: '个人版', description: '适合每天整理文件、汇总数据和处理待办。', price_fen: 9900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
+  { id: -159, slug: 'catsco-advanced', name: '专业版', description: '适合多项工作并行、持续推进复杂项目。', price_fen: 15900, currency: 'CNY', sale_state: 'public', duration_days: 30 },
 ];
 
 const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，期间续费可恢复。';
@@ -21,7 +21,7 @@ export const planPresentationOverrides = {
       '任务进度与执行过程查看',
     ],
   },
-  'catsco-personal': {
+  'catsco-standard': {
     kicker: 'CATSCO PERSONAL', tagline: '日常工作自动化', actionLabel: '获取 CatsCo 个人版',
     highlights: [
       { kind: 'capacity', label: 'Token 额度', value: '约 10 亿', unit: 'Token' },
@@ -37,7 +37,7 @@ export const planPresentationOverrides = {
     ],
     note: cloudNote,
   },
-  'catsco-pro': {
+  'catsco-advanced': {
     kicker: 'CATSCO PRO', tagline: '高频多任务协作', actionLabel: '获取 CatsCo 专业版', pro: true,
     highlights: [
       { kind: 'capacity', label: 'Token 额度', value: '约 20 亿', unit: 'Token' },
@@ -55,13 +55,21 @@ export const planPresentationOverrides = {
   },
 };
 
-export const teamPlanOffer = { id: -599, slug: 'catsco-team-monthly', name: '团队版', price_fen: 59900, currency: 'CNY', duration_days: 30 };
+export const teamPlanOffer = { id: -599, slug: 'catsco-team', name: '团队版', price_fen: 59900, currency: 'CNY', duration_days: 30 };
 export const tokenEstimateNote = 'Token 数为估算值，实际可用量随所选模型、输入输出比例、缓存命中情况及模型价格变化。';
+
+export function commercialPlanTier(plan) {
+  return Number.isSafeInteger(plan?.tier) && plan.tier >= 0 ? plan.tier : null;
+}
+
+function visibleCatalogPlan(plan) {
+  return !plan.archived_at && !['hidden', 'archived'].includes(plan.sale_state);
+}
 
 // Only exact catalogue matches can enter checkout. Display drafts never replace server prices.
 export function resolvePlanOffers(offers, catalog, enabled = true) {
   return offers.map(offer => {
-    const match = enabled && catalog.find(plan => Number(plan.id) > 0 && plan.slug === offer.slug
+    const match = enabled && catalog.find(plan => visibleCatalogPlan(plan) && Number(plan.id) > 0 && commercialPlanTier(plan) > 0 && plan.slug === offer.slug
       && Number(plan.price_fen) === offer.price_fen
       && Number(plan.duration_days || 30) === offer.duration_days
       && (plan.currency || 'CNY') === offer.currency);
@@ -73,14 +81,16 @@ export function resolvePlanOffers(offers, catalog, enabled = true) {
 // A staged offer must not hide a product the server still sells. Use the
 // catalogue's presentation too, so old prices never inherit draft quota claims.
 export function salePlansForOffers(offers, catalog, enabled = true) {
-  const resolved = resolvePlanOffers(offers, catalog, enabled);
-  const fromCatalog = plan => ({ ...plan, useCatalogPresentation: true, ...(!enabled ? { catalogUnavailable: true } : {}) });
-  if (catalog.length && !resolved.some(plan => !plan.catalogUnavailable)) {
-    return catalog.map(fromCatalog);
+  const visibleCatalog = catalog.filter(visibleCatalogPlan);
+  const resolved = resolvePlanOffers(offers, visibleCatalog, enabled);
+  const fromCatalog = plan => ({ ...plan, useCatalogPresentation: true,
+    ...(!enabled || (offers.some(offer => offer.slug === plan.slug) && !(commercialPlanTier(plan) > 0)) ? { catalogUnavailable: true } : {}) });
+  if (visibleCatalog.length && !resolved.some(plan => !plan.catalogUnavailable)) {
+    return visibleCatalog.map(fromCatalog);
   }
-  const remaining = new Set(catalog);
+  const remaining = new Set(visibleCatalog);
   const plans = resolved.flatMap(plan => {
-    const sameSlug = catalog.filter(item => item.slug === plan.slug);
+    const sameSlug = visibleCatalog.filter(item => item.slug === plan.slug);
     sameSlug.forEach(item => remaining.delete(item));
     if (!plan.catalogUnavailable) {
       return [plan, ...sameSlug.filter(item => item.id !== plan.id).map(fromCatalog)];

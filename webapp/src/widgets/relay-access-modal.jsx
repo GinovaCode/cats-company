@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
-import { salePlansForOffers } from './plans/plan-offers';
+import { commercialPlanTier, salePlansForOffers } from './plans/plan-offers';
 import {
   readStorageValue,
   writeStorageValue,
@@ -100,28 +100,33 @@ const FREE_PLAN_PRESENTATION = {
   ],
 };
 
-const CURRENT_COMMERCIAL_PLAN_SLUGS = new Set(['catsco-basic', 'catsco-personal', 'catsco-pro']);
-const COMMERCIAL_PLAN_TIERS = {
-  'catsco-basic': 1,
-  'catsco-personal': 2,
-  'catsco-pro': 3,
-};
-
-function commercialPlanTier(slug) {
-  return COMMERCIAL_PLAN_TIERS[slug] || 0;
-}
-
 function entitlementMatchesPlan(entitlement, plan) {
   if (!entitlement || !plan) return false;
-  if (entitlement.plan_slug && entitlement.plan_slug === plan.slug) return true;
-  return Number(entitlement.plan_id || 0) > 0 && Number(entitlement.plan_id) === Number(plan.id);
+  if (Number(entitlement.plan_id) > 0 && Number(plan.id) > 0) return Number(entitlement.plan_id) === Number(plan.id);
+  return Boolean(entitlement.plan_slug && entitlement.plan_slug === plan.slug);
 }
 
 function activeCommercialPlanTier(entitlements, plans) {
-  return entitlements.reduce((highest, entitlement) => {
-    const matchedPlan = plans.find(plan => entitlementMatchesPlan(entitlement, plan));
-    return Math.max(highest, commercialPlanTier(entitlement.plan_slug || matchedPlan?.slug));
-  }, 0);
+  return entitlements.reduce((state, entitlement) => {
+    const matchedPlan = plans.find(plan => entitlementMatchesPlan(entitlement, plan) && commercialPlanTier(plan) !== null);
+    const tier = commercialPlanTier(entitlement) ?? commercialPlanTier(matchedPlan);
+    return { tier: Math.max(state.tier, tier || 0), unknown: state.unknown || tier === null };
+  }, { tier: 0, unknown: false });
+}
+
+function commercialPlanPurchaseState(plan, entitlements, activeState) {
+  const tier = commercialPlanTier(plan);
+  const isActivePlan = entitlements.some(entitlement => entitlementMatchesPlan(entitlement, plan));
+  const isIncludedPlan = tier > 0 && activeState.tier > tier;
+  const switchUnavailable = !isActivePlan && entitlements.length > 0
+    && (tier === null || activeState.unknown || (tier > 0 && tier === activeState.tier));
+  return {
+    isActivePlan,
+    isIncludedPlan,
+    isUpgradePlan: !isActivePlan && !switchUnavailable && activeState.tier > 0 && tier > activeState.tier,
+    switchUnavailable,
+    purchaseBlocked: isIncludedPlan || switchUnavailable,
+  };
 }
 
 function protocolLabel(protocol) {
@@ -603,13 +608,7 @@ function CommercialPlanCards({
       )}
       {salePlans.map((plan) => {
         const presentation = (!plan.useCatalogPresentation && presentationOverrides[plan.slug]) || commercialPlanPresentation(plan);
-        const planTier = commercialPlanTier(plan.slug);
-        const isActivePlan = planTier > 0
-          ? activeOfficialPlanTier === planTier
-          : activePackages.some(item => entitlementMatchesPlan(item, plan));
-        const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
-        const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
-        const purchaseBlocked = isIncludedPlan;
+        const { isActivePlan, isIncludedPlan, isUpgradePlan, switchUnavailable, purchaseBlocked } = commercialPlanPurchaseState(plan, activePackages, activeOfficialPlanTier);
         const pendingOrder = purchaseBlocked || plan.catalogUnavailable ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
         return (
           <article
@@ -637,7 +636,7 @@ function CommercialPlanCards({
                 disabled={(!paymentChannel && !plan.catalogUnavailable) || Boolean(paymentLoading) || purchaseBlocked}
               >
                 <CreditCard size={15} />
-                {isIncludedPlan ? '已包含' : plan.catalogUnavailable
+                {isIncludedPlan ? '已包含' : switchUnavailable ? '暂不可切换' : plan.catalogUnavailable
                   ? presentation.actionLabel || `获取 CatsCo ${plan.name}`
                   : isActivePlan
                   ? '续费'
@@ -875,8 +874,9 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
       ? salePlansForOffers(planOffers, commercialCatalog.plans, commercialCatalog.enabled === true)
       : commercialCatalog.plans;
     const plan = availablePlans.find((item) => String(item?.slug || '') === slug);
-    const activeTier = activeCommercialPlanTier(activeEntitlements(commercial?.summary), availablePlans);
-    if (plan && commercialPlanTier(plan.slug) > 0 && commercialPlanTier(plan.slug) < activeTier) {
+    const packages = activeEntitlements(commercial?.summary);
+    const activeTier = activeCommercialPlanTier(packages, [...(commercial?.summary?.plans || []), ...availablePlans]);
+    if (plan && commercialPlanPurchaseState(plan, packages, activeTier).purchaseBlocked) {
       setPlanChooserOpen(true);
       return;
     }
@@ -1013,7 +1013,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
-  const hasCurrentCommercialPlans = Boolean(planOffers) || catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
+  const hasCurrentCommercialPlans = Boolean(planOffers) || catalogPlans.some(plan => commercialPlanTier(plan) > 0 || COMMERCIAL_PLAN_PRESENTATION[plan?.slug]);
   const salePlans = planOffers ? salePlansForOffers(planOffers, catalogPlans, commercialCatalog?.enabled === true) : catalogPlans;
   const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
     plan => Number(plan?.duration_days || 30) === 30,
@@ -1021,7 +1021,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
-  const activeOfficialPlanTier = activeCommercialPlanTier(activePackages, salePlans);
+  const activeOfficialPlanTier = activeCommercialPlanTier(activePackages, [...(commercialSummary?.plans || []), ...catalogPlans]);
   const commercialState = commercialAccountState(commercial, activePackages);
   const currentResetInfo = usageResetInfo(currentUsage);
   const currentQuota = currentQuotaDisplay(currentUsage, commercialEnabled);
@@ -1049,16 +1049,13 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
     return true;
   });
   const visibleOrders = showAllOrders ? filteredOrders : filteredOrders.slice(0, 8);
-  const purchaseIsUpgrade = Boolean(
-    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) > activeOfficialPlanTier,
-  );
-  const purchaseIsRenewal = Boolean(
-    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) === activeOfficialPlanTier,
-  );
-  const purchaseIsIncluded = Boolean(purchasePlan && commercialPlanTier(purchasePlan.slug) > 0
-    && commercialPlanTier(purchasePlan.slug) < activeOfficialPlanTier);
+  const purchaseState = purchasePlan ? commercialPlanPurchaseState(purchasePlan, activePackages, activeOfficialPlanTier) : {};
+  const purchaseIsUpgrade = purchaseState.isUpgradePlan;
+  const purchaseIsRenewal = purchaseState.isActivePlan;
+  const purchaseIsIncluded = purchaseState.isIncludedPlan;
+  const purchaseBlocked = purchaseState.purchaseBlocked;
   const purchaseIncludesCloudWorker = Boolean(
-    purchasePlan && CURRENT_COMMERCIAL_PLAN_SLUGS.has(purchasePlan.slug),
+    purchasePlan?.cloud_worker_included === true,
   );
 
   useEffect(() => {
@@ -1135,7 +1132,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const createCommercialOrder = async (plan, paymentWindow = null) => {
-    if (plan.catalogUnavailable || (commercialPlanTier(plan.slug) > 0 && commercialPlanTier(plan.slug) < activeOfficialPlanTier)) return;
+    if (plan.catalogUnavailable || commercialPlanPurchaseState(plan, activePackages, activeOfficialPlanTier).purchaseBlocked) return;
     if (!paymentChannel) {
       setError('支付通道尚未配置。');
       return;
@@ -1194,7 +1191,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const confirmCommercialPurchase = async () => {
-    if (!purchasePlan || purchasePlan.catalogUnavailable || purchaseIsIncluded || !paymentChannel || purchaseSubmittingRef.current) return;
+    if (!purchasePlan || purchasePlan.catalogUnavailable || purchaseBlocked || !paymentChannel || purchaseSubmittingRef.current) return;
     purchaseSubmittingRef.current = true;
     let paymentWindow = null;
     let popupBlocked = false;
@@ -1642,17 +1639,18 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                   <span>{purchaseIsRenewal ? '确认续费' : '确认购买'}</span>
                   <strong>{purchasePlan.name}</strong>
                   <p>{purchaseIsRenewal
-                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；${purchaseIncludesCloudWorker ? '处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；' : ''}不会自动扣款。`
                     : purchaseIsUpgrade
                     ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
                     : `${formatPriceFen(purchasePlan.price_fen)}，每期 ${Number(purchasePlan.duration_days || 30)} 天，不自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
                   {purchasePlan.catalogUnavailable && <p>此套餐暂未开放购买，开放后可在这里完成支付。</p>}
+                  {purchaseState.switchUnavailable && <p>暂时无法确认此套餐与当前权益的切换规则，请稍后重试。</p>}
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
                   <button type="button" className="secondary" onClick={returnFromPurchase} disabled={Boolean(paymentLoading)}>返回</button>
-                  <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading) || purchasePlan.catalogUnavailable || purchaseIsIncluded}>
+                  <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading) || purchasePlan.catalogUnavailable || purchaseBlocked}>
                     <CreditCard size={15} />
-                    {purchaseIsIncluded ? '已包含' : purchasePlan.catalogUnavailable ? '暂未开放购买' : paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
+                    {purchaseIsIncluded ? '已包含' : purchaseBlocked ? '暂不可切换' : purchasePlan.catalogUnavailable ? '暂未开放购买' : paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
                   </button>
                 </div>
               </div>

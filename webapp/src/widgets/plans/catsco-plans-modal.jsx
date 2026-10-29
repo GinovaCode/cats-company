@@ -6,8 +6,10 @@ import { personalPlanOffers, planPresentationOverrides, teamPlanOffer, tokenEsti
 import './plan-chooser.css';
 
 export default function CatsCoPlansModal(props) {
+  const initialPlanSlug = ({ basic: 'catsco-basic', personal: 'catsco-standard', pro: 'catsco-advanced', team: 'catsco-team' })[props.initialPlanSlug] || props.initialPlanSlug;
   return <RelayAccessModal
     {...props}
+    initialPlanSlug={initialPlanSlug}
     showFreePlan={false}
     planOffers={personalPlanOffers}
     planPresentationOverrides={planPresentationOverrides}

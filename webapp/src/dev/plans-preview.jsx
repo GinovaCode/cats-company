@@ -96,7 +96,7 @@ function PlansPreview() {
       </nav>
     </header>
     <main className="plans-preview-empty"><h1>套餐与权益</h1><button onClick={() => show(true)}>打开套餐预览</button></main>
-    {open && <RelayAccessModal key={revision} onClose={() => setOpen(false)} showFreePlan={false} planPresentationOverrides={planPresentationOverrides} planChooserNote={tokenEstimateNote} enterprisePlanContent={enterpriseLayout === 'e' ? ({ onSelectPlan }) => <><EnterpriseTeam onSelectPlan={onSelectPlan} /><EnterpriseReference /></> : null} />}
+    {open && <RelayAccessModal key={revision} onClose={() => setOpen(false)} showFreePlan={false} planOffers={plans} planPresentationOverrides={planPresentationOverrides} planChooserNote={tokenEstimateNote} enterprisePlanContent={enterpriseLayout === 'e' ? ({ onSelectPlan }) => <><EnterpriseTeam onSelectPlan={onSelectPlan} /><EnterpriseReference /></> : null} />}
   </FeedbackProvider>;
 }
 
