@@ -293,8 +293,38 @@ The real JWT/HTTPS/PostgreSQL history contract reconstructs the adapter and
 handler after persisting a terminal, verifies transfer/offline access isolation,
 disabled original-publisher rejection and unchanged publication row counts.
 Cloud result/derivation/report and Runtime source are synthetic test ports; it
-is not real Cloud completion or paid-model/user publishing acceptance. There
-is no browser UI consumer or production gate activation in this slice.
+is not real Cloud completion or paid-model/user publishing acceptance.
+
+### Browser terminal-history consumer
+
+The existing publication report dialog now hosts a separate display-only
+repaired-copy result section, shared by workspace reports and linked repair
+conversations. Opening the dialog first checks capabilities; only explicit
+`descriptionReleaseHistoryReadsEnabled: true` with schemaVersion 1 allows the
+local history GET. Explicit older/disabled capability responses keep the section
+absent. A failed or timed-out capability probe instead shows static uncertainty
+and an explicit retry button; retry probes capability again before any history
+read. It never treats unknown capability as enabled. Browser
+entry references remain disposable hints, not publication or file authority.
+
+Only validated `published` / `publish_failed` local history is terminal.
+`not_recorded` is shown as no final result yet, never as queued/running/success.
+Unknown history is reread 30 seconds after each response while the dialog is
+open and the document visible. Terminal results stop polling; errors drop stale
+evidence, show static uncertainty and require explicit retry, with no alternate
+endpoint, mutation, model call, legacy commit or publish replay. A complete read
+(capability plus history body) has a 15-second browser deadline; header requests
+also have bounded timeouts. Calls do not overlap. Hiding pauses future reads;
+returning visible resumes unknown reads. Closing/unmounting, changing entry or
+auth invalidation cancels requests and suppresses late responses; terminal
+history is not persisted in browser storage.
+
+The section does not replace the original validation report or imply automatic
+repair has been enabled. It does not initiate description confirmation, release
+intent, admission or execution. Existing production gates are unchanged/off.
+Tests cover strict response shape/entry binding, private-field rejection, real
+API GET/auth/cancellation, unknown/terminal/error transitions, stale responses,
+auth changes, response-body deadline, hidden-tab behavior and shared dialog use.
 
 Domain tests cover exact task/draft/application/report binding and earlier-round
 progress. Coordinator tests cover recovery at committed checkpoints, stable

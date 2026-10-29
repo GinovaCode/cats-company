@@ -7,7 +7,8 @@ import PublicationRepairPanel from './skillhub-publication-repair-panel';
 vi.mock('../api', () => ({
   getToken: vi.fn(() => 'session'), getAuthRevision: vi.fn(() => 1),
   isCurrentAuthSession: vi.fn(() => true),
-  api: { getGroupInfo: vi.fn(), getSkillHubPublicationRepairContext: vi.fn() },
+  api: { getGroupInfo: vi.fn(), getSkillHubPublicationRepairContext: vi.fn(),
+    getSkillHubPublicationCapabilities: vi.fn(), getSkillHubPublicationDescriptionReleaseHistory: vi.fn() },
 }));
 const entryRequestId = `pubentry_${'a'.repeat(32)}`;
 const reference = { schemaVersion: 1, entryRequestId, botUid: '42' };
@@ -32,6 +33,7 @@ beforeEach(() => {
     { user_id: 7 }, { user_id: 42, is_bot: true },
   ] });
   api.getSkillHubPublicationRepairContext.mockImplementation(async () => context());
+  api.getSkillHubPublicationCapabilities.mockResolvedValue({ schemaVersion: 1, descriptionReleaseHistoryReadsEnabled: false });
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -58,6 +60,23 @@ it('restores the reference, revalidates membership and safely displays the repor
   expect(dialog.textContent).not.toContain('新建修复对话');
   await act(async () => Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')));
   expect(document.activeElement).toBe(button);
+});
+
+it('reads derived terminal history separately from the original rejection without claiming repair is enabled', async () => {
+  api.getSkillHubPublicationCapabilities.mockResolvedValue({ schemaVersion: 1, descriptionReleaseHistoryReadsEnabled: true });
+  api.getSkillHubPublicationDescriptionReleaseHistory.mockResolvedValue({ schemaVersion: 1, entryRequestId,
+    descriptionReleaseHistory: { stage: 'published', recordedAt: '2026-10-29T04:00:00Z',
+      result: { skillId: 'author/repaired', version: '1.0.1', publishedAt: '2026-10-29T04:00:00Z' } } });
+  await render();
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).not.toHaveBeenCalled();
+  await act(async () => Simulate.click(container.querySelector('button')));
+  const dialog = document.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain('已发布：author/repaired · 1.0.1');
+  expect(dialog.textContent).toContain('metadata.description_missing');
+  expect(container.textContent).toContain('尚未启动自动修复');
+  const signal = api.getSkillHubPublicationDescriptionReleaseHistory.mock.calls[0][1].signal;
+  await act(async () => Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')));
+  expect(signal.aborted).toBe(true);
 });
 
 it.each([

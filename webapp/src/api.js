@@ -996,6 +996,13 @@ export const api = {
     undefined,
     options,
   ),
+  getSkillHubPublicationDescriptionReleaseHistory: (entryRequestId, options = {}) => {
+    if (!/^pubentry_[a-f0-9]{32}$/.test(entryRequestId || '')) {
+      return Promise.reject(new Error('发布记录标识无效。'));
+    }
+    return request('GET', `/api/skillhub/publications/entries/${entryRequestId}/description-release-history`,
+      undefined, { timeoutMs: 7000, ...options });
+  },
   planSkillHubPublicationCommit: (entryRequestId, confirmVersionPublish, options = {}) => request(
     'POST',
     `/api/skillhub/publications/commit/entries/${encodeURIComponent(entryRequestId)}/plan`,
