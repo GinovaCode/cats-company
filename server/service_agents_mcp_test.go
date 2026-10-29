@@ -38,7 +38,9 @@ type fakeServiceAgentStore struct {
 	inactive             map[string]bool                     // slug → 已下架（SetServiceAgentState）
 	autoCompleteAfter    time.Duration
 	autoAwaitAfter       time.Duration // 到点把 run 收尾为 awaiting_input（返问同步路径测试用）
-	nextID               int64
+	// usersByID 是发布者显示名的来源（目录「谁分享的」用）。
+	usersByID map[int64]*types.User
+	nextID    int64
 }
 
 // fakePackageVersion 模拟 service_agent_versions 的一行（内容寻址 hash + 版本号）。
@@ -111,6 +113,19 @@ func (f *fakeServiceAgentStore) GetServiceAgentPackage(_ context.Context, packag
 		return nil, store.ErrServicePackageNotFound
 	}
 	return bundle, nil
+}
+
+// GetUsersByIDs 模拟真实 adapter 的批量用户查询（目录「谁分享的」用）。
+func (f *fakeServiceAgentStore) GetUsersByIDs(ids []int64) (map[int64]*types.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[int64]*types.User, len(ids))
+	for _, id := range ids {
+		if user, ok := f.usersByID[id]; ok {
+			out[id] = user
+		}
+	}
+	return out, nil
 }
 
 // ClaimServiceAgentOwnership 内存实现：不存在则建；owner 不同按 internal / 他人占用区分。
@@ -479,18 +494,48 @@ func (f *fakeServiceAgentStore) ReapExpiredServiceRuns(context.Context) (int, er
 }
 
 // RecordServiceInstanceHeartbeat 记录实例心跳（监控落库断言用）。
-func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error {
+func (f *fakeServiceAgentStore) RecordServiceInstanceHeartbeat(_ context.Context, instanceID string, ownerUID int64, activeRuns int, metrics json.RawMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.instanceHeartbeats == nil {
 		f.instanceHeartbeats = map[string]fakeInstanceHeartbeat{}
 	}
-	f.instanceHeartbeats[instanceID] = fakeInstanceHeartbeat{ActiveRuns: activeRuns, Metrics: append(json.RawMessage(nil), metrics...)}
+	f.instanceHeartbeats[instanceID] = fakeInstanceHeartbeat{OwnerUID: ownerUID, ActiveRuns: activeRuns, Metrics: append(json.RawMessage(nil), metrics...)}
+	return nil
+}
+
+// 自述建议（可选能力）：写入/清除都要改动 agents 切片里的对应行，
+// 这样目录与丢弃接口的测试才能看到真实效果。
+func (f *fakeServiceAgentStore) SetServiceAgentSelfIntro(_ context.Context, slug, description, inputSchema string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.agents {
+		if f.agents[i].Slug == slug {
+			f.agents[i].SelfIntroDescription = description
+			f.agents[i].SelfIntroInputSchema = inputSchema
+			return nil
+		}
+	}
+	return store.ErrServiceAgentNotFound
+}
+
+func (f *fakeServiceAgentStore) ClearServiceAgentSelfIntro(_ context.Context, slug string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.agents {
+		if f.agents[i].Slug == slug {
+			f.agents[i].SelfIntroDescription = ""
+			f.agents[i].SelfIntroInputSchema = ""
+			return nil
+		}
+	}
+	// 幂等：不存在也算清掉了。
 	return nil
 }
 
 // fakeInstanceHeartbeat 是 RecordServiceInstanceHeartbeat 的落库快照（测试断言用）。
 type fakeInstanceHeartbeat struct {
+	OwnerUID   int64
 	ActiveRuns int
 	Metrics    json.RawMessage
 }
@@ -686,6 +731,185 @@ func TestServiceAgentsMCPListAndSyncCall(t *testing.T) {
 	envReplay := decodeServiceEnvelope(t, replay.StructuredContent)
 	if envReplay.RunID != env.RunID || envReplay.SessionID != env.SessionID {
 		t.Fatalf("idempotency broken: first=%+v replay=%+v", env, envReplay)
+	}
+}
+
+// 工具契约：调用方是另一个 Agent，它看不到包内容、也没有主 Agent 的上下文，
+// 只能靠 description + input schema 判断「要不要用、怎么传参」。
+// 这两样由作者（往往是 Agent 自己）在自己的 agent.json 里写，平台必须原样透出；
+// slug/版本这类实现细节对模型是噪音，不该出现在描述里。
+func TestServiceAgentsMCPToolContractFromAuthor(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.autoCompleteAfter = 5 * time.Millisecond
+	st.agents = []store.ServiceAgentDescriptor{{
+		ID: 7, Slug: "zh-polish", Name: "中文润色", Version: 3,
+		AsyncThresholdSeconds: 60,
+		OwnerKind:             store.ServiceAgentOwnerUser,
+		OwnerUID:              441,
+		Visibility:            store.ServiceAgentVisibilityPrivate,
+		Description:           "把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。",
+		InputSchema:           `{"type":"object","properties":{"text":{"type":"string","description":"要处理的正文"}},"required":["text"]}`,
+	}}
+	handler := NewServiceAgentsMCPHandler(st)
+	ts := httptest.NewServer(mcpAuthStub(441, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+	ctx := context.Background()
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	var tool *mcp.Tool
+	for _, candidate := range tools.Tools {
+		if candidate.Name == "catsco_zh-polish" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatalf("catsco_zh-polish missing: %+v", tools.Tools)
+	}
+	const wantDescription = "把中文技术文档润色成对外可发布的英文稿，保留代码块与专有名词。"
+	if tool.Description != wantDescription {
+		t.Fatalf("description must be the author's text verbatim, got %q", tool.Description)
+	}
+	for _, leak := range []string{"slug=", "版本 v", "CatsCo 定制应用"} {
+		if strings.Contains(tool.Description, leak) {
+			t.Fatalf("description must not leak implementation details (%q): %q", leak, tool.Description)
+		}
+	}
+
+	schema, ok := tool.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("input schema = %T, want object", tool.InputSchema)
+	}
+	props, _ := schema["properties"].(map[string]any)
+	input, _ := props["input"].(map[string]any)
+	if input == nil {
+		t.Fatalf("input property missing: %+v", schema)
+	}
+	authorProps, _ := input["properties"].(map[string]any)
+	if _, ok := authorProps["text"]; !ok {
+		t.Fatalf("author property lost: %+v", input)
+	}
+	if _, ok := props["session_id"]; !ok {
+		t.Fatalf("platform fields must stay available: %+v", props)
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != 1 || required[0] != "input" {
+		t.Fatalf("input should be required, got %+v", schema["required"])
+	}
+
+	// 按作者声明的形状调用：参数透传到平台，结果照常回填 structuredContent
+	// （Server.AddTool 是低层 API，不会自动填，必须由 handler 自己带）。
+	call, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "catsco_zh-polish",
+		Arguments: map[string]any{"input": map[string]any{"text": "这是一段正文"}},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if call.IsError {
+		t.Fatalf("unexpected tool error: %+v", call.Content)
+	}
+	if call.StructuredContent == nil {
+		t.Fatal("structuredContent must survive the low-level handler path")
+	}
+}
+
+// 没写描述的应用：明说「作者未说明」，别让调用方模型凭名字瞎猜。
+func TestServiceAgentsMCPToolDescriptionFallback(t *testing.T) {
+	st := newFakeServiceAgentStore()
+	st.agents = []store.ServiceAgentDescriptor{{
+		ID: 9, Slug: "mystery", Name: "神秘应用", Version: 1,
+		AsyncThresholdSeconds: 60,
+		OwnerKind:             store.ServiceAgentOwnerUser,
+		OwnerUID:              441,
+		Visibility:            store.ServiceAgentVisibilityPrivate,
+	}}
+	handler := NewServiceAgentsMCPHandler(st)
+	ts := httptest.NewServer(mcpAuthStub(441, handler))
+	t.Cleanup(ts.Close)
+	session := newMCPSession(t, ts.URL)
+
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "catsco_mystery" {
+			continue
+		}
+		if !strings.Contains(tool.Description, "作者未说明") {
+			t.Fatalf("fallback description should admit the gap, got %q", tool.Description)
+		}
+		// 没有作者 schema → 退回通用参数写法（不伪造 required）
+		schema, _ := tool.InputSchema.(map[string]any)
+		if _, hasRequired := schema["required"]; hasRequired {
+			t.Fatalf("generic schema should not require input: %+v", schema)
+		}
+		return
+	}
+	t.Fatalf("catsco_mystery missing: %+v", tools.Tools)
+}
+
+// 失败必须带回可读原因。只回 "run terminated" 时，调用方 Agent 既不知道是谁的问题，
+// 也不知道该不该重试，只能原样复述「失败了」，用户拿不到任何可行动信息。
+func TestServiceRunTerminalEnvelopeExplainsFailure(t *testing.T) {
+	cases := []struct {
+		name      string
+		state     string
+		errText   string
+		wantSub   []string
+		rejectSub []string
+	}{
+		{
+			name: "没人认领", state: "failed", errText: "not_picked_up",
+			wantSub: []string{"not_picked_up", "发布者", "与调用参数无关", "重试不会变好", "小八"},
+			// 不能让调用方以为是自己参数的问题
+			rejectSub: []string{"invalid_arguments"},
+		},
+		{
+			name: "没声明命令", state: "failed", errText: "no_command",
+			wantSub: []string{"no_command", "执行命令", "发布者"},
+		},
+		{
+			// 未知短码至少把原始原因透出来，不吞掉
+			name: "未知原因原样透出", state: "failed", errText: "boom",
+			wantSub: []string{"boom"},
+		},
+		{
+			// 连原因都没有（老数据）才回退到笼统说法
+			name: "无原因", state: "failed",
+			wantSub: []string{"run terminated"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			terminal, env := serviceRunTerminalEnvelope(store.ServiceRun{
+				RunID: "run_1", SessionID: "sess_1", State: c.state, ErrorText: c.errText,
+			})
+			if !terminal {
+				t.Fatal("failed/cancelled must be terminal")
+			}
+			if env.Status != ServiceRunState(c.state) {
+				t.Fatalf("status = %q", env.Status)
+			}
+			for _, want := range c.wantSub {
+				if !strings.Contains(env.Error, want) {
+					t.Fatalf("error %q missing %q", env.Error, want)
+				}
+			}
+			for _, reject := range c.rejectSub {
+				if strings.Contains(env.Error, reject) {
+					t.Fatalf("error %q must not contain %q", env.Error, reject)
+				}
+			}
+			// 文本摘要也要带上原因（调用方模型常只读 content）
+			if text := serviceRunToolResult(env).Content[0].(*mcp.TextContent).Text; !strings.Contains(text, c.wantSub[0]) {
+				t.Fatalf("text summary %q missing error", text)
+			}
+		})
 	}
 }
 

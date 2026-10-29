@@ -31,21 +31,15 @@
 .cc-load-module.piece-1 { right: 3px; top: 3px; animation-delay: var(--cc-loading-stagger); }
 .cc-load-module.piece-2 { right: 3px; bottom: 1px; animation-delay: calc(2 * var(--cc-loading-stagger)); }
 .cc-load-module.piece-3 { left: 3px; bottom: 1px; animation-delay: calc(3 * var(--cc-loading-stagger)); }
-.cc-load-window-stack { position: relative; width: 104px; height: 78px; }
+.cc-load-window-stack { display: block; overflow: visible; width: 104px; height: 78px; }
 /* Opaque faces keep rear window details from showing through the next layer. */
-.cc-load-stack-sheet { position: absolute; display: block; width: 76px; height: 54px; overflow: hidden; border: 0; border-radius: 7px; background: var(--cc-loading-layer-face); box-shadow: 0 0 0 2px var(--load-panel); animation: cc-loading-layer-assemble var(--cc-loading-cycle) infinite both; }
-.cc-load-stack-sheet.sheet-0 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 6%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 2%, var(--load-panel)); left: 0; top: 0; z-index: 0; }
-.cc-load-stack-sheet.sheet-1 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 10%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 3%, var(--load-panel)); left: 13px; top: 12px; z-index: 1; animation-delay: var(--cc-loading-stagger); }
-.cc-load-stack-sheet.sheet-2 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 14%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 4%, var(--load-panel)); left: 26px; top: 24px; z-index: 2; animation-delay: calc(2 * var(--cc-loading-stagger)); }
-.cc-load-stack-bar { display: flex; align-items: center; gap: 3px; height: 12px; padding-left: 6px; }
-.cc-load-stack-bar i { width: 2px; height: 2px; border-radius: 50%; background: var(--load-ink); }
-.cc-load-stack-content { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
-.cc-load-stack-content i { height: 3px; width: 44px; border-radius: 2px; background: var(--load-ink); transform-origin: left center; animation: cc-loading-write var(--cc-loading-cycle) infinite both; }
-.cc-load-stack-sheet.sheet-1 .cc-load-stack-content i { animation-delay: var(--cc-loading-stagger); }
-.cc-load-stack-sheet.sheet-2 .cc-load-stack-content i { animation-delay: calc(2 * var(--cc-loading-stagger)); }
-.cc-load-stack-content i:last-child { width: 28px; }
-.cc-load-document { position: relative; display: flex; flex-direction: column; gap: 7px; width: 56px; height: 72px; border: 0; border-radius: 7px; padding: 22px 10px 10px; background: var(--load-shape); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
-.cc-load-document-fold { position: absolute; top: 0; right: 0; width: 14px; height: 14px; background: var(--load-panel); border-bottom-left-radius: 5px; }
+.cc-load-stack-sheet { fill: var(--cc-loading-layer-face); animation: cc-loading-layer-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-stack-sheet.sheet-0 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 6%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 2%, var(--load-panel)); }
+.cc-load-stack-sheet.sheet-1 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 10%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 3%, var(--load-panel)); }
+.cc-load-stack-sheet.sheet-2 { --cc-loading-layer-face: color-mix(in srgb, var(--cc-text, #29292e) 14%, var(--load-panel)); --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text, #29292e) 4%, var(--load-panel)); }
+.cc-load-stack-bar, .cc-load-stack-content { fill: var(--load-ink); }
+.cc-load-document { position: relative; display: flex; flex-direction: column; gap: 7px; width: 56px; height: 72px; border: 0; border-radius: 7px; padding: 22px 10px 10px; background: var(--load-shape); clip-path: polygon(0 0, 42px 0, 100% 14px, 100% 100%, 0 100%); animation: cc-loading-assemble var(--cc-loading-cycle) infinite both; }
+.cc-load-document-fold { position: absolute; top: 0; right: 0; width: 14px; height: 14px; background: var(--load-ink); opacity: .15; clip-path: polygon(0 0, 100% 100%, 0 100%); border-bottom-left-radius: 5px; }
 .cc-load-document i { flex: 0 0 3px; width: 30px; height: 3px; border-radius: 2px; background: var(--load-ink); transform-origin: left; animation: cc-loading-write var(--cc-loading-cycle) infinite both; }
 .cc-load-document i:nth-of-type(2) { animation-delay: var(--cc-loading-stagger); }
 .cc-load-document i:nth-of-type(3) { animation-delay: calc(2 * var(--cc-loading-stagger)); }

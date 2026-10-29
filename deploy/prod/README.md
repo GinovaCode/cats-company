@@ -52,6 +52,53 @@ OC_DB_DRIVER=postgres
 OC_DB_DSN=postgres://catsco:***@postgres.internal:5432/catsco?sslmode=prefer
 ```
 
+## Message search index rollout
+
+PostgreSQL search indexes the visible text and attachment names extracted by
+`message_search_document_v1(msg_type, content, content_blocks)`. Existing exact
+field, block-validity, sender and topic-permission predicates decide which
+results can be returned. Inserts, edits and deletes maintain the expression
+index automatically; no message-column backfill is needed.
+
+When `pg_trgm` is available in `public`, startup reuses the original trigram GIN
+index. If extension installation is denied or unavailable, startup builds
+`idx_messages_search_grams_gin` with PostgreSQL's built-in GIN array operator
+class. `message_search_grams_v1` packs each three-byte UTF-8 sequence into an
+integer and returns sorted unique keys. Every literal substring contains all
+its query's byte triples, so array containment preserves all potential matches;
+exact field checks remove extra candidates. This path requires ordinary schema
+and index ownership, not extension installation privileges.
+
+Both indexes build with `CREATE INDEX CONCURRENTLY`, serialized per schema.
+Startup repairs an invalid interrupted build and analyzes messages after initial
+creation. Concurrent creation permits existing writers to continue, but it
+still reads historical messages and consumes CPU, I/O and disk. For a large
+history, prebuild before rolling out the image so the build does not exceed
+the container readiness window.
+
+For the built-in index on an existing #754-or-newer deployment, run these files
+with the application role and its exact schema search path:
+
+1. `server/db/migrations/postgres/000058_message_search_grams.up.sql`
+2. `server/db/migrations/postgres/000059_message_search_gram_index.up.sql`
+
+The document function from #754 must already exist in that schema. File 000059
+must run standalone outside a transaction. Confirm `pg_index.indisvalid` for
+`idx_messages_search_grams_gin` and run `ANALYZE messages` after the first build.
+Startup reuses the valid index. Rollback drops the index before its function
+(000059 down, then 000058 down); message history is preserved.
+
+For the optional `pg_trgm` path, an administrator can install `pg_trgm` in
+`public`, then prebuild files 000056 and 000057 instead; 000057 also runs outside
+a transaction. Its rollback order remains 000057 down, then 000056 down.
+
+Search retains a read-only transaction with `SET LOCAL plan_cache_mode =
+force_custom_plan`. This lets PostgreSQL choose an index for selective terms
+and ordered history reads for common terms. The built-in index supports Unicode
+and punctuation byte triples. Two ASCII characters have no triple and use the
+document filter directly; such searches can still scan history and retain the
+eight-second request budget.
+
 ## Required server files
 
 For a MySQL deployment, the DBA must first review and persist the

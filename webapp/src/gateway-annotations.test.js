@@ -574,6 +574,53 @@ describe('createGatewayAnnotationHost', () => {
     expect(host.hasSession()).toBe(true);
   });
 
+  it('retransmit re-posts the same handshake without minting a new session', () => {
+    const { h, host } = setup();
+    expect(host.connect()).toBe(true);
+    const first = h.connectMessage();
+    expect(h.posted.filter((p) => p.message.type === GATEWAY_HOST_CONNECT_TYPE)).toHaveLength(1);
+
+    // The retry must not open a new session: a second connect() would revoke the
+    // live one, so the identical session/request pair is posted again instead.
+    expect(host.retransmit()).toBe(true);
+    const second = h.connectMessage();
+    expect(h.posted.filter((p) => p.message.type === GATEWAY_HOST_CONNECT_TYPE)).toHaveLength(2);
+    expect(second.session_id).toBe(first.session_id);
+    expect(second.request_id).toBe(first.request_id);
+    expect(host.sessionToken).toBe(first.session_id);
+
+    // ...and a later ready still completes that same handshake.
+    h.handleWindowMessage({
+      data: {
+        type: GATEWAY_SDK_READY_TYPE,
+        contract_version: BRIDGE,
+        session_id: first.session_id,
+        request_id: first.request_id,
+        capabilities: ['element', 'text', 'region'],
+        page: { path: '/board' },
+      },
+      origin: h.origin,
+      source: h.contentWindow,
+    });
+    expect(host.hasSession()).toBe(true);
+  });
+
+  it('retransmit stops once ready landed and refuses without a session', () => {
+    const { h, host, callbacks } = setup();
+    // No session yet: nothing to re-post.
+    expect(host.retransmit()).toBe(false);
+    expect(h.connectMessage()).toBeNull();
+
+    connectReady(h, host, callbacks);
+    const before = h.posted.filter((p) => p.message.type === GATEWAY_HOST_CONNECT_TYPE).length;
+    expect(host.retransmit()).toBe(true);
+    // Already ready: the handshake is complete, so no further post is needed.
+    expect(h.posted.filter((p) => p.message.type === GATEWAY_HOST_CONNECT_TYPE)).toHaveLength(before);
+
+    host.dispose();
+    expect(host.retransmit()).toBe(false);
+  });
+
   it('accepts a valid ready exactly once and ignores duplicates', () => {
     const { h, host, callbacks } = setup();
     connectReady(h, host, callbacks);

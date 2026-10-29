@@ -159,7 +159,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 564,
+          "line": 737,
           "props": {
             "size": 14
           },
@@ -208,7 +208,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1924,
+          "line": 2014,
           "props": {
             "size": 16
           },
@@ -358,7 +358,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6749,
+          "line": 6783,
           "props": {
             "size": 16
           },
@@ -454,7 +454,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1003,
+          "line": 1046,
           "props": {
             "size": 18
           },
@@ -551,12 +551,26 @@
     {
       "name": "ArrowUpRight",
       "files": [
+        "widgets/plans/enterprise-services.jsx",
         "widgets/relay-access-modal.jsx"
       ],
       "usages": [
         {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 22,
+          "props": {
+            "size": 16
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-purchase",
+            "enterprise-reference-offer",
+            "relay-access-enterprise-card enterprise-reference"
+          ]
+        },
+        {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 720,
+          "line": 747,
           "props": {
             "size": 16
           },
@@ -596,7 +610,7 @@
       "usages": [
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1587,
+          "line": 1676,
           "props": {
             "size": 15
           },
@@ -610,7 +624,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1692,
+          "line": 1782,
           "props": {
             "size": 16
           },
@@ -805,7 +819,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 293,
+          "line": 291,
           "props": {
             "size": 14
           },
@@ -849,6 +863,7 @@
         "views/knowledge-wiki-view.jsx",
         "views/tinode-web.jsx",
         "widgets/agent-store-modal.jsx",
+        "widgets/plans/enterprise-team.jsx",
         "widgets/profile-editor.jsx"
       ],
       "usages": [
@@ -891,6 +906,19 @@
             "v3-agent-actions",
             "v3-agent-card",
             "v3-agent-grid cc-agent-hub-grid"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-team.jsx",
+          "line": 30,
+          "props": {
+            "size": 19
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-team-icon",
+            "enterprise-team-benefits",
+            "enterprise-team"
           ]
         },
         {
@@ -1267,6 +1295,7 @@
         "widgets/custom-select.jsx",
         "widgets/desktop-connect-modal.jsx",
         "widgets/empty-task-composer.jsx",
+        "widgets/plans/enterprise-services.jsx",
         "widgets/profile-editor.jsx",
         "widgets/relay-access-modal.jsx"
       ],
@@ -1286,7 +1315,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6940,
+          "line": 6974,
           "props": {
             "size": 14,
             "strokeWidth": 2.5
@@ -1604,7 +1633,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 850,
+          "line": 893,
           "props": {
             "size": 20
           },
@@ -1618,7 +1647,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1247,
+          "line": 1299,
           "props": {
             "size": 17
           },
@@ -1632,7 +1661,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1708,
+          "line": 1760,
           "props": {
             "size": 14
           },
@@ -1646,7 +1675,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1729,
+          "line": 1781,
           "props": {
             "size": 12
           },
@@ -1696,6 +1725,19 @@
           ]
         },
         {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 36,
+          "props": {
+            "size": 16
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
+          ]
+        },
+        {
           "file": "widgets/profile-editor.jsx",
           "line": 421,
           "props": {
@@ -1711,7 +1753,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 597,
+          "line": 629,
           "props": {
             "size": 14
           },
@@ -1724,7 +1766,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 681,
+          "line": 708,
           "props": {
             "size": 14
           },
@@ -1738,7 +1780,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 736,
+          "line": 763,
           "props": {
             "size": 16
           },
@@ -1750,7 +1792,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1640,
+          "line": 1730,
           "props": {
             "size": 12
           },
@@ -1764,7 +1806,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1930,
+          "line": 2020,
           "props": {
             "size": 15
           },
@@ -1778,7 +1820,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1994,
+          "line": 2084,
           "props": {
             "size": 16
           },
@@ -1792,7 +1834,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 2022,
+          "line": 2112,
           "props": {
             "size": 15
           },
@@ -1892,7 +1934,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8457,
+          "line": 8491,
           "props": {
             "size": 14
           },
@@ -2002,7 +2044,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 6783,
+          "line": 6817,
           "props": {
             "size": 18
           },
@@ -2033,7 +2075,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 8441,
+          "line": 8475,
           "props": {
             "size": 14
           },
@@ -2045,7 +2087,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 544,
+          "line": 705,
           "props": {
             "size": 14
           },
@@ -2169,7 +2211,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1877,
+          "line": 1967,
           "props": {
             "size": 16
           },
@@ -2183,7 +2225,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1964,
+          "line": 2054,
           "props": {
             "size": 16
           },
@@ -2197,7 +2239,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 2011,
+          "line": 2101,
           "props": {
             "size": 16
           },
@@ -2221,7 +2263,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7499,
+          "line": 7533,
           "props": {
             "size": 17
           },
@@ -2235,7 +2277,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8781,
+          "line": 8815,
           "props": {
             "size": 56,
             "strokeWidth": 1.5
@@ -2279,7 +2321,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7509,
+          "line": 7543,
           "props": {
             "size": 17
           },
@@ -2293,7 +2335,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8442,
+          "line": 8476,
           "props": {
             "size": 14
           },
@@ -2305,7 +2347,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8818,
+          "line": 8852,
           "props": {
             "size": 56,
             "strokeWidth": 1.5
@@ -2668,7 +2710,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 8460,
+          "line": 8494,
           "props": {
             "size": 14
           },
@@ -2747,7 +2789,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 8459,
+          "line": 8493,
           "props": {
             "size": 14
           },
@@ -2982,7 +3024,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1217,
+          "line": 1269,
           "props": {
             "size": 22
           },
@@ -2996,7 +3038,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1916,
+          "line": 1968,
           "props": {
             "size": 22
           },
@@ -3032,7 +3074,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 665,
+          "line": 692,
           "props": {
             "size": 17
           },
@@ -3254,7 +3296,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 851,
+          "line": 894,
           "props": {
             "size": 17
           },
@@ -3312,7 +3354,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1640,
+          "line": 1730,
           "props": {
             "size": 12
           },
@@ -3326,7 +3368,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1930,
+          "line": 2020,
           "props": {
             "size": 15
           },
@@ -3340,7 +3382,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1938,
+          "line": 2028,
           "props": {
             "size": 15
           },
@@ -3354,7 +3396,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1994,
+          "line": 2084,
           "props": {
             "size": 16
           },
@@ -3368,7 +3410,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 2005,
+          "line": 2095,
           "props": {
             "size": 17
           },
@@ -3382,7 +3424,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 2022,
+          "line": 2112,
           "props": {
             "size": 15
           },
@@ -3421,12 +3463,26 @@
     {
       "name": "Cpu",
       "files": [
+        "widgets/plans/enterprise-team.jsx",
         "widgets/relay-access-modal.jsx"
       ],
       "usages": [
         {
+          "file": "widgets/plans/enterprise-team.jsx",
+          "line": 24,
+          "props": {
+            "size": 16
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-team-allowances",
+            "enterprise-team-offer",
+            "enterprise-team"
+          ]
+        },
+        {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 665,
+          "line": 692,
           "props": {
             "size": 17
           },
@@ -3462,7 +3518,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 642,
+          "line": 669,
           "props": {
             "size": 15
           },
@@ -3475,7 +3531,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1620,
+          "line": 1710,
           "props": {
             "size": 15
           },
@@ -3506,7 +3562,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7555,
+          "line": 7589,
           "props": {
             "size": 16
           },
@@ -3520,7 +3576,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8803,
+          "line": 8837,
           "props": {
             "size": 24
           },
@@ -3621,7 +3677,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 2006,
+          "line": 2058,
           "props": {
             "size": 17
           },
@@ -3874,7 +3930,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1234,
+          "line": 1286,
           "props": {
             "size": 17
           },
@@ -3888,7 +3944,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1993,
+          "line": 2045,
           "props": {
             "size": 17
           },
@@ -3913,7 +3969,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1668,
+          "line": 1758,
           "props": {
             "size": 15
           },
@@ -3927,7 +3983,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1958,
+          "line": 2048,
           "props": {
             "size": 17
           },
@@ -3941,7 +3997,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1976,
+          "line": 2066,
           "props": {
             "size": 14
           },
@@ -4092,7 +4148,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7141,
+          "line": 7175,
           "props": {
             "size": 16
           },
@@ -4255,7 +4311,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1945,
+          "line": 1997,
           "props": {
             "size": 18
           },
@@ -4581,7 +4637,7 @@
       "usages": [
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1738,
+          "line": 1828,
           "props": {
             "size": 16
           },
@@ -4595,7 +4651,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1781,
+          "line": 1871,
           "props": {
             "size": 16
           },
@@ -4630,7 +4686,7 @@
         },
         {
           "file": "widgets/loading-state.jsx",
-          "line": 10,
+          "line": 11,
           "props": {
             "size": 25
           },
@@ -4703,7 +4759,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1600,
+          "line": 1689,
           "props": {
             "size": 15
           },
@@ -4730,7 +4786,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7140,
+          "line": 7174,
           "props": {
             "size": 16
           },
@@ -4782,7 +4838,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1934,
+          "line": 1986,
           "props": {
             "size": 18
           },
@@ -4815,7 +4871,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 6800,
+          "line": 6834,
           "props": {
             "size": 16
           },
@@ -4920,7 +4976,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1865,
+          "line": 1955,
           "props": {
             "size": 17
           },
@@ -4934,7 +4990,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1883,
+          "line": 1973,
           "props": {
             "size": 16
           },
@@ -4948,7 +5004,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1894,
+          "line": 1984,
           "props": {
             "size": 18
           },
@@ -5037,7 +5093,7 @@
         },
         {
           "file": "widgets/conversation-device-picker.jsx",
-          "line": 172,
+          "line": 178,
           "props": {
             "size": 16
           },
@@ -5062,7 +5118,7 @@
         },
         {
           "file": "widgets/loading-state.jsx",
-          "line": 10,
+          "line": 11,
           "props": {
             "size": 28
           },
@@ -5103,6 +5159,41 @@
       ]
     },
     {
+      "name": "Layers",
+      "files": [
+        "widgets/plans/enterprise-services.jsx",
+        "widgets/plans/enterprise-team.jsx"
+      ],
+      "usages": [
+        {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 32,
+          "props": {
+            "size": 18
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-team.jsx",
+          "line": 30,
+          "props": {
+            "size": 19
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-team-icon",
+            "enterprise-team-benefits",
+            "enterprise-team"
+          ]
+        }
+      ]
+    },
+    {
       "name": "ListChecks",
       "files": [
         "views/sidepanel-view.jsx"
@@ -5132,7 +5223,7 @@
       "usages": [
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1796,
+          "line": 1848,
           "props": {
             "size": 16
           },
@@ -5231,7 +5322,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6800,
+          "line": 6834,
           "props": {
             "size": 16
           },
@@ -5247,7 +5338,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6857,
+          "line": 6891,
           "props": {
             "size": 15
           },
@@ -5263,7 +5354,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8780,
+          "line": 8814,
           "props": {
             "size": 32
           },
@@ -5683,7 +5774,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 971,
+          "line": 1014,
           "props": {
             "size": 18
           },
@@ -5727,12 +5818,13 @@
       "files": [
         "views/messages-view.jsx",
         "views/skillhub-marketplace-intro.jsx",
-        "widgets/agent-store-modal.jsx"
+        "widgets/agent-store-modal.jsx",
+        "widgets/plans/enterprise-services.jsx"
       ],
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7239,
+          "line": 7273,
           "props": {
             "size": 16
           },
@@ -5766,6 +5858,20 @@
           "classes": [],
           "contexts": [
             "oc-btn oc-btn-default cc-agent-card-action"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 34,
+          "props": {
+            "size": 18
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-service-icon",
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
           ]
         }
       ]
@@ -5886,7 +5992,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 971,
+          "line": 1014,
           "props": {
             "size": 18
           },
@@ -5921,7 +6027,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7242,
+          "line": 7276,
           "props": {
             "size": 16
           },
@@ -6410,6 +6516,7 @@
       "name": "Pencil",
       "files": [
         "views/apps-view.jsx",
+        "views/service-agents-panel.jsx",
         "views/sidepanel-view.jsx",
         "views/skillhub-marketplace-intro.jsx",
         "widgets/chat-message.jsx",
@@ -6428,6 +6535,20 @@
             "cc-app-card-menu-items",
             "cc-app-card-menu",
             "cc-app-card   is-manageable"
+          ]
+        },
+        {
+          "file": "views/service-agents-panel.jsx",
+          "line": 915,
+          "props": {
+            "size": 15
+          },
+          "classes": [],
+          "contexts": [
+            "v3-service-agent-edit",
+            "v3-service-agent-actions",
+            "v3-service-agent-row   is-hidden",
+            "v3-service-agents-list"
           ]
         },
         {
@@ -6493,7 +6614,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1021,
+          "line": 1064,
           "props": {
             "size": 18
           },
@@ -6507,7 +6628,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1743,
+          "line": 1795,
           "props": {
             "size": 14
           },
@@ -6688,7 +6809,7 @@
       "usages": [
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 280,
+          "line": 417,
           "props": {
             "size": 16
           },
@@ -6702,7 +6823,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 598,
+          "line": 771,
           "props": {
             "size": 14
           },
@@ -6715,7 +6836,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 688,
+          "line": 968,
           "props": {
             "size": 15
           },
@@ -6878,7 +6999,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1878,
+          "line": 1930,
           "props": {
             "size": 14
           },
@@ -7099,7 +7220,7 @@
       "usages": [
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1831,
+          "line": 1921,
           "props": {
             "size": 16
           },
@@ -7153,7 +7274,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6820,
+          "line": 6854,
           "props": {
             "size": 15
           },
@@ -7167,7 +7288,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6830,
+          "line": 6864,
           "props": {
             "size": 14
           },
@@ -7181,7 +7302,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6840,
+          "line": 6874,
           "props": {
             "size": 14
           },
@@ -7208,7 +7329,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 289,
+          "line": 426,
           "props": {
             "size": 16
           },
@@ -7222,7 +7343,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 602,
+          "line": 775,
           "props": {
             "size": 14
           },
@@ -7574,7 +7695,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1025,
+          "line": 1074,
           "props": {
             "size": 18
           },
@@ -7677,7 +7798,7 @@
         },
         {
           "file": "widgets/conversation-device-picker.jsx",
-          "line": 135,
+          "line": 141,
           "props": {
             "size": 16
           },
@@ -7789,7 +7910,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 875,
+          "line": 918,
           "props": {
             "size": 17
           },
@@ -7817,7 +7938,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1689,
+          "line": 1779,
           "props": {
             "size": 16
           },
@@ -7831,7 +7952,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1705,
+          "line": 1795,
           "props": {
             "size": 14
           },
@@ -7845,7 +7966,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1942,
+          "line": 2032,
           "props": {
             "size": 15
           },
@@ -8154,7 +8275,8 @@
     {
       "name": "Server",
       "files": [
-        "widgets/cloud-worker-panel.jsx"
+        "widgets/cloud-worker-panel.jsx",
+        "widgets/plans/enterprise-team.jsx"
       ],
       "usages": [
         {
@@ -8167,6 +8289,19 @@
           "contexts": [
             "cc-cloud-workers-head",
             "cc-cloud-panel"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-team.jsx",
+          "line": 30,
+          "props": {
+            "size": 19
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-team-icon",
+            "enterprise-team-benefits",
+            "enterprise-team"
           ]
         }
       ]
@@ -8210,7 +8345,8 @@
         "views/sidepanel-view.jsx",
         "views/tinode-web.jsx",
         "widgets/agent-store-modal.jsx",
-        "widgets/bot-model-selector.jsx"
+        "widgets/bot-model-selector.jsx",
+        "widgets/plans/enterprise-services.jsx"
       ],
       "usages": [
         {
@@ -8291,6 +8427,20 @@
             "v3-model-menu-item v3-custom-model-entry   selected",
             "v3-model-menu   custom-open",
             "v3-model-menu-anchor"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 34,
+          "props": {
+            "size": 18
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-service-icon",
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
           ]
         }
       ]
@@ -8398,7 +8548,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1248,
+          "line": 1300,
           "props": {
             "size": 17
           },
@@ -8439,6 +8589,7 @@
       "files": [
         "views/skillhub-content.jsx",
         "views/skillhub-marketplace-intro.jsx",
+        "widgets/plans/enterprise-team.jsx",
         "widgets/profile-editor.jsx"
       ],
       "usages": [
@@ -8452,6 +8603,19 @@
           "contexts": [
             "cc-market-requirements",
             "cc-market-intro"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-team.jsx",
+          "line": 30,
+          "props": {
+            "size": 19
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-team-icon",
+            "enterprise-team-benefits",
+            "enterprise-team"
           ]
         },
         {
@@ -8494,7 +8658,7 @@
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7142,
+          "line": 7176,
           "props": {
             "size": 16
           },
@@ -8570,12 +8734,13 @@
       "name": "Sparkles",
       "files": [
         "views/service-agents-panel.jsx",
-        "views/skillhub-content.jsx"
+        "views/skillhub-content.jsx",
+        "widgets/plans/enterprise-services.jsx"
       ],
       "usages": [
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 586,
+          "line": 759,
           "props": {
             "size": 22
           },
@@ -8596,6 +8761,20 @@
           "classes": [],
           "contexts": [
             "cc-skillhub-card-illustration"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 34,
+          "props": {
+            "size": 18
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-service-icon",
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
           ]
         }
       ]
@@ -8743,7 +8922,7 @@
       "usages": [
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 839,
+          "line": 882,
           "props": {
             "size": 17
           },
@@ -8973,7 +9152,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 862,
+          "line": 905,
           "props": {
             "size": 17
           },
@@ -8986,7 +9165,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 998,
+          "line": 1041,
           "props": {
             "size": 18
           },
@@ -8999,7 +9178,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1757,
+          "line": 1809,
           "props": {
             "size": 14
           },
@@ -9026,7 +9205,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1946,
+          "line": 2036,
           "props": {
             "size": 15
           },
@@ -9048,7 +9227,7 @@
       "usages": [
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 669,
+          "line": 949,
           "props": {
             "size": 15
           },
@@ -9092,7 +9271,7 @@
       "usages": [
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 983,
+          "line": 1026,
           "props": {
             "size": 18
           },
@@ -9259,12 +9438,14 @@
       "files": [
         "views/messages-view.jsx",
         "views/sidepanel-view.jsx",
-        "views/skillhub-content.jsx"
+        "views/skillhub-content.jsx",
+        "widgets/plans/enterprise-services.jsx",
+        "widgets/plans/enterprise-team.jsx"
       ],
       "usages": [
         {
           "file": "views/messages-view.jsx",
-          "line": 7274,
+          "line": 7308,
           "props": {
             "size": 15
           },
@@ -9362,6 +9543,33 @@
             "cc-skillhub-share-targets",
             "cc-skillhub-visibility-form",
             "cc-skillhub-visibility"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 34,
+          "props": {
+            "size": 18
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-service-icon",
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
+          ]
+        },
+        {
+          "file": "widgets/plans/enterprise-team.jsx",
+          "line": 23,
+          "props": {
+            "size": 16
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-team-allowances",
+            "enterprise-team-offer",
+            "enterprise-team"
           ]
         }
       ]
@@ -9470,6 +9678,28 @@
             "oc-rich-audio-icon",
             "oc-rich-audio-header",
             "oc-rich-audio"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Workflow",
+      "files": [
+        "widgets/plans/enterprise-services.jsx"
+      ],
+      "usages": [
+        {
+          "file": "widgets/plans/enterprise-services.jsx",
+          "line": 34,
+          "props": {
+            "size": 18
+          },
+          "classes": [],
+          "contexts": [
+            "enterprise-reference-service-icon",
+            "enterprise-reference-workspace",
+            "enterprise-reference-visual",
+            "relay-access-enterprise-card enterprise-reference"
           ]
         }
       ]
@@ -9600,7 +9830,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 367,
+          "line": 365,
           "props": {
             "size": 13
           },
@@ -9612,7 +9842,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 6774,
+          "line": 6808,
           "props": {
             "size": 16
           },
@@ -9626,7 +9856,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 7206,
+          "line": 7240,
           "props": {
             "size": 16
           },
@@ -9640,7 +9870,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 7347,
+          "line": 7381,
           "props": {
             "size": 16,
             "strokeWidth": 2
@@ -9655,7 +9885,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 7487,
+          "line": 7521,
           "props": {
             "size": 17
           },
@@ -9669,7 +9899,7 @@
         },
         {
           "file": "views/messages-view.jsx",
-          "line": 8791,
+          "line": 8825,
           "props": {
             "size": 28
           },
@@ -9708,7 +9938,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 292,
+          "line": 429,
           "props": {
             "size": 16
           },
@@ -9721,7 +9951,7 @@
         },
         {
           "file": "views/service-agents-panel.jsx",
-          "line": 688,
+          "line": 968,
           "props": {
             "size": 15
           },
@@ -10142,7 +10372,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 892,
+          "line": 935,
           "props": {
             "size": 11
           },
@@ -10155,7 +10385,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1028,
+          "line": 1077,
           "props": {
             "size": 18
           },
@@ -10168,7 +10398,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1074,
+          "line": 1123,
           "props": {
             "size": 12
           },
@@ -10182,7 +10412,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1631,
+          "line": 1683,
           "props": {
             "size": 16
           },
@@ -10194,7 +10424,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1717,
+          "line": 1769,
           "props": {
             "size": 14
           },
@@ -10208,7 +10438,7 @@
         },
         {
           "file": "widgets/cloud-artifacts-panel.jsx",
-          "line": 1842,
+          "line": 1894,
           "props": {
             "size": 11
           },
@@ -10221,7 +10451,7 @@
         },
         {
           "file": "widgets/conversation-device-picker.jsx",
-          "line": 176,
+          "line": 182,
           "props": {
             "size": 18
           },
@@ -10392,7 +10622,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1499,
+          "line": 1588,
           "props": {
             "size": 18
           },
@@ -10405,7 +10635,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1647,
+          "line": 1737,
           "props": {
             "size": 14
           },
@@ -10419,7 +10649,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 1700,
+          "line": 1790,
           "props": {
             "size": 14
           },
@@ -10433,7 +10663,7 @@
         },
         {
           "file": "widgets/relay-access-modal.jsx",
-          "line": 2053,
+          "line": 2144,
           "props": {
             "size": 18
           },

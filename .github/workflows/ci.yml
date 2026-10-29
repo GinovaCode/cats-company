@@ -44,10 +44,47 @@ jobs:
         run: go test ./server/...
 
       - name: Test race-sensitive concurrency
-        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|CaptureDispatcher|UploadTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)' -count=1
+        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|CaptureDispatcher|RepairSourceTransport|UploadTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)|TestPublicationDescription(Copy|Derivation|Validation|ReleasePlan|ReleaseAuthorize)|Test(Read|Validate|Accept|Continue|Plan|Authorize|Record)ConfirmedPublicationDescription' -count=1
+
+      - name: Test status-only reconciliation concurrency
+        run: go test -race ./server -run '^TestSkillHubPublicationDescriptionReconcile' -count=1
 
       - name: Scan Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  publication_repair_source_paired:
+    name: Publication repair source paired contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout CatsCo
+        uses: actions/checkout@v6
+        with:
+          path: cats-company
+      - name: Checkout pinned XiaoBa Runtime
+        uses: actions/checkout@v6
+        with:
+          repository: buildsense-ai/XiaoBa-CLI
+          # PR569: dedicated live source verification, never capture replay.
+          ref: 062c7cf1b11fa49fdc44466c1cbfe80b041d11c4
+          path: XiaoBa-CLI
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: XiaoBa-CLI/package-lock.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cats-company/go.mod
+          cache-dependency-path: cats-company/go.sum
+      - name: Install pinned Runtime dependencies
+        working-directory: XiaoBa-CLI
+        run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Verify real Runtime source checks without skip fallback
+        working-directory: cats-company
+        env:
+          XIAOBA_REPO: ../XiaoBa-CLI
+        run: node scripts/test-publication-repair-source-paired.mjs
 
   # DB 契约测试独立成 job：与 backend（编译/单测/race/漏洞扫描）并行，
   # 避免 4~5 分钟的单步把整体墙钟拖到 9 分钟。
@@ -104,6 +141,27 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         # race 只覆盖并发/竞态相关用例，保留关键检测同时避免全量 race 的 4~5 分钟耗时。
         run: go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublication.*(Concurren|Race|Fencing|Atomic|Replay|Recovery)' -count=1
+
+      - name: Test retained derived publication outcome access
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionReleaseOutcomeHistoricalRead$' -count=1 -v
+
+      - name: Test immutable derived publication terminal recovery
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionTerminal' -count=1 -v
+
+      - name: Test durable derived outcome reconciliation
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionReconcile' -count=1 -v
 
   backend_db:
     name: Backend DB contracts
@@ -200,6 +258,15 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run 'TestPostgres(AdminUserSearch|StoreContract|CloudWorkerDeploymentContract|CommercialPlanManagement|CommercialPaymentContract|CommercialAdjustmentContract|CommercialGLM53MigrationPreservesManualQuotaAndRollsBack|CommercialNativeSearchFlashMigrationPreservesManualQuotaAndRollsBack|CommercialRetireV4FlashMigrationPreservesManualQuotaAndRollsBack|CommercialFreeImageModelsMigrationGrantsAndRollsBack|CommercialAutoRenewConfigAndRuns|CommercialRecordsBeyondFirstHundred|CommercialPublicModelsPreserveRenewalAndCustomQuota|CommercialImageModels|CommercialInviteRedeemerUIDs|ArtifactRuntimeEventSequenceFollowsCommitOrder|ArtifactAppMetadataPersistence)' -count=1 -v
 
+      - name: Test message search and conversation task run durability
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+          CATS_MYSQL_TEST_DSN: catsco:catsco_test@tcp(127.0.0.1:3306)/cats_test?parseTime=true&charset=utf8mb4
+        run: |
+          go test ./server/db/postgres ./server/db/mysql -run '^Test(Postgres|MySQL)MessageSearch(VisibleText|NativeIndex|IndexMigration|GramMigration|GramContainment|WithoutExtensionPrivileges)$' -count=1 -v
+          go test ./server/db/postgres ./server/db/mysql -run '^Test(PostgresConversationTaskRun|MySQLConversationTask)' -count=1 -v
+          go test -race ./server -run '^TestConversationTaskStatus(Delivery|History|Postgres)' -count=1 -v
+
       - name: Test PostgreSQL multi-device selection contract
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
@@ -210,7 +277,7 @@ jobs:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: |
           test -n "$CATS_PG_TEST_DSN"
-          go test -race ./server -run '^TestSkillHubPublication(DeliveryPostgres|CaptureTransportPostgres|CaptureDispatcher|PeerCommitPostgres)' -count=1 -v
+          go test -race ./server -run '^TestSkillHubPublication(DeliveryPostgres|CaptureTransportPostgres|CaptureDispatcher|PeerCommitPostgres|DescriptionReleaseHistoryPostgres)' -count=1 -v
 
       - name: Test PostgreSQL service agent store
         env:
@@ -509,6 +576,7 @@ jobs:
       - backend
       - backend_db
       - backend_publication
+      - publication_repair_source_paired
       - node_sdk
       - bot_example
       - shimo_worker
@@ -522,6 +590,7 @@ jobs:
       - name: Check parallel job results
         env:
           BACKEND: ${{ needs.backend.result }}
+          REPAIR_SOURCE_PAIRED: ${{ needs.publication_repair_source_paired.result }}
           NODE_SDK: ${{ needs.node_sdk.result }}
           BOT_EXAMPLE: ${{ needs.bot_example.result }}
           SHIMO_WORKER: ${{ needs.shimo_worker.result }}
@@ -532,7 +601,8 @@ jobs:
         run: |
           printf 'backend=%s\nnode-sdk=%s\nbot-example=%s\nshimo-worker=%s\nwebapp=%s\ndependency-review=%s\nvalidation=%s\ndocker-images=%s\n' \
             "$BACKEND" "$NODE_SDK" "$BOT_EXAMPLE" "$SHIMO_WORKER" "$WEBAPP" "$DEPENDENCY_REVIEW" "$VALIDATION" "$DOCKER_IMAGES"
-          if [[ "$BACKEND" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
+          echo "publication-repair-source-paired=$REPAIR_SOURCE_PAIRED"
+          if [[ "$BACKEND" != success || "$REPAIR_SOURCE_PAIRED" != success || "$NODE_SDK" != success || "$BOT_EXAMPLE" != success || "$SHIMO_WORKER" != success || "$WEBAPP" != success || \
                 "$VALIDATION" != success || "$DOCKER_IMAGES" != success || \
                 ("$DEPENDENCY_REVIEW" != success && "$DEPENDENCY_REVIEW" != skipped) ]]; then
             echo 'One or more CI suites did not succeed.' >&2

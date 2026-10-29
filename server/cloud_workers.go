@@ -51,9 +51,12 @@ type CloudWorkerHandler struct {
 	quota map[int64]int
 
 	// Executable scripts invoked for heavy cloud operations (empty = disabled).
-	provisionScript   string
-	resetScript       string
-	renewScript       string
+	provisionScript string
+	resetScript     string
+	renewScript     string
+	// billingScript is optional: an empty value falls back to the historical
+	// location next to renewScript and then to the image's ops directory.
+	billingScript     string
 	updateScript      string
 	rollbackScript    string
 	destroyScript     string
@@ -147,18 +150,22 @@ type CloudWorkerConfig struct {
 	ProvisionScript   string // CATSCO_WORKER_PROVISION_SCRIPT
 	ResetScript       string // CATSCO_WORKER_RESET_SCRIPT
 	RenewScript       string // CATSCO_WORKER_RENEW_SCRIPT
-	UpdateScript      string // CATSCO_WORKER_UPDATE_SCRIPT
-	RollbackScript    string // CATSCO_WORKER_ROLLBACK_SCRIPT
-	DestroyScript     string // CATSCO_WORKER_DESTROY_SCRIPT
-	ExpireScript      string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
-	ImagesScript      string // CATSCO_WORKER_IMAGES_SCRIPT
-	ReleasesScript    string // CATSCO_WORKER_RELEASES_SCRIPT
-	StatusScript      string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
-	SSHJumpHost       string
-	SSHJumpAlias      string
-	SSHJumpPort       string
-	SSHJumpUser       string
-	SSHJumpKey        string
+	// BillingScript is CATSCO_WORKER_BILLING_SCRIPT. Optional: the trial
+	// conversion/suspend script normally sits in the image's ops directory, and
+	// leaving this empty keeps that default without hard-coding it in callers.
+	BillingScript  string // CATSCO_WORKER_BILLING_SCRIPT
+	UpdateScript   string // CATSCO_WORKER_UPDATE_SCRIPT
+	RollbackScript string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript  string // CATSCO_WORKER_DESTROY_SCRIPT
+	ExpireScript   string // CATSCO_WORKER_EXPIRE_SCRIPT (optional; stops a packed worker at package expiry)
+	ImagesScript   string // CATSCO_WORKER_IMAGES_SCRIPT
+	ReleasesScript string // CATSCO_WORKER_RELEASES_SCRIPT
+	StatusScript   string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status is "unavailable")
+	SSHJumpHost    string
+	SSHJumpAlias   string
+	SSHJumpPort    string
+	SSHJumpUser    string
+	SSHJumpKey     string
 	// SSHHostJumpKey and SSHHostStateRoot are paths as seen from the
 	// cats-ctyun host, where copied admin commands are executed. They must
 	// never contain key material itself.
@@ -232,6 +239,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		ProvisionScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
 		ResetScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
 		RenewScript:       strings.TrimSpace(os.Getenv("CATSCO_WORKER_RENEW_SCRIPT")),
+		BillingScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_BILLING_SCRIPT")),
 		UpdateScript:      strings.TrimSpace(os.Getenv("CATSCO_WORKER_UPDATE_SCRIPT")),
 		RollbackScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
 		DestroyScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
@@ -262,6 +270,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		provisionScript:   cfg.ProvisionScript,
 		resetScript:       cfg.ResetScript,
 		renewScript:       cfg.RenewScript,
+		billingScript:     cfg.BillingScript,
 		updateScript:      cfg.UpdateScript,
 		rollbackScript:    cfg.RollbackScript,
 		destroyScript:     cfg.DestroyScript,
@@ -401,7 +410,7 @@ type cloudWorkerSummary struct {
 	UpdateAvailable bool   `json:"update_available,omitempty"`
 	// Backend is "packed" for the shared-container fleet and empty for a
 	// dedicated ECS instance, so clients can label the two distinctly.
-	Backend string `json:"backend,omitempty"`
+	Backend         string `json:"backend,omitempty"`
 	OperationID     string `json:"operation_id,omitempty"`
 	OperationAction string `json:"operation_action,omitempty"`
 	OperationStatus string `json:"operation_status,omitempty"`
@@ -950,13 +959,13 @@ func (w *discardResponseWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// AutoProvisionForOwner provisions the paid cloud instance for a buyer who has
-// just purchased an official plan (399/799) and does not own a cloud worker
-// yet. It is wired to the commercial payment fulfillment hook via
-// CommercialPaymentHandlerOptions.EnsureCloudWorker and always runs off the
-// payment path. The heavy lifting is delegated to HandleCreate so the
-// automatic and manual flows share validation, credit reservation, rollback
-// and the auto-friend handshake.
+// AutoProvisionForOwner provisions the paid instances owed to a buyer who has
+// just purchased a plan or redeemed an invite. It is wired to the commercial
+// payment fulfillment hook via
+// CommercialPaymentHandlerOptions.EnsureCloudWorker and to invite redemption,
+// and always runs off the payment path. The heavy lifting is delegated to
+// HandleCreate so the automatic and manual flows share validation, credit
+// reservation, rollback and the auto-friend handshake.
 func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -972,27 +981,76 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		log.Printf("[cloud-worker] auto provisioning skipped uid=%d: provision script not configured", uid)
 		return
 	}
-	workers, err := h.cloudWorkersOfOwner(uid)
+	// One worker per unspent credit: an invite code (or an operator grant) may
+	// carry several credits, which is how a single account ends up owning
+	// several bots. A renewal does not mint a credit (see
+	// cloudWorkerSurvivesRenewal), so a monthly renewal cannot turn into a
+	// second machine.
+	//
+	// The budget is snapshotted once: every successful create consumes exactly
+	// one credit (or one static slot), so decrementing locally is what keeps the
+	// loop from re-reading a roster that may lag behind the create.
+	budget, err := h.autoProvisionBudget(uid)
 	if err != nil {
 		log.Printf("[cloud-worker] auto provisioning check uid=%d failed: %v", uid, err)
 		return
 	}
-	if len(workers) > 0 {
-		// Renewals, upgrades and re-purchases keep the existing instance; only
-		// a first purchase without any worker provisions automatically.
-		return
+	if budget > autoProvisionMaxPerRun {
+		// Bound a single run: a mis-issued batch must never spawn an unbounded
+		// fleet unattended. The rest stays spendable for the next call.
+		log.Printf("[cloud-worker] auto provisioning uid=%d has %d credits, capping this run at %d", uid, budget, autoProvisionMaxPerRun)
+		budget = autoProvisionMaxPerRun
 	}
-	// Match HandleCreate's admission check: either a durable credit from the
-	// purchase or a static rollout quota enables provisioning. The concrete
-	// reservation stays inside HandleCreate.
-	staticTotal := h.quota[uid]
-	if _, available := h.creditInfo(uid); staticTotal <= 0 && available <= 0 {
-		return
+	for created := 0; created < budget; created++ {
+		status, body := h.provisionAutoWorker(uid)
+		switch {
+		case status >= 200 && status < 300:
+			continue
+		case status == http.StatusForbidden:
+			// The credit was spent or expired between the budget check and the
+			// create, so there is nothing left to spend this run.
+			return
+		case status == http.StatusConflict:
+			log.Printf("[cloud-worker] auto provisioning busy uid=%d, leaving the remaining credits for the next run", uid)
+			return
+		default:
+			log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, status, truncateWorkerOutput(body))
+			return
+		}
 	}
+}
+
+// autoProvisionBudget reports how many workers this hook may create right now.
+//
+// Credits are the only instruction to create: one unspent credit buys exactly
+// one worker, so a redemption carrying three credits provisions three bots.
+//
+// The static rollout quota (CATSCO_WORKER_CREATE_QUOTA) is an upper bound, not
+// an instruction. Treating it as a budget would drain the whole allowance on the
+// first purchase — an operator account with `=10` would get nine extra machines
+// the moment it redeemed a single-credit invite. It therefore only applies the
+// legacy "first worker" behaviour: with no credits and no worker yet, provision
+// one.
+func (h *CloudWorkerHandler) autoProvisionBudget(uid int64) (int, error) {
+	workers, err := h.cloudWorkersOfOwner(uid)
+	if err != nil {
+		return 0, err
+	}
+	if _, available := h.creditInfo(uid); available > 0 {
+		return available, nil
+	}
+	if len(workers) == 0 && h.quota[uid] > 0 {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+// provisionAutoWorker runs one auto-provisioned create, retrying only while a
+// different operation holds the owner's lock.
+func (h *CloudWorkerHandler) provisionAutoWorker(uid int64) (int, string) {
 	username, err := autoCloudWorkerUsername(uid)
 	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: %v", uid, err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	payload, err := json.Marshal(BotRegisterRequest{
 		Username:    username,
@@ -1000,22 +1058,20 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 		Role:        "general",
 	})
 	if err != nil {
-		log.Printf("[cloud-worker] auto provisioning uid=%d: encode request: %v", uid, err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	for attempt := 1; attempt <= autoProvisionMaxAttempts; attempt++ {
 		// The request body is consumed by HandleCreate; rebuild it per attempt.
 		req, err := http.NewRequest(http.MethodPost, "/api/cloud-workers", strings.NewReader(string(payload)))
 		if err != nil {
-			log.Printf("[cloud-worker] auto provisioning uid=%d: build request: %v", uid, err)
-			return
+			return http.StatusInternalServerError, err.Error()
 		}
 		req = req.WithContext(context.WithValue(context.Background(), uidKey, uid))
 		recorder := &discardResponseWriter{}
 		h.HandleCreate(recorder, req)
 		if recorder.status >= 200 && recorder.status < 300 {
 			log.Printf("[cloud-worker] auto provisioning started uid=%d username=%s", uid, username)
-			return
+			return recorder.status, ""
 		}
 		if recorder.status == http.StatusConflict && attempt < autoProvisionMaxAttempts {
 			// An in-flight cloud operation (a manual create/update/reset or a
@@ -1027,13 +1083,17 @@ func (h *CloudWorkerHandler) AutoProvisionForOwner(uid int64) {
 			time.Sleep(autoProvisionRetryDelay(attempt))
 			continue
 		}
-		log.Printf("[cloud-worker] CRITICAL auto provisioning failed uid=%d status=%d body=%s", uid, recorder.status, truncateWorkerOutput(recorder.body.String()))
-		return
+		return recorder.status, recorder.body.String()
 	}
+	return http.StatusConflict, "auto provisioning retries exhausted"
 }
 
-// autoProvisionMaxAttempts bounds the 409 retries of AutoProvisionForOwner.
+// autoProvisionMaxAttempts bounds the 409 retries of one auto-provisioned create.
 const autoProvisionMaxAttempts = 3
+
+// autoProvisionMaxPerRun bounds how many workers one EnsureCloudWorker call may
+// create. Credits stay spendable, so a larger batch is picked up on the next call.
+const autoProvisionMaxPerRun = 5
 
 // autoProvisionRetryDelay is a variable so tests can compress the backoff.
 var autoProvisionRetryDelay = func(attempt int) time.Duration {
@@ -1111,6 +1171,28 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	return report
 }
 
+// cloudWorkerRenewArgs builds the provider renewal invocation for one lifecycle.
+//
+// One renewal event buys exactly one more paid month, so the increment is pinned
+// rather than inherited from a deployment snapshot that may record a multi-month
+// creation purchase.
+//
+// The expiry is forwarded because a packed container has no cloud subscription:
+// the deployment adapter cannot derive a new expiry from a subscription cycle and
+// used to fall back to a hard-coded +30 days, silently handing a 7-day package
+// three extra weeks. The account's paid window is the authoritative value.
+//
+// It is only forwarded when it actually extends the row — a stale entitlement
+// must never pull an already-paid window backwards. When the store cannot report
+// a package expiry (manual perpetual grants) the adapter keeps its own fallback.
+func (h *CloudWorkerHandler) cloudWorkerRenewArgs(uid int64, lifecycle CloudWorkerLifecycle) []string {
+	args := []string{"--name", lifecycle.TenantName, "--cycle-count", "1"}
+	if paidUntil := h.cloudWorkerPaidUntil(uid, nil); !paidUntil.IsZero() && lifecycle.PackageExpiresAt.Before(paidUntil) {
+		args = append(args, "--expires-at", paidUntil.UTC().Format(time.RFC3339))
+	}
+	return args
+}
+
 // renewOneCloudWorker runs the provider renewal for a single lifecycle and
 // reports the outcome; it never creates a replacement instance.
 func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorkerLifecycle) types.CloudWorkerRenewOutcome {
@@ -1127,7 +1209,7 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 	// One renewal event buys exactly one more paid month. A tenant's
 	// deployment snapshot can record a multi-month creation purchase, so
 	// pin the monthly step explicitly instead of inheriting that count.
-	out, err := h.runScript(h.renewScript, "--name", lifecycle.TenantName, "--cycle-count", "1")
+	out, err := h.runScript(h.renewScript, h.cloudWorkerRenewArgs(uid, lifecycle)...)
 	if err != nil {
 		item.Status = types.CloudWorkerRenewFailed
 		item.Message = err.Error()
@@ -1156,11 +1238,17 @@ func (h *CloudWorkerHandler) renewOneCloudWorker(uid int64, lifecycle CloudWorke
 		return item
 	}
 	expiresAt := result.ExpiresAt
+	graceDays := cloudWorkerExpiryGraceDays
+	if lifecycle.RetentionDays > 0 {
+		// Keep the window the purchased package scheduled; a renewal must not
+		// silently stretch a 7-day package's retention to the legacy 15 days.
+		graceDays = lifecycle.RetentionDays
+	}
 	var extendErr error
 	if extender, ok := h.credits.(CloudWorkerLifecycleExtender); ok {
-		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, cloudWorkerExpiryGraceDays)
+		extendErr = extender.ExtendCloudWorkerLifecycle(lifecycle.ID, expiresAt, graceDays)
 	} else {
-		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, cloudWorkerExpiryGraceDays)
+		extendErr = h.credits.ExtendCloudWorkerLifecycles(uid, expiresAt, graceDays)
 	}
 	if extendErr != nil {
 		item.Message = "已续订；平台记录同步失败：" + extendErr.Error()
@@ -1383,6 +1471,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	reservation := fmt.Sprintf("create-%d-%d", uid, time.Now().UnixNano())
 	reservedCredit := false
 	var creditExpiresAt *time.Time
+	// retentionDays comes from the purchased plan's credit (7-day package → 3
+	// days, longer → 7 days); 0 keeps the fleet-wide default.
+	retentionDays := 0
+	// runtimePlan is the shared-fleet slot size bought by the package. Empty
+	// keeps the fleet default, which is what operator-issued and pre-existing
+	// credits carry.
+	runtimePlan := ""
 	profile := types.CloudWorkerPrivateNAT
 	billing := types.CloudWorkerMonthly
 	requestedProfile, _ := r.Context().Value(cloudWorkerProfileContextKey{}).(string)
@@ -1397,6 +1492,8 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if reserved {
 			profile, billing = selected.Profile, selected.BillingMode
 			creditExpiresAt = selected.ExpiresAt
+			retentionDays = selected.RetentionDays
+			runtimePlan = selected.RuntimePlan
 		}
 	} else if profiled, ok := h.credits.(cloudWorkerProfileCredits); ok {
 		selected, reserved, reserveErr := profiled.ReserveCloudWorkerProfileCredit(uid, reservation, requestedProfile)
@@ -1424,7 +1521,11 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	deployment, deploymentErr := h.deploymentForProfile(profile)
-	if deploymentErr == nil {
+	if deploymentErr == nil && deployment.Profile != types.CloudWorkerPackedShared {
+		// Machine-level billing belongs to the dedicated ECS fleet: that script
+		// buys a subscription and pre-pays whole monthly cycles. A packed worker
+		// runs in an already-owned container, so emitting these variables would
+		// only invite someone to read them as a real billing decision.
 		deployment.Env["CTYUN_WORKER_BILLING_MODE"] = billing
 		if billing == types.CloudWorkerMonthly {
 			// Tianyi prepaid instances are sold in whole monthly cycles. Prepay
@@ -1551,14 +1652,22 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer cleanupCredentialFile()
-	provOut, err := h.runScript(h.provisionScript,
+	provisionArgs := []string{
 		"--name", tenantName,
 		"--body-id", officialBodyID,
 		"--credential-file", credentialFile,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
 		"--user-name", creator.Username,
-		"--user-display", creator.DisplayName)
+		"--user-display", creator.DisplayName,
+	}
+	// Only the shared container fleet has runtime tiers. A dedicated ECS
+	// instance's size comes from the provider flavor, so passing a packed tier
+	// there would be meaningless at best.
+	if deployment.Profile == types.CloudWorkerPackedShared && runtimePlan != "" {
+		provisionArgs = append(provisionArgs, "--plan", runtimePlan)
+	}
+	provOut, err := h.runScript(h.provisionScript, provisionArgs...)
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
 		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))
@@ -1642,7 +1751,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if reservedCredit {
-		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, cloudWorkerExpiryGraceDays); err != nil {
+		// Use the purchased package's retention window; only credits that predate
+		// the column fall back to the fleet default.
+		graceDays := retentionDays
+		if graceDays <= 0 {
+			graceDays = cloudWorkerExpiryGraceDays
+		}
+		if err := h.credits.CommitCloudWorkerCredit(uid, reservation, result.UID, tenantName, graceDays); err != nil {
 			log.Printf("[cloud-worker] commit credit for uid %d failed: %v", uid, err)
 			// A refund can revoke a reserved credit while the provider operation is
 			// still running. In that specific case the instance must not survive a
@@ -1765,7 +1880,15 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	var rebuildOwners []int64
 	queuedRebuild := map[int64]bool{}
 	for _, item := range items {
-		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") {
+		// The on-demand branch exists to drive ECS subscription billing:
+		// convert a trial into a paid month, or suspend it at trial expiry.
+		// A packed worker has no subscription, and billing-worker.sh lives only
+		// on the ECS script path — routing it here fails every sweep and
+		// `continue`s past the normal expire/archive step, so the worker would
+		// never expire at all. Treat shared containers as plain package
+		// lifecycles and keep billing_mode collapsed to month at the boundaries.
+		if item.BillingMode == types.CloudWorkerOnDemand && (item.ConversionPending || item.State == "active") &&
+			!h.tenantRunsOnPackedShared(item.TenantName) {
 			action := "suspend"
 			if item.ConversionPending {
 				action = "convert"
@@ -1781,7 +1904,16 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 			// for the grace window. If it fails, leave the row active so the
 			// next sweep retries instead of silently skipping the pause.
 			if h.expireScript != "" {
-				out, err := h.runScript(h.expireScript, "--name", item.TenantName)
+				// Hand the plan's own retention window to the deployment hook.
+				// The cluster keeps its own suspended.json deadline and a fallback
+				// reaper reads it; if it disagrees with delete_after the reaper
+				// either destroys while the platform still expects data to exist
+				// or leaves the instance around long after the platform removed it.
+				expireArgs := []string{"--name", item.TenantName}
+				if item.RetentionDays > 0 {
+					expireArgs = append(expireArgs, "--grace-days", strconv.Itoa(item.RetentionDays))
+				}
+				out, err := h.runScript(h.expireScript, expireArgs...)
 				if err != nil {
 					failed++
 					log.Printf("[cloud-worker] lifecycle expire-suspend %s failed: %s", item.TenantName, truncateWorkerOutput(destroyErrorDetail(err, out)))

@@ -61,6 +61,11 @@ func scanCommercialPlan(scanner interface {
 		&plan.CreatedAt,
 		&plan.UpdatedAt,
 		&plan.CloudWorkerBillingMode,
+		&plan.CloudWorkerDeploymentProfile,
+		&plan.CloudWorkerRetentionDays,
+		&plan.CloudWorkerIncluded,
+		&plan.PlanTier,
+		&plan.CloudWorkerRuntimePlan,
 	); err != nil {
 		return nil, err
 	}
@@ -143,7 +148,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode
+			       monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included, plan_tier, cloud_worker_runtime_plan
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -182,8 +187,30 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		return 0, fmt.Errorf("commercial plan real cost must be non-negative")
 	}
 	billing, valid := types.NormalizeCloudWorkerBilling(plan.CloudWorkerBillingMode)
-	if !valid || (billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden") {
+	if !valid {
+		return 0, fmt.Errorf("invalid cloud worker billing mode")
+	}
+	deploymentProfile, validProfile := types.NormalizeCloudWorkerProfile(plan.CloudWorkerDeploymentProfile)
+	if !validProfile {
+		return 0, fmt.Errorf("invalid cloud worker deployment profile")
+	}
+	// A shared container has no cloud subscription, so the billing dimension
+	// collapses to month before the trial-only rule is applied. Otherwise a
+	// packed plan saved as ondemand would later send its workers into the ECS
+	// billing path, where the script does not exist.
+	billing = types.CloudWorkerBillingForProfile(deploymentProfile, billing)
+	if billing == types.CloudWorkerOnDemand && normalizeCommercialSaleState(plan.SaleState) != "hidden" {
 		return 0, fmt.Errorf("trial billing is only allowed for hidden internal plans")
+	}
+	if plan.CloudWorkerRetentionDays < 0 || plan.CloudWorkerRetentionDays > 90 {
+		return 0, fmt.Errorf("invalid cloud worker retention window")
+	}
+	if plan.PlanTier < 0 {
+		return 0, fmt.Errorf("commercial plan tier must be non-negative")
+	}
+	runtimePlan, validRuntimePlan := types.NormalizeCloudWorkerRuntimePlan(plan.CloudWorkerRuntimePlan)
+	if !validRuntimePlan {
+		return 0, fmt.Errorf("invalid cloud worker runtime plan")
 	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
@@ -208,9 +235,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, auto_update_models
+			monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, auto_update_models, cloud_worker_included, plan_tier, cloud_worker_runtime_plan
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -226,7 +253,12 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			state = EXCLUDED.state,
 			sort_order = EXCLUDED.sort_order,
 			cloud_worker_billing_mode = EXCLUDED.cloud_worker_billing_mode,
-			auto_update_models = EXCLUDED.auto_update_models
+			cloud_worker_deployment_profile = EXCLUDED.cloud_worker_deployment_profile,
+			cloud_worker_retention_days = EXCLUDED.cloud_worker_retention_days,
+			auto_update_models = EXCLUDED.auto_update_models,
+			cloud_worker_included = EXCLUDED.cloud_worker_included,
+			plan_tier = EXCLUDED.plan_tier,
+			cloud_worker_runtime_plan = EXCLUDED.cloud_worker_runtime_plan
 		WHERE commercial_plans.archived_at IS NULL
 		RETURNING id`,
 		strings.TrimSpace(plan.Slug),
@@ -244,7 +276,12 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		plan.State,
 		sortOrder,
 		billing,
+		deploymentProfile,
+		plan.CloudWorkerRetentionDays,
 		plan.AutoUpdateModels,
+		plan.CloudWorkerIncluded,
+		maxInt(plan.PlanTier, 0),
+		runtimePlan,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create commercial plan: %w", err)
@@ -356,6 +393,18 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	if !valid {
 		return 0, fmt.Errorf("invalid cloud worker profile")
 	}
+	if strings.TrimSpace(invite.CloudWorkerProfile) == "" {
+		// An invite without an explicit profile inherits the plan's, so a code
+		// minted for a shared-fleet plan hands out shared-fleet credits.
+		if err := a.db.QueryRow(`SELECT cloud_worker_deployment_profile FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&profile); err != nil {
+			return 0, err
+		}
+	}
+	// Re-validate after inheritance: the inherited value must not reach the
+	// invite row unnormalized.
+	if profile, valid = types.NormalizeCloudWorkerProfile(profile); !valid {
+		return 0, fmt.Errorf("invalid cloud worker profile")
+	}
 	billing := invite.CloudWorkerBillingMode
 	if billing == "" {
 		if err := a.db.QueryRow(`SELECT cloud_worker_billing_mode FROM commercial_plans WHERE id=$1`, invite.PlanID).Scan(&billing); err != nil {
@@ -366,6 +415,9 @@ func (a *Adapter) CreateCommercialInviteCode(invite *types.CommercialInviteCode)
 	if !valid {
 		return 0, fmt.Errorf("invalid cloud worker billing mode")
 	}
+	// Shared containers have no cloud subscription: the plan decides the
+	// package window, so the machine billing mode collapses to month.
+	billing = types.CloudWorkerBillingForProfile(profile, billing)
 	maxRedemptions := invite.MaxRedemptions
 	if maxRedemptions <= 0 {
 		maxRedemptions = 1
@@ -524,6 +576,8 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	if redeemedCount >= maxRedemptions {
 		return nil, fmt.Errorf("invite code has no remaining redemptions")
 	}
+	// Retention follows the invite's plan length (7d → 3 days, longer → 7).
+	retentionDays := types.CloudWorkerRetentionDays(0, durationDays)
 	var duplicate int
 	if err := tx.QueryRow(`
 		SELECT COUNT(*)
@@ -578,9 +632,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 	for ordinal := 1; ordinal <= cloudWorkerCredits; ordinal++ {
 		if _, err := tx.Exec(`
-			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling); err != nil {
+			INSERT INTO cloud_worker_credits(uid, entitlement_id, source_ref, expires_at, deployment_profile, billing_mode, retention_days)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			ON CONFLICT (source_ref) DO NOTHING`, uid, entitlementID, fmt.Sprintf("invite:%d:%d", entitlementID, ordinal), entitlementExpires, cloudWorkerProfile, cloudWorkerBilling, retentionDays); err != nil {
 			return nil, fmt.Errorf("create invite cloud worker credit: %w", err)
 		}
 	}
@@ -588,7 +642,7 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		// A redemption reopens or extends the paid window; keep existing cloud
 		// workers on the same retention schedule instead of letting them expire
 		// against the replaced package. GREATEST keeps a longer paid window.
-		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, *entitlementExpires); err != nil {
+		if err := extendCloudWorkerLifecyclesWithPaidPeriod(tx, uid, *entitlementExpires, retentionDays); err != nil {
 			return nil, err
 		}
 	}

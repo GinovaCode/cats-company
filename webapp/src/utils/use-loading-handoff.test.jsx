@@ -49,6 +49,25 @@ describe('loading handoff', () => {
     expect(document.querySelector('.cc-loading-handoff')).toBeNull();
   });
 
+  it('keeps SVG cutouts and their frozen fill when the loader retires', async () => {
+    function MaskedLoader() {
+      const ref = useLoadingHandoff();
+      return <div ref={ref} className="cc-loading-state" id="live-loader" style={{ opacity: 1 }}>
+        <svg><defs><mask id="loading-cutout"><rect width="80" height="60" fill="white" /></mask></defs>
+          <g mask="url(#loading-cutout)" style={{ fill: 'rgb(20, 30, 40)' }}><rect width="40" height="30" /></g>
+        </svg>
+      </div>;
+    }
+    await act(async () => { root.render(<section data-loading-region=""><MaskedLoader /></section>); });
+    await act(async () => { root.render(<section data-loading-region=""><button>Ready</button></section>); });
+    const ghost = document.querySelector('.cc-loading-handoff');
+    expect(ghost.querySelector('#live-loader')).toBeNull();
+    expect(ghost.querySelector('mask')?.id).toBe('loading-cutout');
+    expect(ghost.querySelector('g').getAttribute('mask')).toBe('url(#loading-cutout)');
+    expect(ghost.querySelector('g').style.fill).toBe('rgb(20, 30, 40)');
+    expect(document.querySelectorAll('#loading-cutout')).toHaveLength(1);
+  });
+
   it('cancels the old handoff when another request starts', async () => {
     await render(true);
     await render(false);

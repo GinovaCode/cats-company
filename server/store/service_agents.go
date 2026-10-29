@@ -42,6 +42,9 @@ type ServiceRun struct {
 	Attempts       int
 	CheckpointRef  string
 	LeaseEpoch     int64 // fencing 单调租约纪元（设计 §4.8-1）
+	// ErrorText 是终态失败原因（机器可读的短码，如 no_command / not_picked_up）。
+	// 必须带给调用方：否则它只看到 "failed"，既无法转告用户也不知道该不该重试。
+	ErrorText string
 }
 
 type ServiceRunEventRecord struct {
@@ -124,6 +127,22 @@ type ServiceAgentDescriptor struct {
 	OwnerKind  string
 	OwnerUID   int64
 	Visibility string
+	// 工具契约（调用方 Agent 判断「何时用、怎么传参」的唯一依据）。
+	// Description 来自作者 manifest，原样下发；InputSchema 是 input 字段的 JSON Schema 文本
+	// （空串 = 作者未声明，平台退回通用参数写法）。
+	Description string
+	InputSchema string
+	// DefinitionJSON 是当前版本 definition 的原文（含 runner/pricing 等）。
+	// 只用于目录给 owner 本人回填「编辑」表单：发布是全量覆盖，缺字段会把
+	// 执行方式/价格抹掉，所以编辑必须带着原 definition 合并。
+	DefinitionJSON string
+	// SelfIntroDescription / SelfIntroInputSchema 是应用跑完后「建议」的自我描述，
+	// 等人确认后才写进 definition。空串 = 没有待确认的建议。
+	//
+	// 为什么不直接改 definition：写这段的是模型。它可以提建议，但不能替人
+	// 决定对外文案（那句话决定了别人会不会调用它）。
+	SelfIntroDescription string
+	SelfIntroInputSchema string
 }
 
 // Service agent 归属与可见性常量（设计 §4.3）。
@@ -131,7 +150,8 @@ const (
 	ServiceAgentOwnerInternal = "internal"
 	ServiceAgentOwnerUser     = "user"
 
-	ServiceAgentVisibilityPublic  = "public"  // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityPublic  = "public" // 目录可见，任何人可加/可调
+	ServiceAgentVisibilityFriends = "friends"
 	ServiceAgentVisibilityPrivate = "private" // 仅 owner 自己可见可调（不出现在别人的目录）
 )
 
@@ -142,13 +162,43 @@ var (
 	ErrServiceAgentInternalReserved = errors.New("service agent slug reserved for internal publishing")
 )
 
-// ServiceAgentVisibleTo 判断 agent 是否对调用者可见（目录过滤 + 调用准入共用）。
-// public 对所有人可见；其余（private）仅对 owner 本人可见。
-func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, callerUID int64) bool {
-	if agent.Visibility == "" || agent.Visibility == ServiceAgentVisibilityPublic {
+// ServiceAgentViewer 是「谁在看」——可见性要按访问者求值。
+//
+// 为什么不是一个裸 uid：friends 级要判断好友关系，而那是请求期的一次查询，
+// 纯函数拿不到。把**结论**（FriendOfOwner / FriendOfBot）带进来，判定本身仍是纯函数 ——
+// 目录过滤、tools/list、调用准入三处才能共用同一条规则，而不是各写一套
+// （历史上 bot-as-tool 就因为另写了一套「bot 的 owner 必须在白名单里」而互相打架）。
+type ServiceAgentViewer struct {
+	UID int64
+	// FriendOfOwner 表示 UID 与该 agent 的发布者是好友。
+	FriendOfOwner bool
+	// FriendOfBot 表示 UID 与这个 agent 的执行 bot 是好友（runner.type=bot 才有）。
+	//
+	// 为什么 bot 的好友也算：分享出去的是「这个 bot 本人」，它交好的人本来就在
+	// 它的联系人里。只认发布者的好友会让一支 bot 自己的社交圈白建 —— 别人是
+	// 冲着这个 bot 来的，不是冲着坐在电脑前那个人。
+	FriendOfBot bool
+}
+
+// ServiceAgentVisibleTo 判断 agent 是否对该访问者可见（目录过滤 + 调用准入共用）。
+//
+// 先判「是不是我的」，再判级别：自己发布的东西三个级别都该看得到。
+// 空串按 public 处理（老数据没有这个字段）。
+func ServiceAgentVisibleTo(agent ServiceAgentDescriptor, viewer ServiceAgentViewer) bool {
+	if agent.OwnerUID != 0 && agent.OwnerUID == viewer.UID {
 		return true
 	}
-	return agent.OwnerUID != 0 && agent.OwnerUID == callerUID
+	switch agent.Visibility {
+	case "", ServiceAgentVisibilityPublic:
+		return true
+	case ServiceAgentVisibilityFriends:
+		// 发布者的好友 **或** 执行 bot 的好友，任一成立即可。
+		return viewer.FriendOfOwner || viewer.FriendOfBot
+	default:
+		// private，以及任何没见过的取值：一律不给看。
+		// 想加新档位就得改这里 —— 默认放行会让一个手滑的字符串变成公开。
+		return false
+	}
 }
 
 // ServiceAgentStore 是服务调用面的编排存储（PG 主实现 + MySQL 镜像）。
@@ -227,5 +277,9 @@ type ServiceAgentStore interface {
 	SetServiceAgentSubscriptionHidden(ctx context.Context, uid, agentID int64, hidden bool) error
 	// RecordServiceInstanceHeartbeat 落库实例心跳（监控数据源；设计 §7.1"实例在线数"）。
 	// UPSERT 语义：每实例一行最新值；last_seen_at 刷新（在线判定=now-last_seen < 阈值）。
-	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, activeRuns int, metrics json.RawMessage) error
+	// ownerUID 由鉴权层解析（0=平台内部 worker），用于按账号判断「你这边有没有 worker」——
+	// 不能信 payload，否则任何人可以谎称自己的 worker 服务别人的应用。
+	RecordServiceInstanceHeartbeat(ctx context.Context, instanceID string, ownerUID int64, activeRuns int, metrics json.RawMessage) error
+	// 自述建议（self_intro）的读写是**可选能力**（见 server.ServiceAgentSelfIntroStore）：
+	// 它只影响面板上的一条提示，不该逼所有实现与测试替身跟着实现。
 }

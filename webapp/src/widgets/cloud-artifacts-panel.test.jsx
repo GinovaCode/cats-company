@@ -768,6 +768,140 @@ describe('CloudArtifactsPanel', () => {
     expect(container.querySelector('.cc-workspace-fullscreen-action')).toBeNull();
   });
 
+  test('refreshing an open application reloads the frame instead of only the catalogue', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    const before = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(before).not.toBeNull();
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+
+    // Re-assigning the same `src` keeps the existing document, so a republished
+    // application would keep showing its first response. Refresh has to remount
+    // the frame and re-mint the launch binding, like entering the app again.
+    api.requestArtifactLaunch.mockClear();
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    const after = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+    expect(after.getAttribute('src')).toBe(app.url);
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed refresh keeps the open binding and the current application', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    const binding = { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_refresh_keep_123456789', topic_id: 'p2p_7_440', agent_uid: 440,
+      app_id: 'saturday-demo', app_origin: 'https://artifact.catsco.cc', expires_at: '2099-01-01T00:00:00Z' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url, open_binding: binding });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    const before = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(before).not.toBeNull();
+    api.revokeArtifactOpenBinding.mockClear();
+
+    // A refresh that cannot mint a new launch must not cost the visitor the
+    // session they already have: no revoke, no guest downgrade, frame untouched.
+    api.requestArtifactLaunch.mockRejectedValueOnce(new Error('artifact_launch_rate_limited'));
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    expect(api.revokeArtifactOpenBinding).not.toHaveBeenCalled();
+    expect(container.querySelector('.cloud-artifacts-gateway-frame')).toBe(before);
+    expect(container.textContent).not.toContain('身份未附带');
+    expect(container.textContent).toContain('应用刷新失败');
+  });
+
+  test('a visitor refresh remounts the plain URL instead of reporting a failure', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    // No launch reaches the gateway, so the application opens as a guest.
+    api.requestArtifactLaunch.mockRejectedValue(new Error('artifact_launch_unavailable'));
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    const before = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(before).not.toBeNull();
+    expect(before.getAttribute('src')).toBe(app.url);
+
+    // A guest holds no binding, so remounting the plain URL cannot cost them a
+    // session. Refusing here reported a failure while the safe action was free.
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    const after = container.querySelector('.cloud-artifacts-gateway-frame');
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+    expect(after.getAttribute('src')).toBe(app.url);
+    expect(container.textContent).not.toContain('应用刷新失败');
+  });
+
+  test('retry beside an open application reloads the frame, not just the catalogue', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    const binding = { contract_version: 'catsco.artifact-open-binding.v1',
+      open_ref: 'aob_retry_focus_123456789', topic_id: 'p2p_7_440', agent_uid: 440,
+      app_id: 'saturday-demo', app_origin: 'https://artifact.catsco.cc', expires_at: '2099-01-01T00:00:00Z' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url, open_binding: binding });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    // Fail one refresh so the error block (and its retry button) is on screen
+    // while an application is open. This open holds a binding, so it keeps the
+    // frame and reports the failure.
+    api.requestArtifactLaunch.mockRejectedValueOnce(new Error('artifact_launch_rate_limited'));
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+    expect(container.textContent).toContain('应用刷新失败');
+
+    // That button must repeat the action that failed. Reading the catalogue
+    // would leave the frame showing the document it already had.
+    const catalogueCallsBefore = api.listArtifactApps.mock.calls.length;
+    api.requestArtifactLaunch.mockClear();
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url, open_binding: binding });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((b) => b.textContent === '重试').click();
+    });
+    await flush();
+
+    expect(api.requestArtifactLaunch).toHaveBeenCalledTimes(1);
+    expect(api.listArtifactApps.mock.calls.length).toBe(catalogueCallsBefore);
+  });
+
+
+  test('refreshing an open application does not re-read the catalogue', async () => {
+    const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
+    api.listArtifactApps.mockResolvedValue({ apps: [app] });
+    api.requestArtifactLaunch.mockResolvedValue({ launch_url: app.url });
+    await renderPanel({ initialTab: 'gateway', initialApp: app });
+    await flush();
+
+    // Reading the catalogue here would use the `tab` captured at click time, so a
+    // tab switch mid-refresh could let a stale response overwrite another tab.
+    const catalogueCallsBefore = api.listArtifactApps.mock.calls.length;
+    await act(async () => {
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
+    });
+    await flush();
+
+    expect(api.listArtifactApps.mock.calls.length).toBe(catalogueCallsBefore);
+  });
+
   test('consumes a quick application selection once across tab changes and reopening the list', async () => {
     const app = { id: 'saturday-demo', title: 'Saturday', url: 'https://artifact.catsco.cc/saturday-demo/' };
     api.listArtifactApps.mockReset().mockResolvedValue({ apps: [app] });
@@ -951,20 +1085,21 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(loadedBinding.signal.aborted).toBe(false);
 
-    // The new page asks for its own launch rather than reusing the sidebar's
-    // single-use code, and lands on the address that launch resolves to.
+    // A new page opens the application's own address and never spends a launch
+    // code: that address is the one to show and to share, and the gateway
+    // recognises the visitor from the platform's domain cookie on its own.
     api.requestArtifactLaunch.mockClear();
     await act(async () => {
       [...container.querySelectorAll('button')]
         .find((button) => button.textContent === '新页面打开').click();
       await Promise.resolve();
     });
-    expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'saturday-demo', topic_id: 'p2p_7_440' });
     expect(openSpy).toHaveBeenCalledWith(
-      'https://artifact.catsco.cc/_launch/code-123?next=/saturday-demo/',
+      'https://artifact.catsco.cc/saturday-demo/',
       '_blank',
       'noopener,noreferrer',
     );
+    expect(api.requestArtifactLaunch).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
 

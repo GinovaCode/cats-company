@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -15,6 +17,7 @@ import (
 
 type messageSearchTestStore struct {
 	store.Store
+	ctx        context.Context
 	results    []*store.MessageSearchResult
 	err        error
 	calls      int
@@ -24,7 +27,8 @@ type messageSearchTestStore struct {
 	limit      int
 }
 
-func (s *messageSearchTestStore) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
+func (s *messageSearchTestStore) SearchMessages(ctx context.Context, viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
+	s.ctx = ctx
 	s.calls++
 	s.viewerUID = viewerUID
 	s.query = query
@@ -93,6 +97,12 @@ func TestHandleSearchMessagesUsesAuthenticatedViewerAndDefaults(t *testing.T) {
 	if db.calls != 1 || db.viewerUID != 42 || db.query != "Hello" || db.searchType != store.MessageSearchAll || db.limit != defaultMessageSearchLimit {
 		t.Fatalf("unexpected search call: calls=%d uid=%d query=%q type=%q limit=%d", db.calls, db.viewerUID, db.query, db.searchType, db.limit)
 	}
+	if deadline, ok := db.ctx.Deadline(); !ok || time.Until(deadline) > messageSearchTimeout {
+		t.Fatal("search did not receive a bounded request context")
+	}
+	if !errors.Is(db.ctx.Err(), context.Canceled) {
+		t.Fatal("handler did not release its search context")
+	}
 	var body struct {
 		Results []store.MessageSearchResult `json:"results"`
 	}
@@ -131,6 +141,17 @@ func TestHandleSearchMessagesUnavailableAndStoreError(t *testing.T) {
 
 		if rec.Code != http.StatusNotImplemented {
 			t.Fatalf("status=%d body=%s, want 501", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("database timeout returns service unavailable before client deadline", func(t *testing.T) {
+		db := &messageSearchTestStore{err: fmt.Errorf("database execution limit: %w", context.DeadlineExceeded)}
+		handler := NewMessageHandler(db, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/messages/search?q=hello", nil)
+		rec := httptest.NewRecorder()
+		handler.HandleSearchMessages(rec, req)
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "搜索超时") {
+			t.Fatalf("status=%d body=%s, want JSON timeout with 503", rec.Code, rec.Body.String())
 		}
 	})
 

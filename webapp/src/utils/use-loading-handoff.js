@@ -42,9 +42,11 @@ export default function useLoadingHandoff() {
         const current = getComputedStyle(original);
         Object.assign(copies[index].style, {
           animation: 'none', transition: 'none', opacity: current.opacity, transform: current.transform,
-          backgroundColor: current.backgroundColor,
+          backgroundColor: current.backgroundColor, fill: current.fill,
         });
-        copies[index].removeAttribute('id');
+        // SVG mask definitions belong to this retiring illustration. Keep their
+        // references intact after the original loader has left the document.
+        if (!original.closest('defs')) copies[index].removeAttribute('id');
         copies[index].removeAttribute('role');
         copies[index].removeAttribute('aria-live');
       });

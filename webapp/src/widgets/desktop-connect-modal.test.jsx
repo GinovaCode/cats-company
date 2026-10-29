@@ -1,5 +1,6 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
 import DesktopConnectModal, { resolveConnectedDesktopDevice } from './desktop-connect-modal';
 
 vi.mock('../api', () => ({
@@ -119,6 +120,66 @@ describe('DesktopConnectModal', () => {
     expect(devices.querySelector('[aria-label="解绑设备 Office PC"]')).not.toBeNull();
   });
 
+  test.each(['p2p_38_42', 'grp_38'])('keeps one conversation device list during multi-desktop connection and reselection (%s)', async topicId => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const devices = [
+      { deviceId: 'office', displayName: '办公电脑', runtimeRole: 'desktop', routable: true },
+      { deviceId: 'home', displayName: '家里电脑', runtimeRole: 'desktop', routable: true },
+    ];
+    api.getDevices.mockResolvedValue({ devices });
+    const snapshot = { status: 'selected', selected_device_id: 'office', revision: 'r1', devices };
+    api.getConversationDevice.mockResolvedValue(snapshot);
+    api.confirmConversationDevice.mockResolvedValue({ ...snapshot, selected_device_id: 'home', revision: 'r2' });
+    api.createDesktopConnectSession.mockResolvedValue({ code: 'legacy-code' });
+    api.getDesktopConnectStatus.mockResolvedValue({ state: 'claimed' });
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
+    const expectSingleList = () => {
+      expect(container.querySelectorAll('[role="group"][aria-label="我的电脑"]')).toHaveLength(1);
+      expect(container.querySelectorAll('.cc-device-option')).toHaveLength(2);
+      expect(container.querySelector('.catsco-device-card')).toBeNull();
+      expect(container.querySelector('[aria-label^="设为本机"]')).toBeNull();
+    };
+    expectSingleList();
+    await act(async () => {
+      container.querySelector('.catsco-connect-actions button').click();
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(container.textContent).toContain('选择本机桌面设备');
+    expectSingleList();
+    await act(async () => Simulate.change(container.querySelector('input[value="home"]')));
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === '使用这台电脑').click());
+    expect(api.confirmConversationDevice).toHaveBeenCalledExactlyOnceWith(topicId, 42, 'home', 'r1');
+    expect(container.querySelector('input[value="home"]').checked).toBe(true);
+    expectSingleList();
+
+    // A remembered browser-local computer must not introduce a second list
+    // when the user reopens its selection flow alongside a conversation.
+    await act(async () => root.unmount());
+    window.localStorage.setItem('catsco_preferred_desktop_device:v1:38', 'office');
+    root = createRoot(container);
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" topicId={topicId} activeAgent={{ uid: 42 }} onClose={vi.fn()} />));
+    await act(async () => container.querySelector('.catsco-connect-actions button').click());
+    await act(async () => container.querySelector('.catsco-connect-reselect').click());
+    expectSingleList();
+  });
+
+  test('places computers above the actions without exposing tool capabilities', async () => {
+    api.getDevices.mockResolvedValue({ devices: [{
+      deviceId: 'office-pc', displayName: 'Office PC', runtimeRole: 'desktop', routable: true,
+      capabilities: ['read_file', 'execute_shell'],
+    }] });
+    await act(async () => root.render(<DesktopConnectModal userId="38" initialMode="computers" onClose={vi.fn()} />));
+    const devices = container.querySelector('.catsco-device-section');
+    const actions = container.querySelector('.catsco-connect-actions');
+    expect(devices.textContent).toContain('我的电脑');
+    expect(devices.textContent).toContain('Office PC');
+    expect(devices.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('[aria-label="设备能力"]')).toBeNull();
+    expect(container.textContent).not.toContain('read_file');
+    expect(container.textContent).not.toContain('execute_shell');
+    expect(devices.querySelector('[aria-label="解绑设备 Office PC"]')).not.toBeNull();
+  });
   test('loads computers before showing a list or empty state and preserves it during refresh', async () => {
     vi.useFakeTimers();
     let finish;

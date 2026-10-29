@@ -32,74 +32,37 @@
 }
 
 .cc-history-loading-bubbles {
-  position: relative;
+  display: block;
+  overflow: visible;
   flex: 0 0 76px;
   width: 88px;
   height: 76px;
 }
 
 .cc-history-loading-bubble {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 5px;
-  box-sizing: border-box;
-  width: 49px;
-  height: 32px;
-  padding: 9px 10px;
-  border-radius: 7px 7px 7px 2px;
-  background: var(--cc-loading-layer-face);
-  box-shadow: 0 0 0 2px var(--cc-bg);
+  fill: var(--cc-loading-layer-face);
   animation: cc-loading-layer-assemble var(--cc-loading-cycle) infinite both;
 }
 
-.cc-history-loading-bubble i {
-  display: block;
-  flex: 0 0 3px;
-  width: 26px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--cc-history-ink);
-  transform-origin: left center;
-  animation: cc-loading-write var(--cc-loading-cycle) infinite both;
-}
+.cc-history-loading-lines { fill: var(--cc-history-ink); }
 
-.cc-history-loading-bubble i:last-child { width: 18px; }
 .cc-history-loading-bubble.bubble-0 {
   --cc-loading-layer-face: color-mix(in srgb, var(--cc-text) 6%, var(--cc-bg));
   --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text) 2%, var(--cc-bg));
-  left: 1px;
-  top: 2px;
-  z-index: 0;
 }
 .cc-history-loading-bubble.bubble-1 {
   --cc-loading-layer-face: color-mix(in srgb, var(--cc-text) 10%, var(--cc-bg));
   --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text) 3%, var(--cc-bg));
-  right: 0;
-  top: 22px;
-  z-index: 1;
-  border-radius: 7px 7px 2px 7px;
-  animation-delay: var(--cc-loading-stagger);
 }
 .cc-history-loading-bubble.bubble-2 {
   --cc-loading-layer-face: color-mix(in srgb, var(--cc-text) 14%, var(--cc-bg));
   --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text) 4%, var(--cc-bg));
-  left: 10px;
-  top: 44px;
-  z-index: 2;
-  width: 40px;
-  height: 27px;
-  animation-delay: calc(2 * var(--cc-loading-stagger));
 }
-.cc-history-loading-bubble.bubble-2 i { width: 20px; }
-.cc-history-loading-bubble.bubble-2 i:last-child { width: 13px; }
-.cc-history-loading-bubble.bubble-1 i { animation-delay: var(--cc-loading-stagger); }
-.cc-history-loading-bubble.bubble-2 i { animation-delay: calc(2 * var(--cc-loading-stagger)); }
 .cc-history-loading-dots { display: inline-block; width: 15px; margin-left: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   .cc-history-loading,
   .cc-history-loading-bubble,
-  .cc-history-loading-bubble i { animation: none; }
+  .cc-history-loading .cc-loading-layer-line,
+  .cc-history-loading .cc-loading-layer-cutout { animation: none; }
 }

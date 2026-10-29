@@ -10443,15 +10443,9 @@ describe('MessagesView composer draft isolation', () => {
       });
       api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
       api.listArtifactApps.mockResolvedValue({ apps: [gatewayApp] });
-      api.requestArtifactLaunch.mockResolvedValue({
-        launch_url: 'https://artifact.catsco.cc/_launch/code-9?next=/mario-test/',
-      });
-
       const opened = [];
       const openSpy = vi.spyOn(window, 'open').mockImplementation((url) => {
-        // The blank claim comes first, while the click is still the active
-        // gesture; the destination is filled in once the launch answers.
-        if (String(url)) opened.push(String(url));
+        opened.push(String(url));
         return null;
       });
 
@@ -10472,12 +10466,12 @@ describe('MessagesView composer draft isolation', () => {
       }
 
       expect(opened).toHaveLength(1);
-      // The tab redeems a launch, which lands it on the application's own address
-      // with the visitor's identity already established.
-      expect(opened[0]).toBe('https://artifact.catsco.cc/_launch/code-9?next=/mario-test/');
+      // The tab opens the application's own address, which is the address to show
+      // and to share. Identity comes from the platform's domain cookie, so no
+      // launch code is spent and the conversation never appears in the URL.
+      expect(opened[0]).toBe('https://artifact.catsco.cc/mario-test/');
       expect(opened[0]).not.toContain('artifact-viewer');
-      // The launch names this conversation, so the tab it opens is not a stranger.
-      expect(api.requestArtifactLaunch).toHaveBeenCalledWith({ app: 'mario-test', topic_id: 'p2p_1_440' });
+      expect(opened[0]).not.toContain('_launch');
       // The sidebar must not be opened as a side effect of the handoff.
       expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
     });
@@ -10943,6 +10937,142 @@ describe('MessagesView gateway annotation flow', () => {
     }
   }
 
+
+  test('re-posts the annotation handshake until the frame answers', async () => {
+    // Only the timer APIs are faked: mounting relies on promises and on Date.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const frame = await openGatewayAppInSidebar();
+
+    const contentWindow = frame.contentWindow;
+    const posted = [];
+    const original = contentWindow.postMessage.bind(contentWindow);
+    contentWindow.postMessage = (data, targetOrigin) => {
+      posted.push(data);
+      return original(data, targetOrigin);
+    };
+    const connects = () => posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1');
+
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    expect(connects()).toHaveLength(1);
+    const first = connects()[0];
+
+    // A frame document installs its listener asynchronously; a connect that
+    // arrives too early is dropped silently. The host must re-post the SAME
+    // handshake instead of giving up after one attempt.
+    await act(async () => { vi.advanceTimersByTime(400); });
+    expect(connects()).toHaveLength(2);
+    expect(connects()[1].session_id).toBe(first.session_id);
+    expect(connects()[1].request_id).toBe(first.request_id);
+
+    await act(async () => { vi.advanceTimersByTime(800); });
+    expect(connects()).toHaveLength(3);
+    expect(connects()[2].session_id).toBe(first.session_id);
+
+    // Once the frame answers, the retry schedule stops: no further posts even
+    // after the whole schedule has elapsed.
+    await act(async () => {
+      sdkMessage(frame, {
+        type: 'catsco.gateway.annotation.ready.v1',
+        contract_version: 'catsco.gateway-annotation-bridge.v1',
+        session_id: first.session_id,
+        request_id: first.request_id,
+        capabilities: ['element', 'text', 'region'],
+        screenshot_supported: true,
+        page: { path: '/board' },
+      });
+      await flushPromises();
+    });
+    const answered = connects().length;
+    await act(async () => { vi.advanceTimersByTime(10_000); await flushPromises(); });
+    expect(connects()).toHaveLength(answered);
+    expect(container.querySelector('[aria-label="批注应用"]').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  test('a runtime that answers the first connect is never later declared dead', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const frame = await openGatewayAppInSidebar();
+
+    // A fast runtime answers inside the very post that carries the handshake,
+    // so ready lands while retransmit()/connect() is still on the stack. That
+    // is the case where a self-re-arming retry chain outlives the handshake it
+    // was waiting for and, at the last step, reports a failure for a channel
+    // the user is already using.
+    const contentWindow = frame.contentWindow;
+    const posted = [];
+    const original = contentWindow.postMessage.bind(contentWindow);
+    contentWindow.postMessage = (data, targetOrigin) => {
+      posted.push(data);
+      if (data?.type === 'catsco.gateway.annotation.connect.v1') {
+        window.dispatchEvent(new MessageEvent('message', {
+          data: {
+            type: 'catsco.gateway.annotation.ready.v1',
+            contract_version: 'catsco.gateway-annotation-bridge.v1',
+            session_id: data.session_id,
+            request_id: data.request_id,
+            capabilities: ['element', 'text', 'region'],
+            screenshot_supported: true,
+            page: { path: '/board' },
+          },
+          origin: APP_ORIGIN,
+          source: contentWindow,
+        }));
+      }
+      return original(data, targetOrigin);
+    };
+    const connects = () => posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1');
+    const notice = () => [...container.querySelectorAll('.cloud-artifacts-gateway-viewer-note')]
+      .map((node) => node.textContent).join(' ');
+
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    expect(connects()).toHaveLength(1);
+
+    // Let the entire retry schedule elapse. Nothing should change: the
+    // handshake succeeded on the first attempt, so no notice may appear and no
+    // extra handshake may be posted.
+    await act(async () => { vi.advanceTimersByTime(30_000); await flushPromises(); });
+    expect(notice()).not.toMatch(/未响应/);
+    expect(connects()).toHaveLength(1);
+    expect(container.querySelector('[aria-label="批注应用"]')).not.toBeNull();
+  });
+
+  test('reports an unresponsive runtime only after the last retry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const frame = await openGatewayAppInSidebar();
+
+    const contentWindow = frame.contentWindow;
+    const posted = [];
+    const original = contentWindow.postMessage.bind(contentWindow);
+    contentWindow.postMessage = (data, targetOrigin) => {
+      posted.push(data);
+      return original(data, targetOrigin);
+    };
+    const connects = () => posted.filter((m) => m?.type === 'catsco.gateway.annotation.connect.v1');
+    // The capability note belongs to the panel, which renders it beside the frame.
+    const notice = () => [...container.querySelectorAll('.cloud-artifacts-gateway-viewer-note')]
+      .map((node) => node.textContent).join(' ');
+
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    expect(connects()).toHaveLength(1);
+
+    // No runtime answer at all: the earlier steps must stay silent, otherwise a
+    // slow frame would show a failure notice it would then have to retract.
+    await act(async () => { vi.advanceTimersByTime(2_499); await flushPromises(); });
+    expect(connects().length).toBeGreaterThan(1);
+    expect(notice()).not.toMatch(/未响应/);
+
+    // Only after the last step is the runtime declared unresponsive.
+    await act(async () => { vi.advanceTimersByTime(1_501); await flushPromises(); });
+    expect(notice()).toMatch(/未响应/);
+  });
 
   test('new-task handoff waits for a bound SDK handshake before selecting and sends to the new topic', async () => {
     const topic = 'grp_901';

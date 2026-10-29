@@ -61,7 +61,27 @@ type AuthService struct {
 // CommercialPlan describes an operator-managed relay package. It is the
 // commercial source record; relay-admin/Bifrost remain the execution layer.
 type CommercialPlan struct {
-	CloudWorkerBillingMode string  `json:"cloud_worker_billing_mode,omitempty"`
+	CloudWorkerBillingMode string `json:"cloud_worker_billing_mode,omitempty"`
+	// CloudWorkerDeploymentProfile decides which fleet the provisioning credit
+	// minted by this plan buys: private_nat/public_ip spin up a dedicated ECS
+	// instance, packed_shared places the worker inside the shared container
+	// cluster. Empty falls back to the column default (private_nat).
+	CloudWorkerDeploymentProfile string `json:"cloud_worker_deployment_profile,omitempty"`
+	// CloudWorkerRetentionDays overrides how long a worker's data survives
+	// package expiry (0 = derive from DurationDays: ≤7d→3, longer→7).
+	CloudWorkerRetentionDays int `json:"cloud_worker_retention_days,omitempty"`
+	// CloudWorkerIncluded says whether this package buys a cloud worker at all.
+	// It replaces the slug allow-list that used to gate fulfilment, so a new
+	// package needs a data change rather than a code change.
+	CloudWorkerIncluded bool `json:"cloud_worker_included"`
+	// PlanTier is the package's rung on the upgrade ladder (ordinal, never
+	// displayed). 0 means "not on the ladder": free, internal and legacy
+	// packages. The public catalog does expose it — it describes the buyer's own
+	// upgrade path and carries no pricing information.
+	PlanTier int `json:"plan_tier"`
+	// CloudWorkerRuntimePlan is the shared-fleet slot size this package buys
+	// (light/standard/pro/heavy). Empty means "the fleet default".
+	CloudWorkerRuntimePlan string  `json:"cloud_worker_runtime_plan,omitempty"`
 	ID                     int64   `json:"id"`
 	Slug                   string  `json:"slug"`
 	Name                   string  `json:"name"`
@@ -125,6 +145,11 @@ type CommercialOrder struct {
 	LastError         string             `json:"-"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
+	// PlanIncludesWorker is filled in by fulfilment from the plan row. It is
+	// deliberately not a column: it is a one-shot signal for the post-commit
+	// hooks (renew/ensure) and must not be read back as a historic fact, since
+	// the plan can be edited after an order is fulfilled.
+	PlanIncludesWorker bool `json:"-"`
 }
 
 // CommercialPaymentConfirmation is the normalized, verified result emitted by
@@ -367,13 +392,20 @@ type CloudWorkerLifecycle struct {
 	BillingMode       string
 	ConversionPending bool
 	BillingAction     string
-	ID                int64
-	WorkerUID         int64
-	OwnerUID          int64
-	TenantName        string
-	PackageExpiresAt  time.Time
-	DeleteAfter       time.Time
-	State             string
+	// BillingActionStartedAt is when the in-flight billing action was claimed.
+	// A claim older than the store's stale window may be reconciled or replaced,
+	// so readers must not treat BillingAction alone as "still running".
+	BillingActionStartedAt time.Time
+	ID                     int64
+	WorkerUID              int64
+	OwnerUID               int64
+	TenantName             string
+	PackageExpiresAt       time.Time
+	DeleteAfter            time.Time
+	// RetentionDays is the window this row was created with; a renewal must
+	// reuse it instead of falling back to the global default.
+	RetentionDays int
+	State         string
 }
 
 // Cloud worker renewal outcome statuses reported by RenewForOwner.

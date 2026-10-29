@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -80,6 +81,7 @@ func TestExplicitDeviceAuthorizationRequiresExactRequestScope(t *testing.T) {
 	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "")
 	hub, _ := deviceSelectionFixture(t)
 	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud"}
+	bot.setRuntimeCapabilities([]string{xiaobaDeviceTargetsCapability})
 	session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
 	pref, err := hub.userDevices.confirmDeviceSelection(7, session, "a", "test", "")
 	if err != nil {
@@ -119,6 +121,10 @@ func TestExplicitDeviceAuthorizationRequiresExactRequestScope(t *testing.T) {
 	if err := hub.authorizeOrdinaryThinToolRPC(bot, &MsgThinToolRPC{TargetScope: "explicit_device"}, 7, "b", "read_file"); err == nil {
 		t.Fatal("explicit request downgraded to unscoped compatibility")
 	}
+	bot.setRuntimeCapabilities(nil)
+	if err := hub.authorizeOrdinaryThinToolRPC(bot, &MsgThinToolRPC{TargetScope: "explicit_device", GrantID: explicitGrant.GrantID, SessionKey: session, ActorUserID: "usr7", TargetDeviceID: "b"}, 7, "b", "read_file"); err == nil {
+		t.Fatal("legacy reconnect executed an explicit grant")
+	}
 	if _, err := hub.userDevices.confirmDeviceSelection(7, session, "b", "test", pref.Revision); err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +132,66 @@ func TestExplicitDeviceAuthorizationRequiresExactRequestScope(t *testing.T) {
 		if _, ok := hub.userDevices.lookupGrant(grant.GrantID); ok {
 			t.Fatal("pre-switch capability survived")
 		}
+	}
+}
+
+func TestExplicitDeviceRPCRequiresNegotiatedClientAndAuditsDowngrade(t *testing.T) {
+	t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "1")
+	t.Setenv("CATSCO_DEVICE_GRANT_ENFORCEMENT", "")
+	for _, capabilities := range []string{"undeclared", "cleared by hi"} {
+		t.Run(capabilities, func(t *testing.T) {
+			hub, _ := deviceSelectionFixture(t)
+			bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud", send: make(chan []byte, 8)}
+			hub.addClient(bot)
+			session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
+			if _, err := hub.userDevices.confirmDeviceSelection(7, session, "a", "test", ""); err != nil {
+				t.Fatal(err)
+			}
+			devices, unavailable := hub.userDeviceRouteCandidates(7)
+			ctx := hub.userDevices.turnContextForDevices(7, "p2p_7_42", "p2p", 42, "cloud", devices, unavailable)
+			grant := deviceGrantForID(t, ctx.ExplicitGrants, "b")
+			_, target := hub.findDeviceRPCTarget(7, UserDevice{DeviceID: "b"})
+			if target == nil {
+				t.Fatal("missing B receiver")
+			}
+			if capabilities == "cleared by hi" {
+				bot.setRuntimeCapabilities([]string{xiaobaDeviceTargetsCapability})
+				hub.handleHi(bot, "cloud", &MsgClientHi{ID: "legacy-hi"})
+				var hi ServerMessage
+				decodeQueuedServerMessage(t, bot.send, &hi)
+				if hi.Ctrl == nil || hi.Ctrl.Code != http.StatusOK {
+					t.Fatalf("legacy hi failed: %#v", hi)
+				}
+			}
+			request := &MsgDeviceRPC{ID: "explicit-rpc", Type: "request", RequestID: "explicit-b", GrantID: grant.GrantID,
+				TargetScope: "explicit_device", DeviceID: "b", Operation: "read_file", SessionKey: session, ActorUserID: "usr7"}
+			hub.handleDeviceRPCRequest(bot, request)
+			var ack ServerMessage
+			decodeQueuedServerMessage(t, bot.send, &ack)
+			if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusForbidden || ack.Ctrl.Text != "explicit device authorization requires a negotiated client upgrade" {
+				t.Fatalf("legacy explicit RPC was not rejected by negotiation: %#v", ack)
+			}
+			if len(target.send) != 0 || len(hub.DeviceRPCStatus(7)) != 0 {
+				t.Fatal("rejected request reached the receiver or pending router")
+			}
+			events := hub.listDeviceAudit(7, 10)
+			if len(events) != 1 || events[0].Phase != "rpc_rejected" || events[0].Result != "denied" || events[0].DeviceID != "b" || events[0].AgentID != "usr42" || events[0].SessionKey != session {
+				t.Fatalf("missing scoped rejection audit: %#v", events)
+			}
+			// The same live grant must work once the authenticated peer opts in.
+			hub.handleHi(bot, "cloud", &MsgClientHi{ID: "upgraded-hi", RuntimeCapabilities: []string{xiaobaDeviceTargetsCapability}})
+			decodeQueuedServerMessage(t, bot.send, &ack)
+			hub.handleDeviceRPCRequest(bot, request)
+			decodeQueuedServerMessage(t, bot.send, &ack)
+			if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+				t.Fatalf("upgraded explicit RPC failed: %#v", ack)
+			}
+			var forwarded ServerMessage
+			decodeQueuedServerMessage(t, target.send, &forwarded)
+			if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.DeviceID != "b" || forwarded.DeviceRPC.TargetScope != "explicit_device" {
+				t.Fatalf("explicit B was not forwarded exactly: %#v", forwarded)
+			}
+		})
 	}
 }
 

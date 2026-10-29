@@ -31,29 +31,30 @@ var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
 type DeviceGrantOperation string
 
 const (
-	DeviceGrantReadFile                         DeviceGrantOperation = "read_file"
-	DeviceGrantResolveDir                       DeviceGrantOperation = "resolve_common_directory"
-	DeviceGrantWriteFile                        DeviceGrantOperation = "write_file"
-	DeviceGrantEditFile                         DeviceGrantOperation = "edit_file"
-	DeviceGrantSendFile                         DeviceGrantOperation = "send_file"
-	DeviceGrantExecuteShell                     DeviceGrantOperation = "execute_shell"
-	DeviceGrantGlob                             DeviceGrantOperation = "glob"
-	DeviceGrantGrep                             DeviceGrantOperation = "grep"
-	DeviceGrantBrowserControl                   DeviceGrantOperation = "browser_control"
-	DeviceGrantDesktopControl                   DeviceGrantOperation = "desktop_control"
-	DeviceGrantSkillHubWorkspaceGet             DeviceGrantOperation = "skillhub.localWorkspace.get"
-	DeviceGrantSkillHubWorkspaceApplyDefinition DeviceGrantOperation = "skillhub.localWorkspace.applyDefinition"
-	DeviceCapabilitySkillHubWorkspacePagination DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
-	DeviceGrantSkillHubWorkspaceSync            DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
-	DeviceGrantSkillHubSkillShare               DeviceGrantOperation = "skillhub.localSkill.share"
-	DeviceCapabilitySkillHubPublicationProbe    DeviceGrantOperation = "skillhub.publication.sourceProbe.v1"
-	DeviceCapabilitySkillHubPublicationCapture  DeviceGrantOperation = "skillhub.publication.capture.v1"
-	DeviceCapabilitySkillHubPublicationUpload   DeviceGrantOperation = "skillhub.publication.upload.v1"
-	DeviceGrantSkillHubSkillFinalize            DeviceGrantOperation = "skillhub.localSkill.finalize"
-	DeviceGrantSkillHubSkillDelete              DeviceGrantOperation = "skillhub.localSkill.delete"
-	DeviceGrantSkillHubBotSwitch                DeviceGrantOperation = "skillhub.localBot.switch"
-	DeviceGrantKnowledgeDocumentList            DeviceGrantOperation = "knowledge.document.list"
-	DeviceGrantKnowledgeDocumentRead            DeviceGrantOperation = "knowledge.document.read"
+	DeviceGrantReadFile                             DeviceGrantOperation = "read_file"
+	DeviceGrantResolveDir                           DeviceGrantOperation = "resolve_common_directory"
+	DeviceGrantWriteFile                            DeviceGrantOperation = "write_file"
+	DeviceGrantEditFile                             DeviceGrantOperation = "edit_file"
+	DeviceGrantSendFile                             DeviceGrantOperation = "send_file"
+	DeviceGrantExecuteShell                         DeviceGrantOperation = "execute_shell"
+	DeviceGrantGlob                                 DeviceGrantOperation = "glob"
+	DeviceGrantGrep                                 DeviceGrantOperation = "grep"
+	DeviceGrantBrowserControl                       DeviceGrantOperation = "browser_control"
+	DeviceGrantDesktopControl                       DeviceGrantOperation = "desktop_control"
+	DeviceGrantSkillHubWorkspaceGet                 DeviceGrantOperation = "skillhub.localWorkspace.get"
+	DeviceGrantSkillHubWorkspaceApplyDefinition     DeviceGrantOperation = "skillhub.localWorkspace.applyDefinition"
+	DeviceCapabilitySkillHubWorkspacePagination     DeviceGrantOperation = "skillhub.localWorkspace.pagination.v1"
+	DeviceGrantSkillHubWorkspaceSync                DeviceGrantOperation = "skillhub.localWorkspace.syncToAgent"
+	DeviceGrantSkillHubSkillShare                   DeviceGrantOperation = "skillhub.localSkill.share"
+	DeviceCapabilitySkillHubPublicationProbe        DeviceGrantOperation = "skillhub.publication.sourceProbe.v1"
+	DeviceCapabilitySkillHubPublicationCapture      DeviceGrantOperation = "skillhub.publication.capture.v1"
+	DeviceCapabilitySkillHubPublicationRepairSource DeviceGrantOperation = "skillhub.publication.verifyRepairSource.v1"
+	DeviceCapabilitySkillHubPublicationUpload       DeviceGrantOperation = "skillhub.publication.upload.v1"
+	DeviceGrantSkillHubSkillFinalize                DeviceGrantOperation = "skillhub.localSkill.finalize"
+	DeviceGrantSkillHubSkillDelete                  DeviceGrantOperation = "skillhub.localSkill.delete"
+	DeviceGrantSkillHubBotSwitch                    DeviceGrantOperation = "skillhub.localBot.switch"
+	DeviceGrantKnowledgeDocumentList                DeviceGrantOperation = "knowledge.document.list"
+	DeviceGrantKnowledgeDocumentRead                DeviceGrantOperation = "knowledge.document.read"
 )
 
 type UserDevice struct {
@@ -514,6 +515,14 @@ func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID strin
 }
 
 func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	return r.turnContextForOwnerDevicesWithExplicitTargets(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, devices, unavailableCandidates, xiaobaRuntimeV2EnabledForBot(agentUID))
+}
+
+// turnContextForOwnerDevicesWithExplicitTargets keeps the server-side rollout
+// decision separate from client negotiation. Callers that have the authenticated
+// Bot connection must pass its negotiated capability; the historical helper
+// above remains for registry-only tests and callers without a live peer.
+func (r *userDeviceRegistry) turnContextForOwnerDevicesWithExplicitTargets(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice, unavailableCandidates []UserDevice, explicitTargetsEnabled bool) DeviceTurnContext {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return DeviceTurnContext{}
 	}
@@ -533,7 +542,7 @@ func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID
 	// The legacy grant list remains selected-only even during a v2 rollout.
 	// Explicit capabilities live in a separate envelope ignored by old Bots,
 	// and cannot execute through either RPC without an exact explicit target.
-	if ownerUID == actorUID && xiaobaRuntimeV2EnabledForBot(agentUID) && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
+	if ownerUID == actorUID && explicitTargetsEnabled && selection != nil && selection.SelectionSource != "selection_store_unavailable" && selection.SelectionSource != "selection_changed" {
 		explicitGrants = r.grantsForExplicitDevices(actorUID, topicID, topicType, agentUID, agentBodyID, devices, selection.Revision)
 	}
 	return DeviceTurnContext{
@@ -1000,6 +1009,7 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceCapabilitySkillHubWorkspacePagination,
 		DeviceCapabilitySkillHubPublicationProbe,
 		DeviceCapabilitySkillHubPublicationCapture,
+		DeviceCapabilitySkillHubPublicationRepairSource,
 		DeviceCapabilitySkillHubPublicationUpload,
 		DeviceGrantSkillHubWorkspaceSync,
 		DeviceGrantSkillHubSkillShare,

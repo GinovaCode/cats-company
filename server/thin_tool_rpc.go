@@ -331,6 +331,14 @@ func (h *Hub) handleThinToolRPCRequest(client *Client, msg *MsgThinToolRPC) {
 }
 
 func (h *Hub) handleThinToolRPCResult(client *Client, msg *MsgThinToolRPC) {
+	if strings.HasPrefix(strings.TrimSpace(msg.RequestID), publicationRepairSourceRequestPrefix) {
+		if h == nil || h.publicationRepairSource == nil {
+			publicationDeliveryAck(client, msg.ID, http.StatusServiceUnavailable)
+		} else {
+			h.publicationRepairSource.acceptResult(client, msg)
+		}
+		return
+	}
 	if strings.HasPrefix(strings.TrimSpace(msg.RequestID), publicationUploadRequestPrefix) {
 		if h == nil || h.publicationUpload == nil {
 			publicationDeliveryAck(client, msg.ID, http.StatusServiceUnavailable)
@@ -561,6 +569,9 @@ func (h *Hub) authorizeOrdinaryThinToolRPC(client *Client, msg *MsgThinToolRPC, 
 	grant, ok := h.userDevices.lookupGrant(msg.GrantID)
 	if !ok {
 		return fmt.Errorf("device grant is not active")
+	}
+	if grant.TargetScope == "explicit_device" && !xiaobaRuntimeV2EnabledForClient(client) {
+		return &thinToolRPCAuthorizationError{code: "device_target_upgrade_required", message: "explicit device targeting requires an upgraded cloud Bot"}
 	}
 	if grant.Source != "catscompany" || parseFormattedUID(grant.ActorUserID) <= 0 ||
 		grant.AgentID != formatUID(client.uid) || grant.OwnerUserID != formatUID(ownerUID) ||

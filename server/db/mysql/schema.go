@@ -22,6 +22,8 @@ func (a *Adapter) CreateSchema() error {
 		createArtifactAppMetadataTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createConversationTaskRunsTable,
+		createConversationTaskStatusOutboxTable,
 		createImageUpscaleTasksTable,
 		createArtifactRuntimeStatesTable,
 		createArtifactRuntimeRunsTable,
@@ -79,6 +81,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateArtifactRuntimeEventsV2DataBackfill,
 		migrateArtifactRuntimeEventsV2DataNotNull,
 		migrateArtifactRuntimeEventsV2RunIndex,
+		migrateServiceInstancesAddOwnerUID,
+		migrateServiceAgentsAddSelfIntroDescription,
+		migrateServiceAgentsAddSelfIntroInputSchema,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -133,12 +138,14 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusesTimestampPrecision,
 		migrateConversationTaskStatusesCreatedAtPrecision,
 		migrateConversationTaskStatusesUpdatedAtPrecision,
+		migrateConversationTaskStatusesAddLedgerUpdatedAt,
 		migrateConversationTaskStatusSourcesExpiresAtPrecision,
 		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
 		migrateConversationTaskStatusSourcesBackfillEventUpdatedAt,
 		migrateConversationTaskStatusSourcesEventUpdatedAtNotNull,
 		migrateConversationTaskStatusSourcesCreatedAtPrecision,
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
+		backfillConversationTaskRuns,
 		migrateServiceAgentVersionsAddPackageJson,
 		createServiceAgentVersionsAssetsHashIndex,
 		migrateServiceAgentsAddOwnership,
@@ -607,15 +614,35 @@ CREATE TABLE IF NOT EXISTS service_session_checkpoints (
 `
 
 // 实例心跳注册（PG 000032 镜像；设计 §7.1“实例在线数”数据源）。
+// owner_uid：这条 worker 属于哪个账号（心跳鉴权解出；0=平台内部 worker）。
 const createServiceInstancesTable = `
 CREATE TABLE IF NOT EXISTS service_instances (
     instance_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+    owner_uid BIGINT NOT NULL DEFAULT 0,
     active_runs INT NOT NULL DEFAULT 0,
     metrics_json JSON NOT NULL,
     first_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     last_seen_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (instance_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+// 已存在的表不会被 CREATE TABLE IF NOT EXISTS 补列（重复列错误由 isIgnorableMigrationError 吞掉）。
+const migrateServiceInstancesAddOwnerUID = `
+ALTER TABLE service_instances ADD COLUMN owner_uid BIGINT NOT NULL DEFAULT 0;
+`
+
+// 自述（self_intro）：应用跑完后「建议」的自我描述，等人确认才写进 definition。
+// MySQL 一条 ALTER 只能加一列，重复列错误会被 isIgnorableMigrationError 吞掉。
+// 自述建议（000062）：MySQL 的 TEXT 不能带字面量 DEFAULT，而 NOT NULL 又会让
+// 那些没写这两列的 INSERT（ClaimServiceAgentOwnership 等）在 strict 模式报 1364，
+// 所以用可空列；读取侧已经 COALESCE(..., ”)，Go 侧拿到的仍是空字符串。
+const migrateServiceAgentsAddSelfIntroDescription = `
+ALTER TABLE service_agents ADD COLUMN self_intro_description TEXT NULL;
+`
+
+const migrateServiceAgentsAddSelfIntroInputSchema = `
+ALTER TABLE service_agents ADD COLUMN self_intro_input_schema TEXT NULL;
 `
 
 // 用户自己的 worker 凭据（PG 镜像；只存 sha256，明文仅创建时返回）。
@@ -1433,6 +1460,10 @@ ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_act
 
 const migrateChannelAgentAccessLookupIndex = `
 ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_lookup (channel, channel_app_id, channel_user_id, status);
+`
+
+const migrateConversationTaskStatusesAddLedgerUpdatedAt = `
+ALTER TABLE conversation_task_statuses ADD COLUMN ledger_updated_at TIMESTAMP(6) NULL DEFAULT NULL;
 `
 
 // Migration: upgrade task-status timestamps to fractional-second precision.

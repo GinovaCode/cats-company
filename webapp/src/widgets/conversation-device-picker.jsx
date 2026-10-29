@@ -33,6 +33,7 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const sequence = useRef(0);
+  const deviceChangeSource = useRef({});
   const trigger = useRef(null);
   const dialog = useRef(null);
   const titleId = useId();
@@ -65,12 +66,17 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
       setSnapshot(null); setDraft(''); setOpen(false); setBusy(false); setError('');
       if (getToken()) void load();
     };
+    const onDevicesChanged = (event) => {
+      // The confirming picker already has the authoritative response. Notify
+      // other pickers without reloading and overwriting its own selection.
+      if (event.detail?.source !== deviceChangeSource.current) void load();
+    };
     window.addEventListener('cc:auth-changed', onAuth);
-    window.addEventListener('cc:devices-changed', load);
+    window.addEventListener('cc:devices-changed', onDevicesChanged);
     return () => {
       ++sequence.current;
       window.removeEventListener('cc:auth-changed', onAuth);
-      window.removeEventListener('cc:devices-changed', load);
+      window.removeEventListener('cc:devices-changed', onDevicesChanged);
     };
   }, [load]);
 
@@ -109,7 +115,7 @@ function DevicePicker({ topicId, agentId, agentName, onAgentPick, initialOpen = 
       const next = await api.confirmConversationDevice(topicId, agentId, draft, snapshot.revision);
       if (!current()) return;
       setSnapshot(next); setDraft(next.selected_device_id || ''); setOpen(false);
-      if (embedded) window.dispatchEvent(new Event('cc:devices-changed'));
+      if (embedded) window.dispatchEvent(new CustomEvent('cc:devices-changed', { detail: { source: deviceChangeSource.current } }));
     } catch {
       if (!current()) return;
       // A timeout may have committed, or another tab may have selected a

@@ -88,6 +88,25 @@ describe('ConversationDevicePicker', () => {
     expect(container.querySelector('.cc-device-selection')).not.toBeNull();
   });
 
+  it('refreshes other pickers after confirmation without reloading its own snapshot', async () => {
+    await act(async () => root.render(<>
+      <ConversationDevicePicker topicId="p2p_7_42" activeAgent={{ uid: 42 }} />
+      <ConversationDevicePicker topicId="p2p_7_42" activeAgent={{ uid: 42 }} embedded />
+    </>));
+    expect(api.getConversationDevice).toHaveBeenCalledTimes(2);
+    await act(async () => Simulate.change(container.querySelector('.cc-device-selection input[value=b]')));
+    const confirmed = { ...directory, revision: 'r2', status: 'selected', selected_device_id: 'b' };
+    api.getConversationDevice.mockResolvedValue(confirmed);
+    await click(button('使用这台电脑'));
+    expect(api.getConversationDevice).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('.cc-device-selection input[value=b]').checked).toBe(true);
+    expect(container.querySelector('.cc-device-trigger').title).toContain('同名电脑');
+    expect(button('使用这台电脑')).toBeUndefined();
+    // Device updates from outside this instance still refresh both surfaces.
+    await act(async () => window.dispatchEvent(new Event('cc:devices-changed')));
+    expect(api.getConversationDevice).toHaveBeenCalledTimes(5);
+  });
+
   it('shows motion while reading an embedded list and retains the list during refresh', async () => {
     const pending = deferred();
     api.getConversationDevice.mockReturnValueOnce(pending.promise);
