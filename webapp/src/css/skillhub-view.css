@@ -838,6 +838,27 @@
   font-size: 12px;
 }
 
+.cc-skillhub-description-confirmation {
+  min-width: 0;
+  margin: 16px 18px;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.cc-skillhub-description-text {
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+
+.cc-skillhub-description-confirmation button {
+  margin: 8px 8px 0 0;
+}
+
 .cc-skillhub-report-summary > strong {
   flex-shrink: 0;
 }
@@ -1193,9 +1214,12 @@ html:not([data-theme="dark"]):not([data-theme="liquid"][data-liquid-variant="gre
 .cc-skillhub-detail-header > div > span { display: block; margin-bottom: 3px; color: var(--cc-muted); font-size: 11px; font-weight: var(--cc-font-weight-medium); }
 .cc-skillhub-detail-header h2 { margin: 0; overflow-wrap: anywhere; color: var(--cc-text); font-size: 18px; font-weight: var(--cc-font-weight-semibold); line-height: 1.35; letter-spacing: 0; }
 .cc-skillhub-detail-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; color: var(--cc-accent); }
+.cc-skillhub-description-confirmation button,
 .cc-skillhub-detail-header button, .cc-skillhub-detail-footer button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; border: 1px solid var(--cc-border-strong); border-radius: var(--cc-radius-md); padding: 0 12px; background: var(--cc-panel-raised); color: var(--cc-text-secondary); cursor: pointer; font: inherit; font-size: 12px; font-weight: var(--cc-font-weight-medium); touch-action: manipulation; transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; }
 .cc-skillhub-detail-header button.icon-button { width: 34px; min-width: 34px; min-height: 34px; border-color: transparent; padding: 0; background: transparent; }
+.cc-skillhub-description-confirmation button:hover,
 .cc-skillhub-detail-header button:hover, .cc-skillhub-detail-footer button:hover { border-color: var(--cc-border-strong); background: var(--cc-hover); color: var(--cc-text); }
+.cc-skillhub-description-confirmation button:focus-visible,
 .cc-skillhub-detail-header button:focus-visible, .cc-skillhub-detail-footer button:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
 .cc-skillhub-detail-description { margin: 0; padding: 18px; overflow-wrap: anywhere; color: var(--cc-text-secondary); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .cc-skillhub-detail-meta { display: grid; margin: 0; padding: 0 18px; }

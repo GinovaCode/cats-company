@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ClipboardCheck, MessageSquarePlus, X } from 'lucide-react';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import PublicationHistory from './skillhub-publication-history';
+import PublicationDescription from './skillhub-publication-description';
 
 export default function PublicationReportDialog({ report, onClose, onRetry, onRepair, returnFocusRef }) {
   const dialogRef = useRef(null);
@@ -25,6 +26,7 @@ export default function PublicationReportDialog({ report, onClose, onRetry, onRe
         </header>
         <p id={descriptionId} className='cc-skillhub-detail-description'>请根据下面的问题检查 Skill，修改后可回到运行工作区重新发布。</p>
         <PublicationHistory entryRequestId={report?.entryRequestId} />
+        <PublicationDescription entryRequestId={report?.entryRequestId} />
         {report?.loading ? <p role='status' className='cc-skillhub-report-empty'>正在读取发布报告…</p>
           : report?.error ? <p role='alert' className='cc-skillhub-report-empty'>{report.error}</p> : null}
         {report?.repairError && <p role='alert' className='cc-skillhub-report-empty'>{report.repairError}</p>}

@@ -8,7 +8,8 @@ vi.mock('../api', () => ({
   getToken: vi.fn(() => 'session'), getAuthRevision: vi.fn(() => 1),
   isCurrentAuthSession: vi.fn(() => true),
   api: { getGroupInfo: vi.fn(), getSkillHubPublicationRepairContext: vi.fn(),
-    getSkillHubPublicationCapabilities: vi.fn(), getSkillHubPublicationDescriptionReleaseHistory: vi.fn() },
+    getSkillHubPublicationCapabilities: vi.fn(), getSkillHubPublicationDescriptionReleaseHistory: vi.fn(),
+    getSkillHubPublicationDescriptionDraft: vi.fn(), confirmSkillHubPublicationDescriptionDraft: vi.fn() },
 }));
 const entryRequestId = `pubentry_${'a'.repeat(32)}`;
 const reference = { schemaVersion: 1, entryRequestId, botUid: '42' };
@@ -60,6 +61,25 @@ it('restores the reference, revalidates membership and safely displays the repor
   expect(dialog.textContent).not.toContain('新建修复对话');
   await act(async () => Simulate.click(dialog.querySelector('[aria-label="关闭发布报告"]')));
   expect(document.activeElement).toBe(button);
+});
+
+it('uses the shared exact-draft confirmation inside the linked repair conversation report', async () => {
+  api.getSkillHubPublicationCapabilities.mockResolvedValue({ schemaVersion: 1, descriptionConfirmationUiEnabled: true });
+  const draft = { schemaVersion: 1, entryRequestId, botUid: '42', topicId: 'grp_77',
+    taskId: `pubrepair_${'b'.repeat(32)}`, automaticRepairEnabled: false,
+    draft: { confirmationKey: 'c'.repeat(64), round: 1,
+      location: { relativePath: 'skill.json', field: 'description' }, text: 'Read documents.', state: 'awaiting_confirmation' } };
+  api.getSkillHubPublicationDescriptionDraft.mockResolvedValue(draft);
+  api.confirmSkillHubPublicationDescriptionDraft.mockResolvedValue({ ...draft, draft: { ...draft.draft, state: 'confirmed' } });
+  await render();
+  expect(api.getSkillHubPublicationDescriptionDraft).not.toHaveBeenCalled();
+  await act(async () => Simulate.click(container.querySelector('button')));
+  const dialog = document.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain('Read documents.');
+  expect(api.confirmSkillHubPublicationDescriptionDraft).not.toHaveBeenCalled();
+  await act(async () => Simulate.click([...dialog.querySelectorAll('button')].find(b => b.textContent === '确认这段说明')));
+  expect(dialog.textContent).toContain('此草稿已确认');
+  expect(dialog.textContent).toContain('metadata.description_missing');
 });
 
 it('reads derived terminal history separately from the original rejection without claiming repair is enabled', async () => {

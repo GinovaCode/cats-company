@@ -36,6 +36,7 @@ type SkillHubPublicationReadHandler struct {
 	workspaceDurableHumanCommitEnabled bool
 	cancellationEnabled                bool
 	descriptionReleaseHistoryEnabled   bool
+	descriptionConfirmationUIEnabled   bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -67,6 +68,18 @@ func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicati
 	h.cancellationEnabled = h.enabled && (v == "1" || strings.EqualFold(v, "true"))
 	v = strings.TrimSpace(os.Getenv("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RELEASE_HISTORY_ENABLED"))
 	h.descriptionReleaseHistoryEnabled = h.enabled && (v == "1" || strings.EqualFold(v, "true"))
+	_, repairs := db.(store.SkillHubPublicationRepairStore)
+	_, descriptions := db.(store.SkillHubPublicationRepairDescriptionStore)
+	flag := func(name string) bool {
+		value := strings.TrimSpace(os.Getenv(name))
+		return value == "1" || strings.EqualFold(value, "true")
+	}
+	// UI discovery is not authority: the human handler independently checks its
+	// gates, peer readiness and current private-task ownership on GET and POST.
+	h.descriptionConfirmationUIEnabled = h.enabled && h.entries != nil && repairs && descriptions &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_CONFIRMATION_UI_ENABLED")
 	return h
 }
 
@@ -202,6 +215,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 			"captureStatusReadsEnabled":             h.enabled && h.entries != nil && captureStatusSupported,
 			"cloudStatusReadsEnabled":               h.enabled && h.entries != nil && cloudStatusSupported,
 			"descriptionReleaseHistoryReadsEnabled": h.enabled && h.entries != nil && h.descriptionReleaseHistoryEnabled && historySupported,
+			"descriptionConfirmationUiEnabled":      h.descriptionConfirmationUIEnabled,
 			"workspaceCreateEnabled":                h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"workspaceDurableCreateEnabled":      h.workspaceDurableEntriesEnabled,
 			"workspaceDurablePublishUiEnabled":   h.workspaceDurablePublishUIEnabled,
