@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, BadgeCheck, Check, ChevronDown, Cloud, Copy, Cpu, CreditCard, ExternalLink, Gift, History, KeyRound, ReceiptText, RotateCcw, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
+import { salePlansForOffers } from './plans/plan-offers';
 import {
   readStorageValue,
   writeStorageValue,
@@ -85,6 +86,15 @@ const COMMERCIAL_PLAN_PRESENTATION = {
     usageLabel: '团队用量',
     wide: true,
   },
+  // Current team slug. Kept next to the retired `catsco-team-monthly` entry so a
+  // catalogue row that still carries the old name keeps rendering.
+  'catsco-team': {
+    kicker: '多人协作',
+    tagline: '多人共享与并行协作',
+    audience: '多人使用 · 重度协作',
+    usageLabel: '团队用量',
+    wide: true,
+  },
 };
 
 const FREE_PLAN_PRESENTATION = {
@@ -99,26 +109,48 @@ const FREE_PLAN_PRESENTATION = {
   ],
 };
 
-const CURRENT_COMMERCIAL_PLAN_SLUGS = new Set(['catsco-personal', 'catsco-pro']);
-const COMMERCIAL_PLAN_TIERS = {
-  'catsco-personal': 1,
-  'catsco-pro': 2,
-};
-
-function commercialPlanTier(slug) {
-  return COMMERCIAL_PLAN_TIERS[slug] || 0;
+// Which card is a renewal, which refuses a downgrade ("已包含") and which offers
+// an upgrade ("升级至") is decided by the package's rung on the upgrade ladder.
+//
+// That rung used to be a slug→number table right here. It meant renaming or
+// replacing a package silently dropped all three behaviours, a new package could
+// never join the ladder, and — the reason this moved — two packages sharing a
+// slug at different prices (a retired ¥399 package and a new ¥99 one) both
+// reported the same rung, so a ¥399 holder could renew on the ¥99 card.
+//
+// The server now sends `plan_tier` with every catalogue plan: an ordinal, 0 for
+// "not on the ladder" (free / internal / legacy). Presentation stays keyed by
+// slug — that is copy, and losing it only falls back to the catalogue's text.
+function commercialPlanTier(plan) {
+  if (!plan) return 0;
+  const fromCatalog = Number(plan.plan_tier);
+  if (Number.isFinite(fromCatalog) && fromCatalog > 0) return fromCatalog;
+  // A catalogue built before `plan_tier` existed cannot describe the ladder, so
+  // a plan in that catalogue gets no upgrade behaviour rather than a guessed one.
+  // Guessing is what produced the ¥399-renewed-as-¥99 bug.
+  return 0;
 }
 
 function entitlementMatchesPlan(entitlement, plan) {
   if (!entitlement || !plan) return false;
-  if (entitlement.plan_slug && entitlement.plan_slug === plan.slug) return true;
-  return Number(entitlement.plan_id || 0) > 0 && Number(entitlement.plan_id) === Number(plan.id);
+  // The numeric id is the only thing that uniquely identifies a package: a slug
+  // can be reused by a successor at a different price, and matching on it once
+  // let a ¥399 holder be treated as a ¥99 holder. Only fall back to the slug
+  // when either side has no id (older payloads, local draft offers).
+  const entitlementPlanID = Number(entitlement.plan_id || 0);
+  const planID = Number(plan.id || 0);
+  if (entitlementPlanID > 0 && planID > 0) return entitlementPlanID === planID;
+  return Boolean(entitlement.plan_slug && entitlement.plan_slug === plan.slug);
 }
 
+// The rung of what the buyer currently holds. A plan the catalogue no longer
+// lists (a retired package still held by its buyers) reports 0, which simply
+// means "no upgrade rules apply" — the same answer the old slug table gave for
+// an unknown slug.
 function activeCommercialPlanTier(entitlements, plans) {
   return entitlements.reduce((highest, entitlement) => {
     const matchedPlan = plans.find(plan => entitlementMatchesPlan(entitlement, plan));
-    return Math.max(highest, commercialPlanTier(entitlement.plan_slug || matchedPlan?.slug));
+    return Math.max(highest, commercialPlanTier(matchedPlan));
   }, 0);
 }
 
@@ -600,15 +632,15 @@ function CommercialPlanCards({
         </article>
       )}
       {salePlans.map((plan) => {
-        const presentation = presentationOverrides[plan.slug] || commercialPlanPresentation(plan);
-        const planTier = commercialPlanTier(plan.slug);
+        const presentation = (!plan.useCatalogPresentation && presentationOverrides[plan.slug]) || commercialPlanPresentation(plan);
+        const planTier = commercialPlanTier(plan);
         const isActivePlan = planTier > 0
           ? activeOfficialPlanTier === planTier
           : activePackages.some(item => entitlementMatchesPlan(item, plan));
         const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
         const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
         const purchaseBlocked = isIncludedPlan;
-        const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
+        const pendingOrder = purchaseBlocked || plan.catalogUnavailable ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
         return (
           <article
             className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}${presentation.highlights?.length ? ' has-highlights' : ''}`}
@@ -632,14 +664,14 @@ function CommercialPlanCards({
               <button
                 type="button"
                 onClick={() => (pendingOrder ? onOpenOrder(pendingOrder) : onSelectPlan(plan))}
-                disabled={!paymentChannel || Boolean(paymentLoading) || purchaseBlocked}
+                disabled={(!paymentChannel && !plan.catalogUnavailable) || Boolean(paymentLoading) || purchaseBlocked}
               >
                 <CreditCard size={15} />
-                {isActivePlan
+                {isIncludedPlan ? '已包含' : plan.catalogUnavailable
+                  ? presentation.actionLabel || `获取 CatsCo ${plan.name}`
+                  : isActivePlan
                   ? '续费'
-                  : isIncludedPlan
-                    ? '已包含'
-                    : paymentLoading === `create:${plan.id}`
+                  : paymentLoading === `create:${plan.id}`
                       ? '创建中…'
                       : paymentChannels.length === 0
                         ? '暂未开放'
@@ -740,7 +772,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null, planChooserNote = '', planOffers = null }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -778,10 +810,15 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const modalRef = useRef(null);
   const closeButtonRef = useRef(null);
   const restoreFocusRef = useRef(null);
+  const planChooserRef = useRef(null);
+  const chooserCloseRef = useRef(null);
+  const chooserOpenerRef = useRef(null);
 
   useEffect(() => {
     restoreFocusRef.current = document.activeElement;
-    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => {
+      if (!planChooserRef.current && !purchaseConfirmRef.current) closeButtonRef.current?.focus();
+    }, 0);
     return () => {
       window.clearTimeout(focusTimer);
       const target = restoreFocusRef.current;
@@ -860,13 +897,34 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   // Public pricing links can carry a plan slug through the authenticated
   // workspace. Selecting it here keeps the user on the real payment flow
   // without exposing credentials or creating an order from the public site.
+  //
+  // The marketing site's short names are mapped to the slug of whichever
+  // package currently occupies that rung, rather than to a fixed slug: the
+  // points that held `personal` / `pro` were retired at ¥399 / ¥799 and replaced
+  // by a new line, so a hard-coded mapping would send a reader of the old
+  // pricing page to a package that is no longer sold.
   useEffect(() => {
     const requestedSlug = String(initialPlanSlug || '').trim();
-    const slug = ({ personal: 'catsco-personal', pro: 'catsco-pro' })[requestedSlug] || requestedSlug;
-    if (!slug || !Array.isArray(commercialCatalog?.plans) || purchasePlan) return;
-    const plan = commercialCatalog.plans.find((item) => String(item?.slug || '') === slug);
+    if (!requestedSlug || !Array.isArray(commercialCatalog?.plans) || purchasePlan) return;
+    const availablePlans = planOffers
+      ? salePlansForOffers(planOffers, commercialCatalog.plans, commercialCatalog.enabled === true)
+      : commercialCatalog.plans;
+    const legacyAliasRung = { personal: 2, pro: 3 }[requestedSlug] || 0;
+    const slug = legacyAliasRung
+      ? availablePlans.find((item) => commercialPlanTier(item) === legacyAliasRung)?.slug
+      : requestedSlug;
+    if (!slug) {
+      setPlanChooserOpen(true);
+      return;
+    }
+    const plan = availablePlans.find((item) => String(item?.slug || '') === slug);
+    const activeTier = activeCommercialPlanTier(activeEntitlements(commercial?.summary), availablePlans);
+    if (plan && commercialPlanTier(plan) > 0 && commercialPlanTier(plan) < activeTier) {
+      setPlanChooserOpen(true);
+      return;
+    }
     if (plan) setPurchasePlan(plan);
-  }, [commercialCatalog?.plans, initialPlanSlug, purchasePlan]);
+  }, [commercialCatalog?.plans, commercialCatalog?.enabled, commercial?.summary, initialPlanSlug, purchasePlan, planOffers]);
 
   const snippet = useMemo(() => configSnippet(config, plainKey), [config, plainKey]);
   const stateText = relayStateLabel(relayKey, config.self_service_enabled, keyLoading);
@@ -998,11 +1056,18 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
-  const hasCurrentCommercialPlans = catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
-  // The backend already filters the catalog by UID and sale state. Keep all
-  // returned plans here so gray/internal plans remain visible to their
-  // allowlisted users alongside the official plans.
-  const salePlans = catalogPlans;
+  // "Is this a real catalogue?" used to be answered by asking whether any plan
+  // carried one of three hard-coded slugs. A retired package line made that
+  // answer permanently "no", which switched the whole panel back to the legacy
+  // layout and hid the new packages.
+  //
+  // A plan on the ladder (`plan_tier > 0`) is exactly a current commercial
+  // package: grey/internal test plans stay off it, so they keep the plain
+  // "purchase" wording instead of the official plan layout. Local drafts are
+  // deliberately *not* enough on their own: they never went on sale, so they
+  // must keep the plain wording until the catalogue lists them.
+  const hasCurrentCommercialPlans = catalogPlans.some(plan => commercialPlanTier(plan) > 0);
+  const salePlans = planOffers ? salePlansForOffers(planOffers, catalogPlans, commercialCatalog?.enabled === true) : catalogPlans;
   const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
     plan => Number(plan?.duration_days || 30) === 30,
   );
@@ -1038,13 +1103,21 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   });
   const visibleOrders = showAllOrders ? filteredOrders : filteredOrders.slice(0, 8);
   const purchaseIsUpgrade = Boolean(
-    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) > activeOfficialPlanTier,
+    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan) > activeOfficialPlanTier,
   );
   const purchaseIsRenewal = Boolean(
-    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) === activeOfficialPlanTier,
+    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan) === activeOfficialPlanTier,
   );
+  const purchaseIsIncluded = Boolean(purchasePlan && commercialPlanTier(purchasePlan) > 0
+    && commercialPlanTier(purchasePlan) < activeOfficialPlanTier);
+  // The checkout summary used to promise a cloud worker for any of three
+  // hard-coded slugs. The server decides that per plan (`cloud_worker_included`)
+  // and strips it from the public catalogue, so the buyer-facing copy cannot
+  // read it. Keep the promise only for a plan on the ladder: a package that
+  // bought a server before always sat on a rung, and inventing a claim for a
+  // package that does not mint one over-promises in the other direction.
   const purchaseIncludesCloudWorker = Boolean(
-    purchasePlan && CURRENT_COMMERCIAL_PLAN_SLUGS.has(purchasePlan.slug),
+    purchasePlan && commercialPlanTier(purchasePlan) > 0,
   );
 
   useEffect(() => {
@@ -1121,6 +1194,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const createCommercialOrder = async (plan, paymentWindow = null) => {
+    if (plan.catalogUnavailable || (commercialPlanTier(plan) > 0 && commercialPlanTier(plan) < activeOfficialPlanTier)) return;
     if (!paymentChannel) {
       setError('支付通道尚未配置。');
       return;
@@ -1179,7 +1253,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   };
 
   const confirmCommercialPurchase = async () => {
-    if (!purchasePlan || !paymentChannel || purchaseSubmittingRef.current) return;
+    if (!purchasePlan || purchasePlan.catalogUnavailable || purchaseIsIncluded || !paymentChannel || purchaseSubmittingRef.current) return;
     purchaseSubmittingRef.current = true;
     let paymentWindow = null;
     let popupBlocked = false;
@@ -1239,11 +1313,31 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
 
   useEffect(() => {
     if (!planChooserOpen) return undefined;
+    chooserOpenerRef.current = modalRef.current?.querySelector('[aria-controls="relay-access-plan-chooser"]');
+    chooserCloseRef.current?.focus();
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') setPlanChooserOpen(false);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setPlanChooserOpen(false);
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [...planChooserRef.current.querySelectorAll('button:not([disabled]):not([tabindex="-1"]), a[href], [tabindex="0"]')];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      const opener = chooserOpenerRef.current;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
   }, [planChooserOpen]);
 
   const cancelCommercialOrder = async () => {
@@ -1285,7 +1379,10 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   }, []);
 
   useEffect(() => {
-    if (purchasePlan) purchaseConfirmRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    if (purchasePlan) {
+      purchaseConfirmRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+      purchaseConfirmRef.current?.querySelector('button')?.focus();
+    }
   }, [purchasePlan?.id]);
 
   useEffect(() => {
@@ -1607,13 +1704,14 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                     ? `${formatPriceFen(purchasePlan.price_fen)}，续费后从当前套餐到期日顺延 ${Number(purchasePlan.duration_days || 30)} 天；处于到期保留期的云托管员工会自动恢复，已释放的实例无法恢复；不会自动扣款。`
                     : purchaseIsUpgrade
                     ? `${formatPriceFen(purchasePlan.price_fen)}，支付成功后立即切换，旧套餐剩余时间不顺延；新套餐从支付时刻重新计算 ${Number(purchasePlan.duration_days || 30)} 天，额度按新套餐重置。`
-                    : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
+                    : `${formatPriceFen(purchasePlan.price_fen)}，每期 ${Number(purchasePlan.duration_days || 30)} 天，不自动续费。${purchaseIncludesCloudWorker ? '已创建的云托管员工到期后保留 15 天，期间续费即可恢复。' : ''}`}</p>
+                  {purchasePlan.catalogUnavailable && <p>此套餐暂未开放购买，开放后可在这里完成支付。</p>}
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
                   <button type="button" className="secondary" onClick={returnFromPurchase} disabled={Boolean(paymentLoading)}>返回</button>
-                  <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading)}>
+                  <button type="button" onClick={confirmCommercialPurchase} disabled={Boolean(paymentLoading) || purchasePlan.catalogUnavailable || purchaseIsIncluded}>
                     <CreditCard size={15} />
-                    {paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
+                    {purchaseIsIncluded ? '已包含' : purchasePlan.catalogUnavailable ? '暂未开放购买' : paymentLoading === `create:${purchasePlan.id}` ? '正在打开…' : paymentChannel === 'alipay_page' ? '确认并前往支付宝' : '确认购买'}
                   </button>
                 </div>
               </div>
@@ -2033,6 +2131,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
           }}
         >
           <section
+            ref={planChooserRef}
             id="relay-access-plan-chooser"
             className="relay-access-plan-modal"
             role="dialog"
@@ -2044,7 +2143,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
               <div>
                 <h3>选择适合你的套餐</h3>
               </div>
-              <button type="button" onClick={() => setPlanChooserOpen(false)} aria-label="关闭升级套餐">
+              <button ref={chooserCloseRef} type="button" onClick={() => setPlanChooserOpen(false)} aria-label="关闭升级套餐">
                 <X size={18} />
               </button>
             </header>
@@ -2109,9 +2208,12 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                   role="tabpanel"
                   aria-labelledby="relay-access-enterprise-plan-tab"
                 >
-                  {enterprisePlanContent || <EnterprisePlanCard />}
+                  {typeof enterprisePlanContent === 'function'
+                    ? enterprisePlanContent({ onSelectPlan: selectCommercialPlan, catalogPlans, catalogEnabled: commercialCatalog?.enabled === true })
+                    : enterprisePlanContent || <EnterprisePlanCard />}
                 </div>
               )}
+              {planChooserNote && <p className="relay-access-plan-chooser-note">{planChooserNote}</p>}
             </div>
           </section>
         </div>
