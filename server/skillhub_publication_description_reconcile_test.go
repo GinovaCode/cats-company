@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -95,12 +97,16 @@ func TestSkillHubPublicationDescriptionReconcileLostResponseRecovery(t *testing.
 }
 
 func TestSkillHubPublicationDescriptionReconcileFailsClosed(t *testing.T) {
-	for _, mode := range []string{"wrong-scope", "wrong-application", "expired", "disabled", "lost-cloud", "nil-cloud", "cancel-peer", "settlement-error"} {
+	for _, mode := range []string{"wrong-scope", "wrong-application", "expired", "disabled", "lost-cloud", "nil-cloud", "cancel-peer", "settlement-error", "local-busy"} {
 		t.Run(mode, func(t *testing.T) {
 			w, db, calls := descriptionReconcileFixture(t, "published")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			switch mode {
+			case "local-busy":
+				w.ports.ReadCloud = func(context.Context, store.SkillHubPublicationDescriptionApplication, store.SkillHubPublicationDescriptionReleaseIntent, publicationDescriptionCloudReleasePermit) (*publicationDescriptionCloudReleaseStatus, error) {
+					return nil, store.ErrSkillHubPublicationBusy
+				}
 			case "wrong-scope":
 				w.scope.Audience = "https://other.example"
 			case "wrong-application":
@@ -132,7 +138,11 @@ func TestSkillHubPublicationDescriptionReconcileFailsClosed(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || db.writes != 0 || len(db.outcomes) != 1 || db.outcomes[0] != "retry" {
+			want := "retry"
+			if mode == "local-busy" {
+				want = "progress"
+			}
+			if err != nil || db.writes != 0 || len(db.outcomes) != 1 || db.outcomes[0] != want {
 				t.Fatal("unsafe terminal", db.outcomes, err)
 			}
 			if mode == "wrong-scope" || mode == "wrong-application" || mode == "expired" || mode == "disabled" {
@@ -172,6 +182,167 @@ func TestSkillHubPublicationDescriptionReconcileStatusOnlyHTTPS(t *testing.T) {
 	}
 }
 
+// Existing single-call fixture counters are intentionally not concurrency-safe.
+// Serialize store operations, but never peer I/O, for the real-client fanout test.
+type lockedDescriptionReconcileStore struct {
+	*descriptionReconcileTestStore
+	mu sync.Mutex
+}
+
+func (db *lockedDescriptionReconcileStore) ClaimSkillHubPublicationDescriptionReconcile(ctx context.Context, scope store.SkillHubPublicationCancellationScope) (*store.SkillHubPublicationDescriptionReconcileLease, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.descriptionReconcileTestStore.ClaimSkillHubPublicationDescriptionReconcile(ctx, scope)
+}
+func (db *lockedDescriptionReconcileStore) GetSkillHubPublicationDescriptionReleaseObservation(ctx context.Context, actor int64, id string) (*store.SkillHubPublicationDescriptionReleaseObservation, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.descriptionReconcileTestStore.GetSkillHubPublicationDescriptionReleaseObservation(ctx, actor, id)
+}
+func (db *lockedDescriptionReconcileStore) GetSkillHubPublicationDescriptionReleaseTerminal(ctx context.Context, actor int64, id string) (*store.SkillHubPublicationDescriptionReleaseTerminalReceipt, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.descriptionReconcileTestStore.GetSkillHubPublicationDescriptionReleaseTerminal(ctx, actor, id)
+}
+func (db *lockedDescriptionReconcileStore) FinishSkillHubPublicationDescriptionReconcile(ctx context.Context, l store.SkillHubPublicationDescriptionReconcileLease, outcome string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.descriptionReconcileTestStore.FinishSkillHubPublicationDescriptionReconcile(ctx, l, outcome)
+}
+
+func TestSkillHubPublicationDescriptionReconcileRealClientCapacity(t *testing.T) {
+	for _, mode := range []string{"worker-fanout", "client-busy"} {
+		t.Run(mode, func(t *testing.T) {
+			base, fixture, _ := descriptionReconcileFixture(t, "queued")
+			db := &lockedDescriptionReconcileStore{descriptionReconcileTestStore: fixture}
+			o := fixture.observation
+			replayed := true
+			permit := publicationDescriptionCloudReleasePermit{SchemaVersion: 1, ApplicationID: o.Intent.ApplicationID,
+				EntryID: o.Intent.EntryID, Target: o.Intent.Target, IntentHash: o.Intent.IdentityHash, PermitID: o.Permit.ID,
+				AuthorizedAt: o.Permit.AuthorizedAt.UTC().Format(time.RFC3339Nano), Replayed: &replayed}
+			status := releaseStatusFixture(o.Continuation.Application, permit)
+			entered := make(chan struct{}, 4)
+			release := make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			var requests atomic.Int32
+			peer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != "POST" || r.URL.Path != publicationDescriptionReleaseStatusPath {
+					t.Error("non-status request")
+				}
+				entered <- struct{}{}
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-store")
+				_ = json.NewEncoder(w).Encode(status)
+			}))
+			defer peer.Close()
+			defer unblock()
+			cfg := derivationClientConfig(peer)
+			cfg.Issuer, cfg.Audience, cfg.ReleaseStatusEnabled = base.scope.Issuer, base.scope.Audience, true
+			cfg.URL = cfg.Audience + publicationDescriptionDerivationPath
+			// Preserve the immutable receipt's audience, while routing its
+			// configured HTTPS origin to this test's TLS listener.
+			peerURL, _ := url.Parse(peer.URL)
+			transport := peer.Client().Transport
+			cfg.HTTPClient = &http.Client{Transport: derivationRoundTripper(func(r *http.Request) (*http.Response, error) {
+				r = r.Clone(r.Context())
+				r.URL.Scheme, r.URL.Host = peerURL.Scheme, peerURL.Host
+				return transport.RoundTrip(r)
+			})}
+			worker, err := NewPublicationDescriptionReconciler(true, cfg, db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 2)
+			if mode == "worker-fanout" {
+				go func() { worker.Run(ctx); done <- nil }()
+			} else {
+				// Occupy both real client slots outside the worker, then ensure
+				// a claimed observation gets a cost-free progress settlement.
+				for i := 0; i < 2; i++ {
+					go func() {
+						_, err := worker.ports.ReadCloud(ctx, o.Continuation.Application, o.Intent, permit)
+						done <- err
+					}()
+				}
+			}
+			for i := 0; i < 2; i++ {
+				select {
+				case <-entered:
+				case <-time.After(3 * time.Second):
+					t.Fatal("two real status requests did not start")
+				}
+			}
+			if mode == "worker-fanout" {
+				for i := 0; i < 4; i++ {
+					if err := worker.RunOnce(ctx); !errors.Is(err, store.ErrSkillHubPublicationBusy) {
+						t.Fatal("excess observer was not rejected before claim", err)
+					}
+				}
+				if fixture.claims.Load() != 2 {
+					t.Fatal("excess observer acquired a lease", fixture.claims.Load())
+				}
+			} else if err := worker.RunOnce(ctx); err != nil {
+				t.Fatal("local client Busy was not requeued", err)
+			}
+			unblock()
+			want := 2
+			if mode == "client-busy" {
+				want = 1
+			}
+			deadline := time.After(3 * time.Second)
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				db.mu.Lock()
+				count := len(fixture.outcomes)
+				db.mu.Unlock()
+				if count == want {
+					break
+				}
+				select {
+				case <-deadline:
+					t.Fatal("observations did not settle")
+				case <-ticker.C:
+				}
+			}
+			if mode == "worker-fanout" {
+				cancel()
+			}
+			n := 1
+			if mode == "client-busy" {
+				n = 2
+			}
+			for i := 0; i < n; i++ {
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("observer did not stop")
+				}
+			}
+			for _, outcome := range fixture.outcomes {
+				if outcome != "progress" {
+					t.Fatal("local capacity created failure backoff", outcome)
+				}
+			}
+			if requests.Load() != 2 || fixture.writes != 0 {
+				t.Fatal("unexpected peer request or terminal write", requests.Load(), fixture.writes)
+			}
+		})
+	}
+}
+
 func TestSkillHubPublicationDescriptionReconcileGatesAndShutdown(t *testing.T) {
 	w, db, _ := descriptionReconcileFixture(t, "queued")
 	off, err := NewPublicationDescriptionReconciler(false, PublicationDescriptionDerivationClientConfig{}, db)
@@ -195,7 +366,7 @@ func TestSkillHubPublicationDescriptionReconcileGatesAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); w.Run(ctx) }()
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 2; i++ {
 		select {
 		case <-started:
 		case <-time.After(3 * time.Second):

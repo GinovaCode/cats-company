@@ -233,7 +233,10 @@ matches application/entry/actor/token/generation/exact unexpired lease. A stale
 process cannot change a successor's schedule. A terminal write remains immutable
 evidence, not execution or scheduling authority.
 
-The loop checks every five seconds with at most four concurrent observations;
+The loop checks every five seconds with at most two concurrent observations,
+matching the dedicated status client's capacity. A slot is acquired before
+claiming a lease; excess local calls cannot consume leases. A local Busy result
+after claim is requeued like progress, without increasing the failure counter;
 each observation has a 60-second budget within a 90-second persisted lease.
 Progress schedules the next read 30 seconds later. Transport/authority/validation
 failures remain unknown and retry after 15,30,60,120,240, then at most 300 seconds;

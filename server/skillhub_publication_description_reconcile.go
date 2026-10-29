@@ -67,13 +67,13 @@ func (w *PublicationDescriptionReconciler) Run(ctx context.Context) {
 	}
 	defer w.running.Store(false)
 	for ctx.Err() == nil {
-		// Up to four independent leased observations, never unbounded fanout.
-		done := make(chan error, 4)
-		for i := 0; i < 4; i++ {
+		// Match the dedicated status client's budget, before acquiring leases.
+		done := make(chan error, publicationDescriptionReleaseStatusConcurrency)
+		for i := 0; i < publicationDescriptionReleaseStatusConcurrency; i++ {
 			go func() { done <- w.RunOnce(ctx) }()
 		}
 		failed := false
-		for i := 0; i < 4; i++ {
+		for i := 0; i < publicationDescriptionReleaseStatusConcurrency; i++ {
 			if <-done != nil {
 				failed = true
 			}
@@ -98,7 +98,7 @@ func (w *PublicationDescriptionReconciler) RunOnce(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if w.active.Add(1) > 4 {
+	if w.active.Add(1) > publicationDescriptionReleaseStatusConcurrency {
 		w.active.Add(-1)
 		return store.ErrSkillHubPublicationBusy
 	}
@@ -119,7 +119,9 @@ func (w *PublicationDescriptionReconciler) RunOnce(ctx context.Context) error {
 	outcome := "retry"
 	if err := w.observe(workCtx, *l); err == nil {
 		outcome = "recorded"
-	} else if err == errDescriptionReconcileProgress {
+	} else if errors.Is(err, errDescriptionReconcileProgress) || errors.Is(err, store.ErrSkillHubPublicationBusy) {
+		// Local capacity rejection is not an external observation failure.
+		// Requeue without increasing the durable failure/backoff counter.
 		outcome = "progress"
 	}
 	finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)
