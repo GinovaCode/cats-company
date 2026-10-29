@@ -31,6 +31,19 @@ export function forkAnchorMessageId(group) {
   return id;
 }
 
+// The anchor errors are a verdict about the chosen point, not about whether the
+// request got through. Retrying the same point gives the same verdict every time,
+// so an entry that offers "retry" for them is a button that cannot succeed: the
+// only way forward is to pick a different point.
+const anchorErrorCodes = new Set([
+  'session_fork_anchor_not_turn_end',
+  'session_fork_anchor_compacted',
+]);
+
+export function isForkAnchorError(error) {
+  return anchorErrorCodes.has(String(error || ''));
+}
+
 export function canForkConversation({ topic, userId, agents = [], members = [] }) {
   const actor = uid(userId);
   if (!actor) return false;

@@ -19,6 +19,23 @@ import (
 
 var sessionForkColumns = []string{"actor_user_id", "request_id", "source_topic_id", "target_topic_id", "agent_uid", "body_id", "request_name", "source_revision", "target_revision", "source_last_seq", "message_id_map", "state", "error", "created_at", "source_turn_count", "source_total_turns"}
 
+// expectCopyTitle registers the lookups copyTitle performs when the request
+// carries no name: the source topic's name, then the agent's display name as the
+// fallback for a direct conversation (which has no topic name of its own), then
+// the owner's existing topic names to find a free suffix.
+func expectCopyTitle(mock sqlmock.Sqlmock, sourceTopic string, agent int64, owner int64, base string, existing ...string) string {
+	mock.ExpectQuery("SELECT name FROM topics WHERE id =").WithArgs(sourceTopic).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow(""))
+	mock.ExpectQuery("SELECT display_name FROM users WHERE id =").WithArgs(agent).
+		WillReturnRows(sqlmock.NewRows([]string{"display_name"}).AddRow(base))
+	rows := sqlmock.NewRows([]string{"name"})
+	for _, name := range existing {
+		rows.AddRow(name)
+	}
+	mock.ExpectQuery("SELECT name FROM topics WHERE owner_id =").WithArgs(owner).WillReturnRows(rows)
+	return base + "(1)"
+}
+
 func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 	for _, failCopy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "copy", true: "rollback"}[failCopy], func(t *testing.T) {
@@ -36,9 +53,10 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 			mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(2, ""))
 			mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
 			mock.ExpectQuery("SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).AddRow(10, 7, "file", "file", `[{"type":"file","payload":{"url":"/uploads/files/report.pdf"}}]`, "normal", "user", `{"custom":"keep"}`, nil, stamp).AddRow(11, 9, "answer", "text", nil, "normal", "assistant", nil, 10, stamp))
-			mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+			title := expectCopyTitle(mock, "p2p_7_9", 9, 7, "CatsCo")
+			mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 			mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
-			mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"project_id"}))
 			copyExpectation := mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "file", "file", `[{"type":"file","payload":{"url":"/uploads/files/report.pdf"}}]`, "normal", "user", `{"custom":"keep"}`, stamp)
 			if failCopy {
@@ -91,9 +109,10 @@ func TestSessionForkMySQLCloneIsBoundedByAnchor(t *testing.T) {
 			AddRow(10, 9, "first answer", "text", nil, "normal", "assistant", nil, 9, stamp).
 			AddRow(11, 7, "second", "text", nil, "normal", "user", nil, nil, stamp).
 			AddRow(12, 9, "second answer", "text", nil, "normal", "assistant", nil, 11, stamp))
-	mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+	title := expectCopyTitle(mock, "p2p_7_9", 9, 7, "CatsCo")
+	mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"project_id"}))
 	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(7), "first", "text", nil, "normal", "user", nil, stamp).WillReturnResult(sqlmock.NewResult(100, 1))
 	mock.ExpectExec("INSERT INTO messages").WithArgs("grp_20", int64(9), "first answer", "text", nil, "normal", "assistant", nil, stamp).WillReturnResult(sqlmock.NewResult(101, 1))
@@ -132,9 +151,10 @@ func TestSessionForkMySQLCloneInheritsProjectPlacement(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).
 			AddRow(9, 7, "asked", "text", nil, "normal", "user", nil, nil, stamp).
 			AddRow(10, 9, "answered", "text", nil, "normal", "assistant", nil, 9, stamp))
-	mock.ExpectExec("INSERT INTO `groups`").WithArgs("\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
+	title := expectCopyTitle(mock, "p2p_7_9", 9, 7, "CatsCo")
+	mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", "\u4f1a\u8bdd\u526f\u672c", int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
 	// The source sits in project 42, so the copy must land there instead of the
 	// general task list the user would otherwise have to search.
 	mock.ExpectQuery("SELECT project_id FROM project_topics").WithArgs(int64(7), "p2p_7_9").

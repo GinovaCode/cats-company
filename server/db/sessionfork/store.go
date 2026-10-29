@@ -241,9 +241,9 @@ func (s SQLStore) CreateSessionFork(ctx context.Context, req types.SessionForkRe
 	if req.UntilMessageID > 0 && !anchorClosesTurn(all, anchor, req.AgentUID) {
 		return nil, store.ErrSessionForkAnchor
 	}
-	title := req.Name
-	if title == "" {
-		title = "\u4f1a\u8bdd\u526f\u672c"
+	title, err := s.copyTitle(ctx, tx, req)
+	if err != nil {
+		return nil, err
 	}
 	groupID, err := s.insertID(ctx, tx, `INSERT INTO "groups" (name, owner_id, group_kind) VALUES (?, ?, 'agent_task')`, title, req.ActorUserID)
 	if err != nil {
@@ -639,4 +639,85 @@ func (s SQLStore) ExpireSessionForks(ctx context.Context, cutoff time.Time, limi
 		return 0, err
 	}
 	return expired, nil
+}
+
+// copyTitle names a copy after its source: 「名字」(1), 「名字」(2), and so on.
+//
+// A copy is an ordinary conversation to the user, so it should read like one
+// rather than carry a generic label. The suffix keeps siblings of the same source
+// distinguishable, and it is computed over the owner's existing topics so two
+// copies never collide.
+//
+// The source name is taken whole, including any trailing "(n)": a conversation
+// the user already named 「周报(1)」 yields 「周报(1)(1)」, because guessing which
+// parenthetical is a copy marker would rewrite a name the user chose.
+func (s SQLStore) copyTitle(ctx context.Context, tx *sql.Tx, req types.SessionForkRequest) (string, error) {
+	base := strings.TrimSpace(req.Name)
+	if base == "" {
+		var sourceName sql.NullString
+		err := tx.QueryRowContext(ctx, s.query("SELECT name FROM topics WHERE id = ?"), req.SourceTopicID).Scan(&sourceName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		base = strings.TrimSpace(sourceName.String)
+	}
+	if base == "" {
+		// A direct conversation has no topic name of its own; the agent's display
+		// name is what the user sees in the list.
+		var agentName sql.NullString
+		err := tx.QueryRowContext(ctx, s.query("SELECT display_name FROM users WHERE id = ?"), req.AgentUID).Scan(&agentName)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		base = strings.TrimSpace(agentName.String)
+	}
+	if base == "" {
+		base = "会话"
+	}
+
+	// The owner's whole set of topic names is read and filtered here rather than in
+	// SQL: `LIKE ... ESCAPE` spells its escape differently on MySQL and PostgreSQL,
+	// and a name containing % or _ would otherwise need that difference spelled
+	// correctly in each dialect. One owner has few enough topics for this.
+	rows, err := tx.QueryContext(ctx, s.query("SELECT name FROM topics WHERE owner_id = ?"), req.ActorUserID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	// Concurrent copies of the same source would race here, but the window is a
+	// single transaction and the UI allows one copy at a time. Worst case two
+	// copies share a name; no data is lost, and the name is user-editable.
+	taken := int64(0)
+	for rows.Next() {
+		var name sql.NullString
+		if err = rows.Scan(&name); err != nil {
+			return "", err
+		}
+		suffix, ok := copySuffix(base, name.String)
+		if ok && suffix > taken {
+			taken = suffix
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return "", err
+	}
+	return base + "(" + strconv.FormatInt(taken+1, 10) + ")", nil
+}
+
+// copySuffix reports the n in "base(n)" and whether name has that shape at all.
+func copySuffix(base, name string) (int64, bool) {
+	prefix := base + "("
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ")") {
+		return 0, false
+	}
+	digits := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ")")
+	if digits == "" || strings.HasPrefix(digits, "+") || strings.HasPrefix(digits, "-") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Copy, ExternalLink, Info, LoaderCircle, MoreHorizontal, RefreshCw, X } from 'lucide-react';
-import { describeForkError } from '../utils/conversation-fork';
+import { Copy, ExternalLink, LoaderCircle, MoreHorizontal, RefreshCw, X } from 'lucide-react';
+import { describeForkError, isForkAnchorError } from '../utils/conversation-fork';
 import { useConversationFork } from '../utils/use-conversation-fork';
 import '../css/conversation-fork.css';
 
@@ -67,10 +67,9 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
   const { operation, provenance, busy, error, targetError, checking, blocked } = fork;
   return (
     <>
-      {provenance && <div className="cc-fork-notice cc-fork-provenance" role="note" aria-label="会话来源">
-        <Info size={15} aria-hidden="true" />
-        <span>复制自 <bdi>{provenance.source_topic_id}</bdi></span>
-      </div>}
+      {/* A copy reads as an ordinary conversation: the name already says where it
+          came from, and a "复制自 grp_..." banner only surfaces an internal id the
+          user cannot act on. */}
       {/* Dismissing hides the failure report only. A separate lookup error still
           needs its own "重新查询" action, so keep the block when one is present. */}
       {blocked && !(fork.noticeDismissed && provenance?.state === 'failed' && !targetError)
@@ -99,10 +98,12 @@ export function ConversationForkNotice({ fork, canCreate = false, buttonRole }) 
         {operation?.state === 'ready' && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.open()}>
           <ExternalLink size={15} aria-hidden="true" />打开新会话
         </button>}
-        {canCreate && operation?.state === 'failed' && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create({ newRequest: true })}>
+        {canCreate && operation?.state === 'failed' && !isForkAnchorError(operation.error)
+          && <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create({ newRequest: true })}>
           <Copy size={15} aria-hidden="true" />重新创建
         </button>}
-        {canCreate && (error && operation?.state !== 'ready' && operation?.state !== 'failed' || operation?.state === 'pending') && (
+        {canCreate && !isForkAnchorError(error)
+          && (error && operation?.state !== 'ready' && operation?.state !== 'failed' || operation?.state === 'pending') && (
           <button type="button" role={buttonRole} disabled={busy} onClick={() => void fork.create()}><RefreshCw size={15} aria-hidden="true" />重试复制</button>
         )}
         {fork.cancel && (operation?.state === 'pending' || error) && (

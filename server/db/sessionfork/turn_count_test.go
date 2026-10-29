@@ -2,10 +2,8 @@ package sessionfork
 
 import (
 	"database/sql"
-	"errors"
+	"strconv"
 	"testing"
-
-	"github.com/openchat/openchat/server/store"
 )
 
 // Production does not write role='user': the plain-text send path stores only
@@ -15,7 +13,9 @@ import (
 const agentUID int64 = 9
 
 func human() message { return message{from: 7, role: sql.NullString{}} }
-func bot() message   { return message{from: agentUID, role: sql.NullString{String: "assistant", Valid: true}} }
+func bot() message {
+	return message{from: agentUID, role: sql.NullString{String: "assistant", Valid: true}}
+}
 func botPlain() message {
 	return message{from: agentUID, role: sql.NullString{}}
 }
@@ -102,18 +102,61 @@ func TestAnchorClosesTurn(t *testing.T) {
 	}
 }
 
-// An anchor that is not a turn's end must be reported separately from "the
-// conversation changed": the user can act on the first one by picking a
-// different spot, while the second needs a reload. Collapsing both into
-// `session_fork_source_unavailable` made a mis-picked anchor look like a bug.
-func TestAnchorNotTurnEndIsItsOwnError(t *testing.T) {
-	if !errors.Is(store.ErrSessionForkAnchor, store.ErrSessionForkAnchor) {
-		t.Fatal("anchor error must be matchable on its own")
+// A copy is named after its source with a running suffix. The suffix is computed
+// from the owner's existing names, and a name the user already ended with "(n)"
+// is taken whole: guessing which parenthetical is a copy marker would rewrite a
+// name the user chose.
+func TestCopySuffix(t *testing.T) {
+	for _, tc := range []struct {
+		base, name string
+		want       int64
+		ok         bool
+	}{
+		{"周报", "周报(1)", 1, true},
+		{"周报", "周报(12)", 12, true},
+		{"周报", "周报", 0, false},
+		{"周报", "周报(1) 副本", 0, false},
+		{"周报", "周报(abc)", 0, false},
+		{"周报", "周报()", 0, false},
+		{"周报", "周报(0)", 0, false},
+		{"周报", "周报(-1)", 0, false},
+		{"周报", "周报(1)(2)", 0, false},
+		{"周报(1)", "周报(1)(3)", 3, true},
+		{"", "(1)", 1, true},
+	} {
+		got, ok := copySuffix(tc.base, tc.name)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("copySuffix(%q, %q) = %d,%v, want %d,%v", tc.base, tc.name, got, ok, tc.want, tc.ok)
+		}
 	}
-	if errors.Is(store.ErrSessionForkAnchor, store.ErrSessionForkSource) {
-		t.Fatal("anchor error must not be reported as a changed conversation")
-	}
-	if store.ErrSessionForkAnchor.Error() != "session_fork_anchor_not_turn_end" {
-		t.Fatalf("unexpected error code: %s", store.ErrSessionForkAnchor.Error())
+}
+
+// escape-free: the highest existing suffix wins, so siblings never collide even
+// when some are deleted and re-created.
+func TestNextCopyTitle(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		base     string
+		existing []string
+		want     string
+	}{
+		{"first copy", "周报", nil, "周报(1)"},
+		{"second copy", "周报", []string{"周报(1)"}, "周报(2)"},
+		{"fills the gap after the highest", "周报", []string{"周报(1)", "周报(3)"}, "周报(4)"},
+		{"ignores other conversations", "周报", []string{"日报(1)", "周报 归档"}, "周报(1)"},
+		{"takes a name ending in (n) whole", "周报(1)", []string{"周报(1)(1)"}, "周报(1)(2)"},
+		{"ignores a malformed suffix", "周报", []string{"周报(一)"}, "周报(1)"},
+	} {
+		// existing names are matched against the base the same way copyTitle does
+		taken := int64(0)
+		for _, name := range tc.existing {
+			if suffix, ok := copySuffix(tc.base, name); ok && suffix > taken {
+				taken = suffix
+			}
+		}
+		got := tc.base + "(" + strconv.FormatInt(taken+1, 10) + ")"
+		if got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

@@ -1,4 +1,4 @@
-import { canForkConversation, describeForkError, forkAnchorMessageId, forkComposerNotice, forkTargetTopic, normalizeForkRecord } from './conversation-fork';
+import { canForkConversation, describeForkError, forkAnchorMessageId, forkComposerNotice, forkTargetTopic, isForkAnchorError, normalizeForkRecord } from './conversation-fork';
 
 const agent = { uid: 2, is_owner: true };
 
@@ -79,6 +79,23 @@ describe('bounded copy anchor', () => {
 
   it('explains that the copy point has to be the end of a reply', () => {
     expect(describeForkError('session_fork_anchor_not_turn_end')).toContain('最后一条');
+  });
+});
+
+// An anchor verdict is final for that point: retrying the same point produces the
+// same verdict, so offering "retry" would be a button that cannot succeed.
+describe('fork anchor verdicts', () => {
+  it('treats both anchor errors as final', () => {
+    expect(isForkAnchorError('session_fork_anchor_not_turn_end')).toBe(true);
+    expect(isForkAnchorError('session_fork_anchor_compacted')).toBe(true);
+  });
+
+  it('leaves every other failure retryable', () => {
+    expect(isForkAnchorError('session_fork_source_unavailable')).toBe(false);
+    expect(isForkAnchorError('session_fork_source_busy')).toBe(false);
+    expect(isForkAnchorError('network interrupted')).toBe(false);
+    expect(isForkAnchorError('')).toBe(false);
+    expect(isForkAnchorError(undefined)).toBe(false);
   });
 });
 

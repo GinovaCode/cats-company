@@ -169,7 +169,11 @@ export function useConversationFork({ topic, userId, onActivateTopic }) {
     // memory only until the page is reloaded, and after a reload the stored
     // payload is the only place it is left.
     const explicit = Number.isSafeInteger(untilMessageId) && untilMessageId > 0 ? untilMessageId : 0;
-    if (explicit > 0) owner.lastAnchor = explicit;
+    // Both explicit forms have to be recorded, including the unbounded one.
+    // Writing only `> 0` left the previous point in place, so a later retry
+    // inherited it: copy from a message, then copy everything, then retry — and
+    // the retry silently came back bounded to the old point.
+    if (untilMessageId !== undefined) owner.lastAnchor = explicit;
     const anchor = untilMessageId === undefined
       ? (Number(owner.lastAnchor || 0) || Number(owner.payload?.until_message_id || 0))
       : explicit;
