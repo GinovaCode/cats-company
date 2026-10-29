@@ -339,8 +339,13 @@ checks task-authority changes during copy recovery. Cloud derivation/report/copy
 and Runtime source are synthetic ports. These are not real Cloud/Runtime/PG or
 paid-model end-to-end tests. Local database skips are not PostgreSQL passes.
 
-M3 still requires the derived-candidate release/commit protocol, later-round
-private candidate ancestry/derivation, uncertain paid-call reconciliation and
-both publication entry points. Production wiring/enabling and user acceptance
+The derived-candidate release/commit protocol, terminal reconciliation and local
+browser history are now internal/default-off building blocks, not a complete
+user publishing loop. The shared report dialog also consumes the separate exact
+description confirmation contract (see skillhub-publication-description-confirmation.md),
+without initiating repair, applying bytes or authorizing release. M3 still
+requires later-round private candidate ancestry/derivation, uncertain paid-call
+reconciliation and both publication entry points' full trusted continuation.
+Production wiring/enabling and user acceptance
 remain later steps; Chinese presentation content and author images remain after
 the publishing-repair loop.

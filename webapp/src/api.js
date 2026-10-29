@@ -996,6 +996,21 @@ export const api = {
     undefined,
     options,
   ),
+  getSkillHubPublicationDescriptionDraft: (entryRequestId, options = {}) => {
+    if (typeof entryRequestId !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(entryRequestId)) {
+      return Promise.reject(new Error('发布记录标识无效。'));
+    }
+    return request('GET', `/api/skillhub/publications/commit/entries/${entryRequestId}/repair-description`,
+      undefined, { timeoutMs: 7000, ...options });
+  },
+  confirmSkillHubPublicationDescriptionDraft: (entryRequestId, confirmationKey, options = {}) => {
+    if (typeof entryRequestId !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(entryRequestId)
+      || typeof confirmationKey !== 'string' || !/^[a-f0-9]{64}$/.test(confirmationKey)) {
+      return Promise.reject(new Error('发布草稿确认标识无效。'));
+    }
+    return request('POST', `/api/skillhub/publications/commit/entries/${entryRequestId}/repair-description`,
+      { schemaVersion: 1, confirmationKey }, { timeoutMs: 7000, ...options });
+  },
   getSkillHubPublicationDescriptionReleaseHistory: (entryRequestId, options = {}) => {
     if (!/^pubentry_[a-f0-9]{32}$/.test(entryRequestId || '')) {
       return Promise.reject(new Error('发布记录标识无效。'));
