@@ -111,4 +111,18 @@ describe('loading handoff', () => {
     expect(document.querySelector('.cc-loading-handoff')).not.toBeNull();
     expect(animations).toHaveLength(2);
   });
+
+  it('does not fade existing content owned by a nested loading region', async () => {
+    const view = loading => <section data-loading-region="">
+      <section data-loading-region=""><div data-loading-content="">Existing image</div></section>
+      {loading ? <Loader /> : <button>Ready</button>}
+    </section>;
+    await act(async () => { root.render(view(true)); });
+    const image = container.querySelector('[data-loading-content]');
+    await act(async () => { root.render(view(false)); });
+    expect(document.querySelector('.cc-loading-handoff')).not.toBeNull();
+    expect(container.querySelector('button').textContent).toBe('Ready');
+    expect(Element.prototype.animate.mock.contexts).not.toContain(image);
+    expect(animations).toHaveLength(2);
+  });
 });

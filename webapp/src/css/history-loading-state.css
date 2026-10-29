@@ -1,11 +1,21 @@
+@import './motion.css';
+
 .v3-timeline.is-history-loading {
+  position: relative;
   min-height: 0;
   padding-block: 24px;
+  overflow: hidden;
 }
 
-.v3-timeline.is-history-loading > .v3-timeline-inner,
-.v3-timeline.is-history-loading .cc-history-loading {
-  flex: 1 0 auto;
+.v3-timeline.is-history-loading > .v3-timeline-inner {
+  visibility: hidden;
+}
+
+.v3-timeline.is-history-loading > .cc-history-loading {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  margin: 0;
 }
 
 .cc-app-focus.cc-app-context-open .v3-timeline.is-history-loading {
@@ -14,12 +24,11 @@
 }
 
 .cc-history-loading {
-  --cc-history-bubble: color-mix(in srgb, var(--cc-text) 8%, var(--cc-bg));
   --cc-history-ink: color-mix(in srgb, var(--cc-text) 36%, var(--cc-bg));
   gap: 14px;
   font-size: 12px;
   line-height: 20px;
-  animation: cc-history-loading-reveal 180ms 160ms ease-out both;
+  animation: cc-loading-reveal var(--cc-motion-enter) var(--cc-loading-reveal-delay) var(--cc-motion-ease) both;
 }
 
 .cc-history-loading-bubbles {
@@ -40,8 +49,9 @@
   height: 32px;
   padding: 9px 10px;
   border-radius: 7px 7px 7px 2px;
-  background: var(--cc-history-bubble);
-  animation: cc-history-bubble-assemble 3.8s infinite both;
+  background: var(--cc-loading-layer-face);
+  box-shadow: 0 0 0 2px var(--cc-bg);
+  animation: cc-loading-layer-assemble var(--cc-loading-cycle) infinite both;
 }
 
 .cc-history-loading-bubble i {
@@ -52,46 +62,41 @@
   border-radius: 2px;
   background: var(--cc-history-ink);
   transform-origin: left center;
-  animation: cc-history-bubble-write 3.8s infinite both;
+  animation: cc-loading-write var(--cc-loading-cycle) infinite both;
 }
 
 .cc-history-loading-bubble i:last-child { width: 18px; }
-.cc-history-loading-bubble.bubble-0 { left: 1px; top: 2px; }
+.cc-history-loading-bubble.bubble-0 {
+  --cc-loading-layer-face: color-mix(in srgb, var(--cc-text) 6%, var(--cc-bg));
+  --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text) 2%, var(--cc-bg));
+  left: 1px;
+  top: 2px;
+  z-index: 0;
+}
 .cc-history-loading-bubble.bubble-1 {
+  --cc-loading-layer-face: color-mix(in srgb, var(--cc-text) 10%, var(--cc-bg));
+  --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text) 3%, var(--cc-bg));
   right: 0;
   top: 22px;
+  z-index: 1;
   border-radius: 7px 7px 2px 7px;
-  animation-delay: .38s;
+  animation-delay: var(--cc-loading-stagger);
 }
 .cc-history-loading-bubble.bubble-2 {
+  --cc-loading-layer-face: color-mix(in srgb, var(--cc-text) 14%, var(--cc-bg));
+  --cc-loading-layer-rest: color-mix(in srgb, var(--cc-text) 4%, var(--cc-bg));
   left: 10px;
   top: 44px;
+  z-index: 2;
   width: 40px;
   height: 27px;
-  animation-delay: .76s;
+  animation-delay: calc(2 * var(--cc-loading-stagger));
 }
 .cc-history-loading-bubble.bubble-2 i { width: 20px; }
 .cc-history-loading-bubble.bubble-2 i:last-child { width: 13px; }
-.cc-history-loading-bubble.bubble-1 i { animation-delay: .38s; }
-.cc-history-loading-bubble.bubble-2 i { animation-delay: .76s; }
+.cc-history-loading-bubble.bubble-1 i { animation-delay: var(--cc-loading-stagger); }
+.cc-history-loading-bubble.bubble-2 i { animation-delay: calc(2 * var(--cc-loading-stagger)); }
 .cc-history-loading-dots { display: inline-block; width: 15px; margin-left: 2px; }
-
-@keyframes cc-history-loading-reveal {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes cc-history-bubble-assemble {
-  0%, 5% { opacity: .15; transform: translateY(3px); }
-  19%, 68% { opacity: 1; transform: translateY(0); }
-  90%, 100% { opacity: .15; transform: translateY(3px); }
-}
-
-@keyframes cc-history-bubble-write {
-  0%, 12% { opacity: 0; transform: scaleX(.4); }
-  28%, 66% { opacity: .8; transform: scaleX(1); }
-  88%, 100% { opacity: 0; transform: scaleX(.8); }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .cc-history-loading,

@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bookmark, ChevronDown, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
+import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, Maximize2, Minimize2, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, Check, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal, Image as ImageIcon, Share2 } from 'lucide-react';
 import t from '../i18n';
 import { EXECUTION_LABELS, useLiquidConversation } from '../utils/liquid-conversation';
 import { FadingMarkdown, FadingText, LiquidReplySurface, useReplyReveal } from './liquid-reply-motion';
@@ -792,7 +792,7 @@ function WorkingToolStep({ item, orphan = false }) {
           aria-controls={resultID}
           onClick={() => setOpen((current) => !current)}
         >
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />
           <Terminal size={14} className="v3-wpi-icon" />
           <span className="v3-wpi-tool-name">{name}</span>
           {!orphan && (
@@ -856,9 +856,7 @@ function SubAgentWorkingGroup({ item }) {
         aria-controls={stepsID}
         onClick={() => setOpen(!open)}
       >
-        {open
-          ? <ChevronDown size={13} aria-hidden="true" />
-          : <ChevronRight size={13} aria-hidden="true" />}
+        <ChevronRight size={13} className="cc-disclosure-chevron" aria-hidden="true" />
         <span className="v3-wpi-subagent-name">{item.name}</span>
         {item.agentType && <span className="v3-wpi-subagent-type">{item.agentType}</span>}
         <span className={`v3-wpi-subagent-status ${item.status || 'running'}`}>{status}</span>
@@ -956,7 +954,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false, stopped = 
 
   const statusContent = (
     <>
-      {hasDetails && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+      {hasDetails && <ChevronRight size={14} className="cc-disclosure-chevron" aria-hidden="true" />}
       <span className="v3-working-label">{statusLabel}</span>
       <span className="v3-working-summary">{summary}</span>
       {hasDetails && <span className="cc-working-details-label">执行详情</span>}
@@ -1529,8 +1527,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               type="button"
             >
               {copyState === 'copied'
-                ? <Check size={20} className="cc-copy-success-icon" aria-hidden="true" />
-                : <Copy size={17} />}
+                ? <Check size={15} className="cc-copy-success-icon" aria-hidden="true" />
+                : <Copy size={15} />}
             </button>
             {onRegenerate && (
               <button
