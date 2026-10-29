@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days`
+  monthly_budget_cny, real_cost_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, auto_update_models, created_at, updated_at, cloud_worker_billing_mode, cloud_worker_deployment_profile, cloud_worker_retention_days, cloud_worker_included`
 
 // commercialRefundMinRetentionDays bounds the retention window after a refund
 // for lifecycles that predate the per-plan retention column. A refund is a
@@ -571,7 +571,14 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if err := createCommercialPlanGrants(tx, order.UID, order.PlanID, 0, "order", order.OrderNo, order.PlanName, order.PlanMonthlyBudget, order.PlanModelBudgets, periodStartsAt, expiresAt); err != nil {
 		return nil, false, err
 	}
-	if order.PlanSlug == commercialPersonalPlanSlug || order.PlanSlug == commercialProPlanSlug {
+	// Whether this package buys a machine is a plan attribute, not a slug list.
+	// Keeping the allow-list here is what made every new package token-only until
+	// someone edited Go.
+	includesWorker, err := planIncludesCloudWorker(tx, order.PlanID)
+	if err != nil {
+		return nil, false, err
+	}
+	if includesWorker {
 		// Retention follows the purchased package (7d → 3 days, longer → 7).
 		retention, err := planCloudWorkerRetentionDays(tx, order.PlanID, order.PlanDurationDays)
 		if err != nil {
@@ -614,6 +621,11 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	if err != nil {
 		return nil, false, fmt.Errorf("complete commercial order: %w", err)
 	}
+	// Hand the plan's "includes a machine" decision to the caller. The payment
+	// handler cannot look the plan up itself (it holds no plan query), and
+	// re-deriving it from the slug is exactly the coupling this column removed.
+	// It is a one-shot signal on the returned struct, not a stored fact.
+	fulfilled.PlanIncludesWorker = includesWorker
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("commit commercial fulfillment: %w", err)
 	}

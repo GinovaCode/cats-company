@@ -23,6 +23,42 @@ ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_deployment_pr
 -- 0 = derive from duration_days (≤ 7d → 3 days, longer → 7 days).
 ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS cloud_worker_retention_days INT NOT NULL DEFAULT 0
     CHECK (cloud_worker_retention_days BETWEEN 0 AND 90);
+-- Whether the package buys a cloud worker at all.
+--
+-- This used to be inferred from the plan slug (catsco-personal / catsco-pro
+-- were hard-coded in both the fulfilment transaction and the payment handler).
+-- That made every new package either silently token-only or a code change, and
+-- the two copies could drift apart. The decision is data now: a plan with this
+-- flag set grants one provisioning credit per paid period.
+--
+-- The backfill must run exactly once, in the same transaction as the ADD COLUMN.
+-- The column default is FALSE, so adding it alone would strip the machine from
+-- the two packages that already sell one: every existing buyer's renewal would
+-- stop provisioning. Guarding the UPDATE on "column did not exist" makes the
+-- backfill a one-time migration, after which the flag is operator-controlled.
+--
+-- This guard is load-bearing. An unguarded UPDATE would re-assert the flag on
+-- every boot, silently undoing an operator that deliberately turned the machine
+-- off for a legacy plan — and the two official slugs are exactly the ones we
+-- retire when a new package line takes over.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'commercial_plans'
+          AND column_name = 'cloud_worker_included'
+    ) THEN
+        ALTER TABLE commercial_plans
+            ADD COLUMN cloud_worker_included BOOLEAN NOT NULL DEFAULT FALSE;
+        -- Backfill the two packages that already sold a machine. Dropping the
+        -- slug check without this would strip the machine from every renewal of
+        -- an existing buyer: the column default is FALSE, so "not configured
+        -- yet" and "token-only" would be indistinguishable.
+        UPDATE commercial_plans SET cloud_worker_included = TRUE
+        WHERE slug IN ('catsco-personal', 'catsco-pro');
+    END IF;
+END $$;
 ALTER TABLE cloud_worker_credits ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 0
     CHECK (retention_days BETWEEN 0 AND 90);
 ALTER TABLE cloud_worker_lifecycles ADD COLUMN IF NOT EXISTS retention_days INT NOT NULL DEFAULT 0
