@@ -6,8 +6,7 @@ import '../views/workspace-styles';
 import { api } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
 import RelayAccessModal from '../widgets/relay-access-modal';
-import EnterpriseReference from '../widgets/plans/enterprise-services';
-import EnterpriseTeam from '../widgets/plans/enterprise-team';
+import CatsCoPlansModal from '../widgets/plans/catsco-plans-modal';
 import { personalPlanOffers as plans, planPresentationOverrides, tokenEstimateNote } from '../widgets/plans/plan-offers';
 import '../widgets/plans/plan-chooser.css';
 import './plans-preview.css';
@@ -70,6 +69,7 @@ function PlansPreview() {
     return () => observer.disconnect();
   }, [enterpriseRequested, open, revision, showChooser]);
   const show = chooser => { setShowChooser(chooser); setOpen(true); setRevision(value => value + 1); };
+  const PreviewModal = enterpriseLayout === 'e' ? CatsCoPlansModal : RelayAccessModal;
   return <FeedbackProvider>
     <header className="plans-preview-toolbar">
       <strong>套餐界面预览</strong>
@@ -96,7 +96,7 @@ function PlansPreview() {
       </nav>
     </header>
     <main className="plans-preview-empty"><h1>套餐与权益</h1><button onClick={() => show(true)}>打开套餐预览</button></main>
-    {open && <RelayAccessModal key={revision} onClose={() => setOpen(false)} showFreePlan={false} planPresentationOverrides={planPresentationOverrides} planChooserNote={tokenEstimateNote} enterprisePlanContent={enterpriseLayout === 'e' ? ({ onSelectPlan }) => <><EnterpriseTeam onSelectPlan={onSelectPlan} /><EnterpriseReference /></> : null} />}
+    {open && <PreviewModal key={revision} onClose={() => setOpen(false)} showFreePlan={false} planOffers={plans} planPresentationOverrides={planPresentationOverrides} planChooserNote={tokenEstimateNote} />}
   </FeedbackProvider>;
 }
 

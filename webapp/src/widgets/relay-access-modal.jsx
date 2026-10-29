@@ -772,7 +772,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null, planChooserNote = '', planOffers = null }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null, planChooserNote = '', planOffers = null, personalPlanExcludedSlugs = [] }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -1056,18 +1056,15 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
-  // "Is this a real catalogue?" used to be answered by asking whether any plan
-  // carried one of three hard-coded slugs. A retired package line made that
-  // answer permanently "no", which switched the whole panel back to the legacy
-  // layout and hid the new packages.
-  //
-  // A plan on the ladder (`plan_tier > 0`) is exactly a current commercial
-  // package: grey/internal test plans stay off it, so they keep the plain
-  // "purchase" wording instead of the official plan layout. Local drafts are
-  // deliberately *not* enough on their own: they never went on sale, so they
-  // must keep the plain wording until the catalogue lists them.
-  const hasCurrentCommercialPlans = catalogPlans.some(plan => commercialPlanTier(plan) > 0);
+  // The approved chooser layout is independent of checkout availability.
+  // Empty or gated catalogues keep the same cards; catalogue resolution still
+  // decides whether a card can create an order.
+  const hasCurrentCommercialPlans = Boolean(planOffers) || catalogPlans.some(plan => commercialPlanTier(plan) > 0);
   const salePlans = planOffers ? salePlansForOffers(planOffers, catalogPlans, commercialCatalog?.enabled === true) : catalogPlans;
+  const personalCatalogPlans = catalogPlans.filter(plan => !personalPlanExcludedSlugs.includes(plan.slug));
+  const personalSalePlans = planOffers
+    ? salePlansForOffers(planOffers, personalCatalogPlans, commercialCatalog?.enabled === true)
+    : personalCatalogPlans;
   const allSalePlansAreMonthly = salePlans.length > 0 && salePlans.every(
     plan => Number(plan?.duration_days || 30) === 30,
   );
@@ -2188,7 +2185,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                   <CommercialPlanCards
                     showFreePlan={showFreePlan}
                     presentationOverrides={planPresentationOverrides}
-                    salePlans={salePlans}
+                    salePlans={personalSalePlans}
                     hasCurrentCommercialPlans={hasCurrentCommercialPlans}
                     activeOfficialPlanTier={activeOfficialPlanTier}
                     activePackages={activePackages}
