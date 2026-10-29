@@ -37,6 +37,7 @@ type SkillHubPublicationReadHandler struct {
 	cancellationEnabled                bool
 	descriptionReleaseHistoryEnabled   bool
 	descriptionConfirmationUIEnabled   bool
+	repairAdmissionUIEnabled           bool
 }
 
 func NewSkillHubPublicationReadHandler(db store.Store, enabled bool) *SkillHubPublicationReadHandler {
@@ -80,6 +81,12 @@ func NewSkillHubPublicationReadHandlerFromEnv(db store.Store) *SkillHubPublicati
 		flag("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED") &&
 		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED") &&
 		flag("CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_CONFIRMATION_UI_ENABLED")
+	_, commitReader := db.(store.SkillHubPublicationCommitContextReader)
+	_, commitStore := db.(store.SkillHubPublicationCommitStore)
+	h.repairAdmissionUIEnabled = h.enabled && h.entries != nil && repairs && commitReader && commitStore &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_HUMAN_COMMIT_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_ENABLED") &&
+		flag("CATSCO_SKILLHUB_PUBLICATION_REPAIR_ADMISSION_UI_ENABLED")
 	return h
 }
 
@@ -216,6 +223,7 @@ func (h *SkillHubPublicationReadHandler) Handle(w http.ResponseWriter, r *http.R
 			"cloudStatusReadsEnabled":               h.enabled && h.entries != nil && cloudStatusSupported,
 			"descriptionReleaseHistoryReadsEnabled": h.enabled && h.entries != nil && h.descriptionReleaseHistoryEnabled && historySupported,
 			"descriptionConfirmationUiEnabled":      h.descriptionConfirmationUIEnabled,
+			"repairTaskAdmissionUiEnabled":          h.repairAdmissionUIEnabled,
 			"workspaceCreateEnabled":                h.workspaceEntriesEnabled, "chatCreateEnabled": false,
 			"workspaceDurableCreateEnabled":      h.workspaceDurableEntriesEnabled,
 			"workspaceDurablePublishUiEnabled":   h.workspaceDurablePublishUIEnabled,

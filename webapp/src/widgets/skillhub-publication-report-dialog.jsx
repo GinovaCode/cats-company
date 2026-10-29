@@ -4,8 +4,9 @@ import { ClipboardCheck, MessageSquarePlus, X } from 'lucide-react';
 import useDialogBehavior from '../utils/use-dialog-behavior';
 import PublicationHistory from './skillhub-publication-history';
 import PublicationDescription from './skillhub-publication-description';
+import PublicationRepairAdmission from './skillhub-publication-repair-admission';
 
-export default function PublicationReportDialog({ report, onClose, onRetry, onRepair, returnFocusRef }) {
+export default function PublicationReportDialog({ report, onClose, onRetry, onRepair, returnFocusRef, repairConversation }) {
   const dialogRef = useRef(null);
   const cancelRef = useRef(null);
   const titleId = useId();
@@ -26,6 +27,9 @@ export default function PublicationReportDialog({ report, onClose, onRetry, onRe
         </header>
         <p id={descriptionId} className='cc-skillhub-detail-description'>请根据下面的问题检查 Skill，修改后可回到运行工作区重新发布。</p>
         <PublicationHistory entryRequestId={report?.entryRequestId} />
+        {!report?.loading && !report?.error && report?.outcome === 'rejected'
+          && <PublicationRepairAdmission entryRequestId={report.entryRequestId}
+            botUid={repairConversation?.botUid} topicId={repairConversation?.topicId} />}
         <PublicationDescription entryRequestId={report?.entryRequestId} />
         {report?.loading ? <p role='status' className='cc-skillhub-report-empty'>正在读取发布报告…</p>
           : report?.error ? <p role='alert' className='cc-skillhub-report-empty'>{report.error}</p> : null}
