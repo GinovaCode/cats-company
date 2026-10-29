@@ -178,6 +178,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('返回');
     await clickButton('企业');
     expect(container.textContent).toContain('Business Start · 企业落地服务');
+    expect(container.querySelector('.enterprise-team')).toBeNull();
+    await clickButton('团队');
     await clickButton('获取 CatsCo 团队版');
     expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
     expect(findButton('暂未开放购买').disabled).toBe(true);
@@ -260,7 +262,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
-  it('keeps the complete live catalogue split into three personal cards and the enterprise team offer', async () => {
+  it('keeps the complete live catalogue split into personal, team and enterprise categories', async () => {
     const plans = [...personalPlanOffers, teamPlanOffer].map((plan, index) => ({ ...plan, id: 890 + index }));
     api.getCommercialCatalog.mockResolvedValue({ enabled: true, channels: [{ id: 'test' }], plans });
     api.createCommercialOrder.mockResolvedValue({ order: null });
@@ -270,11 +272,15 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(personal.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
     expect([...personal.querySelectorAll('.relay-access-plan-highlights dd')].map(el => el.textContent)).toEqual(['5 亿Token', '约 10 亿Token', '约 20 亿Token']);
     expect(personal.textContent).not.toContain('团队版');
+    expect([...container.querySelectorAll('[aria-label="选择方案类型"] [role="tab"]')].map(tab => tab.textContent.trim())).toEqual(['个人', '团队', '企业']);
     await clickButton('企业');
+    expect(container.querySelector('.enterprise-team')).toBeNull();
+    expect(container.querySelector('.enterprise-reference-relief')).not.toBeNull();
+    await clickButton('团队');
     expect(container.querySelectorAll('.enterprise-team')).toHaveLength(1);
     expect(container.textContent).toContain('最多 10 人');
     expect(container.textContent).toContain('8 核 CPU · 16 GB 内存');
-    expect(container.querySelector('.enterprise-reference-relief')).not.toBeNull();
+    expect(container.querySelector('.enterprise-reference')).toBeNull();
     await clickButton('获取 CatsCo 团队版');
     expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
     await clickButton('确认购买');
@@ -289,6 +295,40 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('获取 CatsCo 基础版');
     expect(findButton('暂未开放购买').disabled).toBe(true);
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('supports keyboard navigation across all three plan categories', async () => {
+    await renderIntegratedPlans();
+    await openPlanChooser();
+    const personal = container.querySelector('#relay-access-personal-plan-tab');
+    personal.focus();
+    const press = async key => act(async () => {
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    });
+    const expectSelected = audience => {
+      const selected = container.querySelector(`#relay-access-${audience}-plan-tab`);
+      expect(document.activeElement).toBe(selected);
+      expect(selected.getAttribute('aria-selected')).toBe('true');
+      expect(selected.tabIndex).toBe(0);
+      expect(container.querySelector(`#relay-access-${audience}-plan-panel`).getAttribute('aria-labelledby')).toBe(selected.id);
+      expect(container.querySelectorAll('[aria-label="选择方案类型"] [aria-selected="true"]')).toHaveLength(1);
+    };
+    await press('ArrowRight');
+    expectSelected('team');
+    expect(container.querySelector('.enterprise-team')).not.toBeNull();
+    expect(container.querySelector('.enterprise-reference')).toBeNull();
+    await press('ArrowRight');
+    expectSelected('enterprise');
+    expect(container.querySelector('.enterprise-team')).toBeNull();
+    expect(container.querySelector('.enterprise-reference')).not.toBeNull();
+    await press('ArrowRight');
+    expectSelected('personal');
+    await press('End');
+    expectSelected('enterprise');
+    await press('Home');
+    expectSelected('personal');
+    await press('ArrowLeft');
+    expectSelected('enterprise');
   });
 
   it('keeps personal drafts visible when only the team product is on sale', async () => {
@@ -338,9 +378,9 @@ describe('RelayAccessModal commercial rollout', () => {
 
   it('uses the provided team price and billing period on the card and in confirmation', async () => {
     const plan = { ...teamPlanOffer, price_fen: 69900, duration_days: 60 };
-    await renderModal({ planOffers: personalPlanOffers, enterprisePlanContent: ({ onSelectPlan }) => <EnterpriseTeam plan={plan} onSelectPlan={onSelectPlan} /> });
+    await renderModal({ planOffers: personalPlanOffers, teamPlanContent: ({ onSelectPlan }) => <EnterpriseTeam plan={plan} onSelectPlan={onSelectPlan} /> });
     await openPlanChooser();
-    await clickButton('企业');
+    await clickButton('团队');
     expect(container.querySelector('.enterprise-team-price').textContent).toBe('¥699/ 60天');
     await clickButton('获取 CatsCo 团队版');
     expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥699，每期 60 天');
@@ -903,15 +943,15 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
-  it('opens the team preview purchase at 599 and returns to the enterprise tab', async () => {
+  it('opens the team preview purchase at 599 and returns to the team tab', async () => {
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
       channels: [{ id: 'preview', label: '预览' }],
       plans: [{ id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 9900, duration_days: 30 }],
     });
-    await renderModal({ enterprisePlanContent: ({ onSelectPlan }) => <EnterpriseTeam onSelectPlan={onSelectPlan} /> });
+    await renderModal({ teamPlanContent: ({ onSelectPlan }) => <EnterpriseTeam onSelectPlan={onSelectPlan} /> });
     await openPlanChooser();
-    await clickButton('企业');
+    await clickButton('团队');
     expect(container.querySelector('.enterprise-team').textContent).toContain('最多 10 人');
     expect(container.querySelector('.enterprise-team').textContent).toContain('最高 30 亿 Token');
     expect(container.querySelector('.enterprise-team').textContent).toContain('8 核 CPU · 16 GB 内存');
@@ -919,7 +959,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelector('#relay-access-plan-chooser')).toBeNull();
     expect(container.querySelector('.relay-access-purchase-confirm').textContent).toContain('¥599');
     await clickButton('返回');
-    expect(container.querySelector('#relay-access-enterprise-plan-tab').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#relay-access-team-plan-tab').getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('.enterprise-team')).not.toBeNull();
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });

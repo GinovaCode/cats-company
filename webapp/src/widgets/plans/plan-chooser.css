@@ -24,6 +24,7 @@ html[data-theme="liquid"] .relay-access-plan-modal { --plans-canvas: #161616; --
 .relay-access-plan-modal-body { flex: 1; padding: 12px clamp(24px, 4vw, 64px) 40px; background: var(--plans-canvas); }
 .relay-access-plan-list.current-catalog.relay-access-plan-list-chooser { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 1320px; margin: 28px auto 0; column-gap: 20px; }
 .relay-access-plan-audience-tabs { background: var(--cc-control-surface); }
+.relay-access-plan-audience-tabs.has-team { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 360px); }
 .relay-access-plan-audience-tabs > button { color: var(--cc-text-secondary); }
 .relay-access-plan-audience-tabs > button.active { background: var(--cc-panel); color: var(--cc-text); }
 .relay-access-plan-audience-tabs > button:hover:not(.active) { background: var(--cc-hover); color: var(--cc-text); }

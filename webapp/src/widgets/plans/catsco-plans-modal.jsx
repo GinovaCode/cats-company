@@ -13,9 +13,8 @@ export default function CatsCoPlansModal(props) {
     personalPlanExcludedSlugs={[teamPlanOffer.slug]}
     planPresentationOverrides={planPresentationOverrides}
     planChooserNote={tokenEstimateNote}
-    enterprisePlanContent={({ onSelectPlan, catalogPlans, catalogEnabled }) => <>
-      <EnterpriseTeam onSelectPlan={onSelectPlan} plan={resolvePlanOffers([teamPlanOffer], catalogPlans, catalogEnabled)[0]} />
-      <EnterpriseServices />
-    </>}
+    teamPlanContent={({ onSelectPlan, catalogPlans, catalogEnabled }) =>
+      <EnterpriseTeam onSelectPlan={onSelectPlan} plan={resolvePlanOffers([teamPlanOffer], catalogPlans, catalogEnabled)[0]} />}
+    enterprisePlanContent={<EnterpriseServices />}
   />;
 }

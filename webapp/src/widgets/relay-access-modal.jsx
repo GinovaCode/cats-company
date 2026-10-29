@@ -772,7 +772,7 @@ function EnterprisePlanCard() {
   );
 }
 
-export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, enterprisePlanContent = null, planChooserNote = '', planOffers = null, personalPlanExcludedSlugs = [] }) {
+export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFreePlan = true, planPresentationOverrides = {}, teamPlanContent = null, enterprisePlanContent = null, planChooserNote = '', planOffers = null, personalPlanExcludedSlugs = [] }) {
   const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
@@ -2146,7 +2146,7 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
             </header>
             <div className="relay-access-plan-modal-body">
               <div
-                className="relay-access-plan-audience-tabs"
+                className={`relay-access-plan-audience-tabs${teamPlanContent ? ' has-team' : ''}`}
                 role="tablist"
                 aria-label="选择方案类型"
                 onKeyDown={handleTabListKeyDown}
@@ -2163,6 +2163,18 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                 >
                   个人
                 </button>
+                {teamPlanContent && <button
+                  id="relay-access-team-plan-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={planChooserAudience === 'team'}
+                  aria-controls="relay-access-team-plan-panel"
+                  tabIndex={planChooserAudience === 'team' ? 0 : -1}
+                  className={planChooserAudience === 'team' ? 'active' : ''}
+                  onClick={() => setPlanChooserAudience('team')}
+                >
+                  团队
+                </button>}
                 <button
                   id="relay-access-enterprise-plan-tab"
                   type="button"
@@ -2198,6 +2210,16 @@ export default function RelayAccessModal({ onClose, initialPlanSlug = '', showFr
                     compact
                     className="relay-access-plan-list-chooser"
                   />
+                </div>
+              ) : planChooserAudience === 'team' ? (
+                <div
+                  id="relay-access-team-plan-panel"
+                  role="tabpanel"
+                  aria-labelledby="relay-access-team-plan-tab"
+                >
+                  {typeof teamPlanContent === 'function'
+                    ? teamPlanContent({ onSelectPlan: selectCommercialPlan, catalogPlans, catalogEnabled: commercialCatalog?.enabled === true })
+                    : teamPlanContent}
                 </div>
               ) : (
                 <div
