@@ -87,6 +87,67 @@ it('does not fetch for missing identity or invalid entry', async () => {
   expect(api.getSkillHubPublicationCapabilities).not.toHaveBeenCalled();
 });
 
+it('shows capability failures without private errors and reprobes only on explicit retry', async () => {
+  api.getSkillHubPublicationCapabilities.mockRejectedValueOnce({ status: 503, message: 'private capability secret' });
+  await render();
+  expect(container.querySelector('[role="alert"]').textContent).toContain('无法确认是否发布成功');
+  expect(container.textContent).not.toContain('private capability secret');
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).not.toHaveBeenCalled();
+  await advance(120000);
+  await visibility('hidden');
+  await visibility('visible');
+  expect(api.getSkillHubPublicationCapabilities).toHaveBeenCalledTimes(1);
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).not.toHaveBeenCalled();
+  await act(async () => Simulate.click(container.querySelector('button')));
+  expect(api.getSkillHubPublicationCapabilities).toHaveBeenCalledTimes(2);
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain('尚未取得最终发布结果');
+});
+
+it('keeps history disabled when an explicit retry finds the capability off', async () => {
+  api.getSkillHubPublicationCapabilities.mockRejectedValueOnce(new Error('unavailable'))
+    .mockResolvedValueOnce({ schemaVersion: 1, descriptionReleaseHistoryReadsEnabled: false });
+  await render();
+  expect(container.querySelector('button')).not.toBeNull();
+  await act(async () => Simulate.click(container.querySelector('button')));
+  expect(container.textContent).toBe('');
+  await advance(120000);
+  await visibility('visible');
+  expect(api.getSkillHubPublicationCapabilities).toHaveBeenCalledTimes(2);
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).not.toHaveBeenCalled();
+});
+
+it('bounds stalled capability probes, discards late support, and allows a fresh retry', async () => {
+  const pending = deferred();
+  api.getSkillHubPublicationCapabilities.mockReturnValueOnce(pending.promise);
+  await render();
+  const signal = api.getSkillHubPublicationCapabilities.mock.calls[0][0].signal;
+  await advance(15000);
+  expect(signal.aborted).toBe(true);
+  expect(container.querySelector('[role="alert"]').textContent).toContain('无法确认是否发布成功');
+  await act(async () => pending.resolve({ schemaVersion: 1, descriptionReleaseHistoryReadsEnabled: true }));
+  await advance(90000);
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).not.toHaveBeenCalled();
+  await act(async () => Simulate.click(container.querySelector('button')));
+  const nextSignal = api.getSkillHubPublicationCapabilities.mock.calls[1][0].signal;
+  expect(nextSignal).not.toBe(signal);
+  expect(nextSignal.aborted).toBe(false);
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).toHaveBeenCalledTimes(1);
+});
+
+it('does not show stale capability failures after authentication invalidation', async () => {
+  let reject;
+  api.getSkillHubPublicationCapabilities.mockReturnValueOnce(new Promise((_, r) => { reject = r; }));
+  await render();
+  await act(async () => {
+    isCurrentAuthSession.mockReturnValue(false);
+    window.dispatchEvent(new Event('cc:auth-changed'));
+    reject(new Error('late private failure'));
+  });
+  expect(container.textContent).toBe('');
+  expect(api.getSkillHubPublicationDescriptionReleaseHistory).not.toHaveBeenCalled();
+});
+
 it('pauses while hidden, resumes on visibility, and never overlaps slow reads', async () => {
   await visibility('hidden');
   await render();

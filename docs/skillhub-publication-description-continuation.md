@@ -301,7 +301,10 @@ The existing publication report dialog now hosts a separate display-only
 repaired-copy result section, shared by workspace reports and linked repair
 conversations. Opening the dialog first checks capabilities; only explicit
 `descriptionReleaseHistoryReadsEnabled: true` with schemaVersion 1 allows the
-local history GET. Older/disabled backends keep the section absent. Browser
+local history GET. Explicit older/disabled capability responses keep the section
+absent. A failed or timed-out capability probe instead shows static uncertainty
+and an explicit retry button; retry probes capability again before any history
+read. It never treats unknown capability as enabled. Browser
 entry references remain disposable hints, not publication or file authority.
 
 Only validated `published` / `publish_failed` local history is terminal.

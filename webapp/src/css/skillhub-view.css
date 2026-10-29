@@ -842,6 +842,7 @@
   flex-shrink: 0;
 }
 
+.cc-skillhub-report-summary > p,
 .cc-skillhub-report-summary > :last-child {
   min-width: 0;
   overflow-wrap: anywhere;

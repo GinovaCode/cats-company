@@ -52,7 +52,10 @@ export default function PublicationHistory({ entryRequestId }) {
         if (!terminal) timer = setTimeout(() => { void read(); }, 30000);
       } catch {
         failed = true;
-        if (current() && supported) {
+        // An unsuccessful capability read is unknown, not an explicit opt-out.
+        // Keep a static retry affordance; only a successful disabled/unsupported
+        // capability response may silently omit this section.
+        if (current()) {
           display({ error: true });
         }
       } finally { clearTimeout(deadline); reading = false; }
