@@ -244,26 +244,15 @@ html:has(.pricing-page) {
   color: var(--cc-text);
 }
 .pricing-team-offer { padding: 32px 40px; }
-.pricing-team-eyebrow { color: var(--cc-muted); font-size: 11px; font-weight: 500; letter-spacing: .06em; }
-.pricing-team-offer h3 { margin: 12px 0 0; font-size: 28px; font-weight: 600; line-height: 1.4; }
 .pricing-team-offer > p { margin: 8px 0 0; color: var(--cc-text-secondary); font-size: 14px; line-height: 24px; }
-.pricing-team-price { display: flex; align-items: baseline; gap: 6px; margin-top: 24px; }
-.pricing-team-price strong { font-size: 44px; font-weight: 600; line-height: 1.2; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
-.pricing-team-price :is(span, small) { color: var(--cc-text-secondary); font-size: 13px; }
 .pricing-team-offer > button { width: 100%; min-height: 48px; margin-top: 20px; border: 1px solid transparent; border-radius: 11px; background: var(--cc-text); color: var(--plans-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 .pricing-team-offer > button:hover { background: color-mix(in srgb, var(--cc-text) 88%, var(--plans-card)); }
 .pricing-team-offer > button:active { background: color-mix(in srgb, var(--cc-text) 78%, var(--plans-card)); }
 .pricing-team-offer > button:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 3px; }
-.pricing-team-allowances { display: grid; gap: 12px; margin: 22px 0 0; }
-.pricing-team-allowances > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.pricing-team-allowances dt { display: flex; align-items: center; gap: 8px; color: var(--cc-text-secondary); font-size: 13px; }
-.pricing-team-allowances dd { margin: 0; font-size: 14px; font-weight: 500; white-space: nowrap; }
-.pricing-team-allowances dd span { font-size: 12px; font-weight: 400; color: var(--cc-text-secondary); }
 .pricing-team-benefits { padding: 32px 40px; border-left: 1px solid var(--cc-border); }
 .pricing-team-benefits h3 { margin: 0; font-size: 16px; font-weight: 500; line-height: 26px; }
 .pricing-team-benefits ul { display: grid; gap: 22px; margin: 26px 0 0; padding: 0; list-style: none; }
 .pricing-team-benefits li { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: 14px; }
-.pricing-team-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--cc-border); border-radius: 10px; color: var(--cc-text-secondary); }
 .pricing-team-benefits li strong { font-size: 14px; font-weight: 500; line-height: 24px; }
 .pricing-team-benefits li p { margin: 3px 0 0; color: var(--cc-text-secondary); font-size: 13px; line-height: 22px; }
 @media (prefers-reduced-motion: no-preference) { .pricing-team-offer > button { transition: background-color 180ms ease; } }
@@ -275,6 +264,10 @@ html:has(.pricing-page) {
 @media (max-width: 380px) { .pricing-team-offer, .pricing-team-benefits { padding: 24px 20px; } }
 
 .pricing-business {
+  display: grid;
+  margin: 28px auto 0;
+  border: 1px solid #454549;
+  background: var(--plans-card);
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
   gap: 0;
   max-width: 1160px;
@@ -283,14 +276,10 @@ html:has(.pricing-page) {
   overflow: hidden;
 }
 .pricing-business-offer { display: flex; flex-direction: column; align-items: flex-start; padding: 44px; }
-.pricing-business-eyebrow { color: var(--cc-muted); font-size: 11px; font-weight: 500; letter-spacing: .06em; }
 .pricing-business-offer h2 { margin: 26px 0 0; color: var(--cc-text); font-size: clamp(28px, 3vw, 38px); font-weight: 600; line-height: 1.4; letter-spacing: -.025em; }
 .pricing-business-plan { margin-top: 24px; color: var(--cc-text); font-size: 14px; font-weight: 500; }
 .pricing-business-offer > p { margin: 12px 0 0; color: var(--cc-text-secondary); font-size: 14px; line-height: 26px; text-wrap: pretty; }
 .pricing-business-purchase { width: 100%; margin-top: auto; padding-top: 44px; }
-.pricing-business-price { display: flex; align-items: baseline; gap: 6px; color: var(--cc-text); }
-.pricing-business-price strong { font-size: 44px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
-.pricing-business-price :is(span, small) { color: var(--cc-text-secondary); font-size: 12px; }
 .pricing-business-purchase a { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 48px; box-sizing: border-box; margin-top: 22px; border: 1px solid transparent; border-radius: 11px; background: var(--cc-text); color: var(--plans-card); font-size: 14px; font-weight: 600; text-decoration: none; }
 .pricing-business-purchase a:hover { background: color-mix(in srgb, var(--cc-text) 88%, var(--plans-card)); color: var(--plans-card); }
 .pricing-business-purchase a:active { background: color-mix(in srgb, var(--cc-text) 78%, var(--plans-card)); }
@@ -354,10 +343,13 @@ html:has(.pricing-page) {
   .pricing-business-workspace li > svg { display: none; }
 }
 
-.pricing-business { display: grid; margin: 28px auto 0; border: 1px solid #454549; background: var(--plans-card); }
-.pricing-business-workspace svg { width: 18px; height: 18px; flex: 0 0 auto; } .pricing-team-icon svg { width: 19px; height: 19px; } .pricing-team .pricing-benefit-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--cc-border); border-radius: 10px; color: var(--cc-text-secondary); } .pricing-benefit-icon svg { width: 19px; height: 19px; }
+.pricing-business-workspace svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.pricing-team .pricing-benefit-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--cc-border); border-radius: 10px; color: var(--cc-text-secondary); }
+.pricing-benefit-icon svg { width: 19px; height: 19px; }
 
-.pricing-team-offer h2 { margin: 12px 0 0; font-size: 28px; font-weight: 600; line-height: 1.4; } .pricing-team .pricing-price { margin-top: 24px; } .pricing-team .pricing-price strong { font-size: 44px; line-height: 1.2; }
+.pricing-team-offer h2 { margin: 12px 0 0; font-size: 28px; font-weight: 600; line-height: 1.4; }
+.pricing-team .pricing-price { margin-top: 24px; }
+.pricing-team .pricing-price strong { font-size: 44px; line-height: 1.2; }
 
 /* Preserve the latest website heading hierarchy. */
 .pricing-hero h1 { font-weight: var(--cats-heading-display-weight); letter-spacing: var(--cats-heading-display-tracking); }

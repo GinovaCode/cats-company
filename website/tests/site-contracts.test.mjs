@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { personalPlanOffers, teamPlanOffer } from '../../webapp/src/widgets/plans/plan-offers.js'
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -239,4 +240,25 @@ test('source avoids known interaction regressions', async () => {
   assert.match(pricing, /暂未开放购买/)
   assert.doesNotMatch(pricing, /fetch\(|createCommercialOrder|createPayment/)
   assert.match(responsive, /@media \(prefers-reduced-motion: reduce\)/)
+})
+
+test('website draft prices match the platform offer source', async () => {
+  const pricing = await read('src/components/PricingPage.tsx')
+  // Read the explicit draft object headers, like the other source contracts.
+  // Missing, duplicate or reformatted offers fail the count check below.
+  const offers = [...pricing.matchAll(/slug: '([^']+)',\s+name: '[^']+',\s+kicker: '[^']+',\s+price: (\d+)/g)]
+  const prices = new Map(offers.map(([, slug, price]) => [slug, Number(price) * 100]))
+  assert.equal(offers.length, prices.size, 'Website offer slugs must be unique')
+  const platformOffers = [...personalPlanOffers, teamPlanOffer]
+  assert.equal(prices.size, 4, 'Check all four website package prices')
+  assert.equal(prices.size, platformOffers.length)
+  for (const offer of platformOffers) {
+    assert.equal(prices.get(offer.slug), offer.price_fen, `Draft price drift for ${offer.slug}`)
+  }
+})
+
+test('login landing page retains invitation context without retired pricing', async () => {
+  const login = await read('src/components/LoginPage.tsx')
+  assert.doesNotMatch(login, /CatsCo Free|CatsCo Pro|CatsCo Max|399|799|planDetails/)
+  assert.match(login, /内测邀请码准入/)
 })

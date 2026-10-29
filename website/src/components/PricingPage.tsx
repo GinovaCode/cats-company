@@ -21,7 +21,8 @@ type PricingPlan = {
   note?: string;
 };
 
-// Display proposals from the platform chooser, not an active sales catalogue.
+// Draft prices mirror webapp/src/widgets/plans/plan-offers.js.
+// The server catalogue is authoritative for live sales; this page only previews proposals.
 const cloudNote = '云端 AI 员工随套餐有效；到期后保留 15 天，期间续费可恢复。';
 const plans: PricingPlan[] = [{
   slug: 'catsco-basic',
