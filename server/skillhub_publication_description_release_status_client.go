@@ -15,6 +15,10 @@ import (
 
 const publicationDescriptionReleaseStatusPath = "/api/skills/publication-descriptions/internal/release-status"
 
+// The status-only reconciler must acquire its slot before claiming a lease.
+// Keep its capacity aligned with this client's shared planning/read budget.
+const publicationDescriptionReleaseStatusConcurrency = 2
+
 var (
 	ErrSkillHubPublicationDescriptionReleaseStatusDisabled = errors.New("skillhub publication description release status is disabled")
 	ErrSkillHubPublicationDescriptionReleaseStatusPeer     = errors.New("skillhub publication description release status peer rejected the request")
@@ -51,7 +55,7 @@ func (c *PublicationDescriptionDerivationClient) ReadRetainedRelease(ctx context
 		intent.Target.CandidateHash != app.Result.Derivation.DerivedCandidateHash {
 		return nil, ErrSkillHubPublicationDescriptionReleaseStatusPeer
 	}
-	if c.planActive.Add(1) > 2 {
+	if c.planActive.Add(1) > publicationDescriptionReleaseStatusConcurrency {
 		c.planActive.Add(-1)
 		return nil, store.ErrSkillHubPublicationBusy
 	}

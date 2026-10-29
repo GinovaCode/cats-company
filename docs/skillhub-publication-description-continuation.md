@@ -217,6 +217,49 @@ fences remain unchanged. Historical receipt reads still require the original
 active human publisher but not a live Bot or source. No browser route, automatic
 polling, worker registration or production gate activation is included.
 
+## Background terminal reconciliation
+
+`CATSCO_SKILLHUB_PUBLICATION_DESCRIPTION_RECONCILE_ENABLED` is an independent
+default-off server worker gate. It also requires a valid enabled derivation
+client and its release-status read gate. No publishing/plan/authorize/admit
+method is exposed to this worker. Production flags remain unchanged.
+
+Existing derived permits form the queue, scoped by the original receipt's
+issuer/audience and active original human publisher; live Bot/source authority
+is not substituted for history. Migration 000065 retains scheduling leases,
+generations and due times separately from immutable terminal receipts. Claims
+use permit-row SKIP LOCKED and an additional due-state upsert CAS; settlement
+matches application/entry/actor/token/generation/exact unexpired lease. A stale
+process cannot change a successor's schedule. A terminal write remains immutable
+evidence, not execution or scheduling authority.
+
+The loop checks every five seconds with at most two concurrent observations,
+matching the dedicated status client's capacity. A slot is acquired before
+claiming a lease; excess local calls cannot consume leases. A local Busy result
+after claim is requeued like progress, without increasing the failure counter;
+each observation has a 60-second budget within a 90-second persisted lease.
+Progress schedules the next read 30 seconds later. Transport/authority/validation
+failures remain unknown and retry after 15,30,60,120,240, then at most 300 seconds;
+they never become publish_failed or consume repair/execution budgets. There is
+no finite status-read exhaustion that could abandon a later successful publish.
+Disabled original publishers are not selected; reactivation resumes retained work.
+
+The worker first recovers any valid local terminal receipt before peer I/O, then
+uses the guarded Cloud status reader and immutable terminal writer. Terminal
+rows are excluded from future claims even if the response or scheduling
+settlement was lost. Shutdown cancels and waits for active observations; bounded
+settlement can outlive request cancellation. Logs are static and contain no
+raw peer errors, credentials or private source/target payloads. GET history
+remains purely read-only and independent from the worker.
+
+Tests cover status-only HTTPS, in-progress/terminal outcomes, unknown responses,
+authority/scope mismatch, cancelled calls, lost-write recovery without Cloud,
+bounded concurrency and shutdown; real PostgreSQL CI covers concurrent claims,
+restart/expiry takeover, generation fencing, persistent backoff, migration
+lifecycle, disabled actor filtering, offline/transferred Bot recovery and no
+legacy publication writes. The JWT/HTTPS/PG history contract now runs the real
+reconciler before reading the result; its Cloud/Runtime ports remain synthetic.
+
 ## Verification and remaining work
 
 ### Private local terminal history

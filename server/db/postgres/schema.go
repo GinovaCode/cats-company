@@ -58,6 +58,7 @@ func (a *Adapter) CreateSchema() error {
 		createSkillHubPublicationDescriptionReleaseIntentTable,
 		createSkillHubPublicationDescriptionReleasePermitTable,
 		createSkillHubPublicationDescriptionReleaseTerminalTable,
+		createSkillHubPublicationDescriptionReconcilesTable,
 		createBotInviteCodesTable,
 		createBotSkillMutationsTable,
 		migrateBotSkillMutationsAddActivationFacts,

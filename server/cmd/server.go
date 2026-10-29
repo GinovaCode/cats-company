@@ -319,6 +319,8 @@ func main() {
 	defer stopUploadDispatch()
 	stopCommitDispatch := server.StartSkillHubPublicationCommitDispatch(publicationCtx, db)
 	defer stopCommitDispatch()
+	stopDescriptionReconcile := server.StartSkillHubPublicationDescriptionReconcile(publicationCtx, db)
+	defer stopDescriptionReconcile()
 
 	server.SetBotStats(hub.BotStats())
 

@@ -46,6 +46,9 @@ jobs:
       - name: Test race-sensitive concurrency
         run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream|TestArtifactResultSendClaimLinearizesWithPreviewInvalidation|TestArtifactWritebackGrantSharesSnapshotCurrentBoundary|TestArtifactContextConcurrentCreateInvalidatesEveryNonCurrentWriteback|TestSkillHubMarketplace|TestSkillHubPublication(Read|Workspace|Delivery|CaptureTransport|CaptureDispatcher|RepairSourceTransport|UploadTransport|Peer|CommitClient|CommitDispatcher|HumanCommit|CancellationTransport|CancellationDispatcher)|TestPublicationDescription(Copy|Derivation|Validation|ReleasePlan|ReleaseAuthorize)|Test(Read|Validate|Accept|Continue|Plan|Authorize|Record)ConfirmedPublicationDescription' -count=1
 
+      - name: Test status-only reconciliation concurrency
+        run: go test -race ./server -run '^TestSkillHubPublicationDescriptionReconcile' -count=1
+
       - name: Scan Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
@@ -152,6 +155,13 @@ jobs:
         run: |
           test -n "$CATS_PG_TEST_DSN"
           go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionTerminal' -count=1 -v
+
+      - name: Test durable derived outcome reconciliation
+        env:
+          CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
+        run: |
+          test -n "$CATS_PG_TEST_DSN"
+          go test -race ./server/db/postgres -run '^TestPostgresSkillHubPublicationDescriptionReconcile' -count=1 -v
 
   backend_db:
     name: Backend DB contracts
