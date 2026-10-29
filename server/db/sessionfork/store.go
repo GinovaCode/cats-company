@@ -708,7 +708,7 @@ func (s SQLStore) copyTitle(ctx context.Context, tx *sql.Tx, req types.SessionFo
 // copyNameLimit is the width of groups.name and topics.name (VARCHAR(128)).
 const copyNameLimit = 128
 
-// nextCopyTitle builds 「base(n)」, keeping the result inside the column width.
+// copyTitleStem is the part of the name a suffix is appended to.
 //
 // The suffix has to fit: a source name may already use the whole column, and
 // appending "(1)" to it would overflow. MySQL runs in strict mode here, so the
@@ -716,28 +716,53 @@ const copyNameLimit = 128
 // base is therefore truncated by runes, not bytes, so a multi-byte character is
 // never cut in half.
 //
+// Generation and recognition both go through this function. Reading a name back
+// with a differently-trimmed stem would make a long base look like it had no
+// earlier copies, and the next copy would collide with the first.
+func copyTitleStem(base, suffix string) string {
+	runes := []rune(base)
+	room := copyNameLimit - len([]rune(suffix))
+	if room < 0 {
+		room = 0
+	}
+	if len(runes) > room {
+		runes = runes[:room]
+	}
+	return string(runes)
+}
+
+// nextCopyTitle builds 「base(n)」, keeping the result inside the column width.
+//
 // next is the suffix to use, already resolved from the names that exist.
 func nextCopyTitle(base string, next int64) string {
 	suffix := "(" + strconv.FormatInt(next, 10) + ")"
-	runes := []rune(base)
-	if room := copyNameLimit - len([]rune(suffix)); len(runes) > room {
-		runes = runes[:room]
-	}
-	return string(runes) + suffix
+	return copyTitleStem(base, suffix) + suffix
 }
 
-// copySuffix reports the n in "base(n)" and whether name has that shape at all.
+// copySuffix reports the n in "base(n)" and whether name is one of the names
+// nextCopyTitle could have produced for this base.
+//
+// The stem is compared against the same truncation nextCopyTitle applies, not
+// against the untrimmed base: a 126-rune base is stored as 125 runes plus "(1)",
+// so requiring the literal base as a prefix would never match — every copy after
+// the first would then be named "(1)" again.
 func copySuffix(base, name string) (int64, bool) {
-	prefix := base + "("
-	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ")") {
+	if !strings.HasSuffix(name, ")") {
 		return 0, false
 	}
-	digits := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ")")
+	open := strings.LastIndex(name, "(")
+	if open < 0 {
+		return 0, false
+	}
+	digits := name[open+1 : len(name)-1]
 	if digits == "" || strings.HasPrefix(digits, "+") || strings.HasPrefix(digits, "-") {
 		return 0, false
 	}
 	n, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil || n <= 0 {
+		return 0, false
+	}
+	if name[:open] != copyTitleStem(base, name[open:]) {
 		return 0, false
 	}
 	return n, true

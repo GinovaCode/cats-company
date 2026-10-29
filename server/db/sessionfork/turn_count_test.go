@@ -124,6 +124,15 @@ func TestCopySuffix(t *testing.T) {
 		{"周报", "周报(1)(2)", 0, false},
 		{"周报(1)", "周报(1)(3)", 3, true},
 		{"", "(1)", 1, true},
+		// A base that overflows the column is stored trimmed, so recognition has to
+		// trim the same way. Matching against the untrimmed base would find nothing
+		// and every copy after the first would be named "(1)" again.
+		{strings.Repeat("周", 126), strings.Repeat("周", 125) + "(1)", 1, true},
+		{strings.Repeat("周", 126), strings.Repeat("周", 125) + "(7)", 7, true},
+		{strings.Repeat("周", 126), strings.Repeat("周", 124) + "(1)", 0, false},
+		// A wide suffix leaves less room for the stem, and has to be recognised too.
+		{strings.Repeat("周", 128), strings.Repeat("周", 122) + "(1000)", 1000, true},
+		{strings.Repeat("周", 128), strings.Repeat("周", 123) + "(1000)", 0, false},
 	} {
 		got, ok := copySuffix(tc.base, tc.name)
 		if ok != tc.ok || got != tc.want {
@@ -183,5 +192,27 @@ func TestNextCopyTitleRespectsColumnWidth(t *testing.T) {
 		if !strings.HasSuffix(got, wantSuffix) {
 			t.Fatalf("%s: %q lost its suffix %q", tc.name, got, wantSuffix)
 		}
+	}
+}
+
+// Generation and recognition have to agree. Testing them apart is what let a
+// length guard turn into duplicate names: the name was written trimmed while the
+// lookup matched the untrimmed base, so the second copy of a long-named
+// conversation was called "(1)" as well.
+func TestNextCopyTitleNumbersCopiesOfALongName(t *testing.T) {
+	base := strings.Repeat("周", 126)
+	first := nextCopyTitle(base, 1)
+	if n, ok := copySuffix(base, first); !ok || n != 1 {
+		t.Fatalf("the first copy is not recognised: %q -> %d,%v", first, n, ok)
+	}
+	second := nextCopyTitle(base, 2)
+	if first == second {
+		t.Fatalf("two copies share a name: %q", first)
+	}
+	if n, ok := copySuffix(base, second); !ok || n != 2 {
+		t.Fatalf("the second copy is not recognised: %q -> %d,%v", second, n, ok)
+	}
+	if len([]rune(second)) > copyNameLimit {
+		t.Fatalf("the second copy overflows the column: %d runes", len([]rune(second)))
 	}
 }

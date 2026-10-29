@@ -23,17 +23,31 @@ var sessionForkColumns = []string{"actor_user_id", "request_id", "source_topic_i
 // carries no name: the source topic's name, then the agent's display name as the
 // fallback for a direct conversation (which has no topic name of its own), then
 // the owner's existing topic names to find a free suffix.
-func expectCopyTitle(mock sqlmock.Sqlmock, sourceTopic string, agent int64, owner int64, base string, existing ...string) string {
-	mock.ExpectQuery("SELECT name FROM topics WHERE id =").WithArgs(sourceTopic).
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow(""))
-	mock.ExpectQuery("SELECT display_name FROM users WHERE id =").WithArgs(agent).
-		WillReturnRows(sqlmock.NewRows([]string{"display_name"}).AddRow(base))
+//
+// It deliberately does not compute the expected title. Working the answer out
+// here as well as in copyTitle is how the column-width bug got through: the
+// helper and the code under test shared the same blind spot, and a literal in
+// the test is the only thing that cannot agree with a bug.
+func expectCopyTitle(mock sqlmock.Sqlmock, sourceTopic, sourceName string, agent, owner int64, agentName string, existing ...string) {
+	sourceRow := sqlmock.NewRows([]string{"name"})
+	if sourceName != "" {
+		sourceRow.AddRow(sourceName)
+	}
+	mock.ExpectQuery("SELECT name FROM topics WHERE id =").WithArgs(sourceTopic).WillReturnRows(sourceRow)
+	// A named source short-circuits the agent fallback. The owner scan below always
+	// runs, because the suffix is chosen against the copies that already exist.
+	if sourceName == "" {
+		agentRow := sqlmock.NewRows([]string{"display_name"})
+		if agentName != "" {
+			agentRow.AddRow(agentName)
+		}
+		mock.ExpectQuery("SELECT display_name FROM users WHERE id =").WithArgs(agent).WillReturnRows(agentRow)
+	}
 	rows := sqlmock.NewRows([]string{"name"})
 	for _, name := range existing {
 		rows.AddRow(name)
 	}
 	mock.ExpectQuery("SELECT name FROM topics WHERE owner_id =").WithArgs(owner).WillReturnRows(rows)
-	return base + "(1)"
 }
 
 func TestSessionForkMySQLCloneTransaction(t *testing.T) {
@@ -53,7 +67,9 @@ func TestSessionForkMySQLCloneTransaction(t *testing.T) {
 			mock.ExpectQuery("SELECT history_revision, fork_state FROM topics").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"history_revision", "fork_state"}).AddRow(2, ""))
 			mock.ExpectQuery("SELECT b.owner_id,b.body_id,u.account_type,u.state FROM bot_config").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"owner_id", "body_id", "account_type", "state"}).AddRow(7, "body", "bot", 0))
 			mock.ExpectQuery("SELECT id,from_uid,content,msg_type,content_blocks,mode,role,metadata,reply_to,created_at FROM messages").WithArgs("p2p_7_9").WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).AddRow(10, 7, "file", "file", `[{"type":"file","payload":{"url":"/uploads/files/report.pdf"}}]`, "normal", "user", `{"custom":"keep"}`, nil, stamp).AddRow(11, 9, "answer", "text", nil, "normal", "assistant", nil, 10, stamp))
-			title := expectCopyTitle(mock, "p2p_7_9", 9, 7, "CatsCo")
+			// A direct conversation has no topic name, so the copy takes the agent's.
+			expectCopyTitle(mock, "p2p_7_9", "", 9, 7, "CatsCo")
+			title := "CatsCo(1)"
 			mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 			mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
 			mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -109,7 +125,11 @@ func TestSessionForkMySQLCloneIsBoundedByAnchor(t *testing.T) {
 			AddRow(10, 9, "first answer", "text", nil, "normal", "assistant", nil, 9, stamp).
 			AddRow(11, 7, "second", "text", nil, "normal", "user", nil, nil, stamp).
 			AddRow(12, 9, "second answer", "text", nil, "normal", "assistant", nil, 11, stamp))
-	title := expectCopyTitle(mock, "p2p_7_9", 9, 7, "CatsCo")
+	// The source is named and one copy already exists, so the name has to come from
+	// the source's own row and skip past the copy that is already there. Passing a
+	// literal title would let the helper and copyTitle agree on a wrong answer.
+	expectCopyTitle(mock, "p2p_7_9", "周报", 9, 7, "", "周报(1)")
+	title := "周报(2)"
 	mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -151,7 +171,8 @@ func TestSessionForkMySQLCloneInheritsProjectPlacement(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_uid", "content", "msg_type", "content_blocks", "mode", "role", "metadata", "reply_to", "created_at"}).
 			AddRow(9, 7, "asked", "text", nil, "normal", "user", nil, nil, stamp).
 			AddRow(10, 9, "answered", "text", nil, "normal", "assistant", nil, 9, stamp))
-	title := expectCopyTitle(mock, "p2p_7_9", 9, 7, "CatsCo")
+	expectCopyTitle(mock, "p2p_7_9", "", 9, 7, "CatsCo")
+	title := "CatsCo(1)"
 	mock.ExpectExec("INSERT INTO `groups`").WithArgs(title, int64(7)).WillReturnResult(sqlmock.NewResult(20, 1))
 	mock.ExpectExec("INSERT INTO group_members").WithArgs(int64(20), int64(7), int64(20), int64(9)).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("INSERT INTO topics").WithArgs("grp_20", title, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
