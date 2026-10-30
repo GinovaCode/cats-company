@@ -9,7 +9,8 @@ vi.mock('../api', () => ({
   isCurrentAuthSession: vi.fn(() => true),
   api: { getGroupInfo: vi.fn(), getSkillHubPublicationRepairContext: vi.fn(),
     getSkillHubPublicationCapabilities: vi.fn(), getSkillHubPublicationDescriptionReleaseHistory: vi.fn(),
-    getSkillHubPublicationDescriptionDraft: vi.fn(), confirmSkillHubPublicationDescriptionDraft: vi.fn() },
+    getSkillHubPublicationDescriptionDraft: vi.fn(), confirmSkillHubPublicationDescriptionDraft: vi.fn(),
+    getSkillHubPublicationRepairTask: vi.fn(), admitSkillHubPublicationRepairTask: vi.fn() },
 }));
 const entryRequestId = `pubentry_${'a'.repeat(32)}`;
 const reference = { schemaVersion: 1, entryRequestId, botUid: '42' };
@@ -82,6 +83,23 @@ it('uses the shared exact-draft confirmation inside the linked repair conversati
   expect(dialog.textContent).toContain('metadata.description_missing');
 });
 
+it('registers the already-linked private conversation only on explicit admission, leaving its report intact', async () => {
+  api.getSkillHubPublicationCapabilities.mockResolvedValue({ schemaVersion: 1, repairTaskAdmissionUiEnabled: true });
+  api.getSkillHubPublicationRepairTask.mockRejectedValue({ status: 404, data: { error: { code: 'publication.repair_not_found' } } });
+  api.admitSkillHubPublicationRepairTask.mockResolvedValue({ schemaVersion: 1, entryRequestId, botUid: '42', topicId: 'grp_77',
+    taskId: `pubrepair_${'b'.repeat(32)}`, state: 'queued', roundsUsed: 0, maxFormatRepairRounds: 3, automaticRepairEnabled: false });
+  await render();
+  expect(api.getSkillHubPublicationRepairTask).not.toHaveBeenCalled();
+  await act(async () => Simulate.click(container.querySelector('button')));
+  const dialog = document.querySelector('[role="dialog"]');
+  expect(dialog.textContent).toContain('尚未登记修复任务');
+  expect(api.admitSkillHubPublicationRepairTask).not.toHaveBeenCalled();
+  await act(async () => Simulate.click([...dialog.querySelectorAll('button')].find(b => b.textContent === '登记到当前修复对话')));
+  expect(api.admitSkillHubPublicationRepairTask).toHaveBeenCalledWith(entryRequestId, 'grp_77', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(dialog.textContent).toContain('已关联当前修复对话');
+  expect(dialog.textContent).toContain('metadata.description_missing');
+});
+
 it('reads derived terminal history separately from the original rejection without claiming repair is enabled', async () => {
   api.getSkillHubPublicationCapabilities.mockResolvedValue({ schemaVersion: 1, descriptionReleaseHistoryReadsEnabled: true });
   api.getSkillHubPublicationDescriptionReleaseHistory.mockResolvedValue({ schemaVersion: 1, entryRequestId,
@@ -108,6 +126,8 @@ it.each([
   { group: { id: 77, kind: 'agent_task', owner_id: 8 }, members: [{ user_id: 7 }, { user_id: 42, is_bot: true }] },
   { group: { id: 77, kind: 'agent_task' }, members: [{ user_id: 42, is_bot: true }] },
   { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 42, account_type: 'bot' }] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 7 }, { user_id: 42, is_bot: true }, { user_id: 8 }] },
+  { group: { id: 77, kind: 'agent_task', owner_id: 7 }, members: [{ user_id: 8 }, { user_id: 42, is_bot: true }] },
 ])('refuses a forged or mismatched conversation hint: %j', async (response) => {
   api.getGroupInfo.mockResolvedValue(response);
   await render();

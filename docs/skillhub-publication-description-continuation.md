@@ -343,7 +343,10 @@ The derived-candidate release/commit protocol, terminal reconciliation and local
 browser history are now internal/default-off building blocks, not a complete
 user publishing loop. The shared report dialog also consumes the separate exact
 description confirmation contract (see skillhub-publication-description-confirmation.md),
-without initiating repair, applying bytes or authorizing release. M3 still
+without initiating repair, applying bytes or authorizing release. The report
+also has a linked-conversation task-registration consumer (see
+skillhub-publication-repair-admission.md): it recovers or explicitly admits the
+same durable task, without starting repair or resetting its budget. M3 still
 requires later-round private candidate ancestry/derivation, uncertain paid-call
 reconciliation and both publication entry points' full trusted continuation.
 Production wiring/enabling and user acceptance

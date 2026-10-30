@@ -996,6 +996,24 @@ export const api = {
     undefined,
     options,
   ),
+  getSkillHubPublicationRepairTask: (entryRequestId, options = {}) => {
+    if (typeof entryRequestId !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(entryRequestId)) {
+      return Promise.reject(new Error('发布记录标识无效。'));
+    }
+    return request('GET', `/api/skillhub/publications/commit/entries/${entryRequestId}/repair-task`,
+      undefined, { timeoutMs: 7000, ...options });
+  },
+  admitSkillHubPublicationRepairTask: (entryRequestId, topicId, options = {}) => {
+    if (typeof entryRequestId !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(entryRequestId)
+      || typeof topicId !== 'string' || !/^grp_[1-9][0-9]{0,18}$/.test(topicId)
+      || BigInt(topicId.slice(4)) > 9223372036854775807n) {
+      return Promise.reject(new Error('发布修复对话标识无效。'));
+    }
+    // Admission fetches a trusted Cloud report under a 55-second server budget.
+    // Do not cut it off with the read-only seven-second timeout or replay it.
+    return request('POST', `/api/skillhub/publications/commit/entries/${entryRequestId}/repair-task`,
+      { schemaVersion: 1, topicId }, { timeoutMs: 60000, ...options });
+  },
   getSkillHubPublicationDescriptionDraft: (entryRequestId, options = {}) => {
     if (typeof entryRequestId !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(entryRequestId)) {
       return Promise.reject(new Error('发布记录标识无效。'));
