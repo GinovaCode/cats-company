@@ -645,8 +645,17 @@ func (s SQLStore) ExpireSessionForks(ctx context.Context, cutoff time.Time, limi
 //
 // A copy is an ordinary conversation to the user, so it should read like one
 // rather than carry a generic label. The suffix keeps siblings of the same source
-// distinguishable, and it is computed over the owner's existing topics so two
-// copies never collide.
+// apart, and it is computed over the owner's existing topics, so no two copies of
+// the same source share a name.
+//
+// The suffix alone does not make every pair of copies tellable apart. A source
+// name may use the whole column, and the room for it shrinks by the suffix's
+// width, so the base loses its last runes when trimmed — the runes that most
+// often differ between two long names. 「周×125 甲」 and 「周×125 乙」 both become
+// 「周×125(1)」 apart from their numbers. They are still distinct rows with
+// distinct numbers, and nothing breaks, but the name no longer says where each
+// came from. Keeping both ends of a long name would preserve that, and is worth
+// doing if these ever show up in practice.
 //
 // The source name is taken whole, including any trailing "(n)": a conversation
 // the user already named 「周报(1)」 yields 「周报(1)(1)」, because guessing which
