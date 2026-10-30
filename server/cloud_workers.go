@@ -79,11 +79,26 @@ type CloudWorkerHandler struct {
 
 	scriptTimeout time.Duration
 
-	// opMu serializes all cloud operations (create / update / rollback / reset /
-	// delete). These are low-frequency, long-running, paid-instance actions;
-	// a global lock keeps quota checks atomic and prevents a single user from
-	// piling up concurrent script processes.
-	opMu        sync.Mutex
+	// opLocks serializes cloud operations (create / update / rollback / reset /
+	// delete) per owner, not globally.
+	//
+	// These actions are low-frequency and long-running (a provision takes about
+	// 25 seconds), so a single process-wide mutex meant one buyer's provision
+	// rejected every other buyer with "another operation is already running".
+	// At peak that is not a wait, it is an outage: only one person could buy per
+	// half minute, and everyone else got a conflict. What actually needs to be
+	// atomic is one owner's quota check plus create, which is what a per-owner
+	// lock gives. Two different owners provisioning in parallel is safe: they get
+	// different tenants and different containers, and the shared-fleet slot
+	// decision is made on the cluster side.
+	opLocksMu sync.Mutex
+	opLocks   map[int64]*sync.Mutex
+
+	// sweepMu keeps the periodic expiry sweep from overlapping itself. It is not
+	// an owner operation gate: the sweep works on existing lifecycles and is
+	// protected by database claims, which is what makes it safe next to a
+	// concurrent create.
+	sweepMu     sync.Mutex
 	operationMu sync.Mutex
 	operations  map[string]cloudWorkerOperation
 
@@ -188,6 +203,64 @@ type CloudWorkerCreditStore interface {
 	MarkCloudWorkerLifecyclePending(id int64, deleteAfter time.Time) error
 	ClaimCloudWorkerLifecycleDeletion(id int64) (bool, error)
 	MarkCloudWorkerLifecycleDeleted(id int64, errText string) error
+}
+
+// cloudWorkerQueueStore parks a paid credit that could not be provisioned
+// because the package tier's shared fleet had no free slot, and reports the
+// queue so the console can show a wait instead of an error.
+//
+// Kept separate from CloudWorkerCreditStore so focused test stores keep
+// compiling; a store that cannot queue simply falls back to releasing the
+// credit, which the buyer can spend again after capacity returns.
+type cloudWorkerQueueStore interface {
+	QueueCloudWorkerCredit(uid int64, reservation string) (bool, error)
+	CloudWorkerQueuePosition(uid int64) (int, error)
+	ListQueuedCloudWorkerCredits(minAge time.Duration, limit int) ([]types.CloudWorkerQueuedCredit, error)
+	ClaimQueuedCloudWorkerCredit(uid int64) (bool, error)
+}
+
+// cloudWorkerQueueRetrySeconds is how long a queued buyer is told to wait
+// before the console re-checks. It matches the capacity sweep interval: a slot
+// that frees up is picked up within about a minute, so a shorter hint would
+// only produce pointless polling.
+const cloudWorkerQueueRetrySeconds = 60
+
+// cloudWorkerQueueMinAge keeps the sweep from retrying the same credit inside
+// back-to-back sweeps. A tier that just filled up needs a release (a destroy or
+// an expiry) before it has room again, and that takes far longer than one tick.
+const cloudWorkerQueueMinAge = 45 * time.Second
+
+// cloudWorkerCapacityFull reports whether a failed provision was caused by an
+// exhausted tier pool rather than by a broken machine.
+//
+// The packed adapter exits with 75 for this case so the distinction survives
+// the shell boundary; the message check keeps older adapters (which die with a
+// generic code) from being reported to buyers as an infrastructure failure.
+func cloudWorkerCapacityFull(err error, output string) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 75 {
+		return true
+	}
+	return strings.Contains(output, "is full on every member") || strings.Contains(output, "cluster placement failed")
+}
+
+// cloudWorkerQueuePosition reports this owner's place in the capacity queue,
+// or -1 when nothing is queued. It is best-effort: a store without queue
+// support simply reports "not queued".
+func (h *CloudWorkerHandler) cloudWorkerQueuePosition(uid int64) int {
+	queuer, ok := h.credits.(cloudWorkerQueueStore)
+	if !ok || uid <= 0 {
+		return -1
+	}
+	position, err := queuer.CloudWorkerQueuePosition(uid)
+	if err != nil {
+		log.Printf("[cloud-worker] queue position uid=%d failed: %v", uid, err)
+		return -1
+	}
+	return position
 }
 
 // CloudWorkerLifecycleExtender is the per-instance form used when the
@@ -354,16 +427,45 @@ func (h *CloudWorkerHandler) cloudWorkerOperation(id string) (cloudWorkerOperati
 	return op, true
 }
 
-func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter) bool {
-	if h.opMu.TryLock() {
-		return true
+// ownerOperationLock returns the mutex guarding one owner's cloud operations.
+//
+// Entries are never deleted: an owner only gets one when they have a cloud
+// worker, so the map is bounded by the number of buyers rather than by traffic.
+func (h *CloudWorkerHandler) ownerOperationLock(uid int64) *sync.Mutex {
+	h.opLocksMu.Lock()
+	defer h.opLocksMu.Unlock()
+	if h.opLocks == nil {
+		h.opLocks = make(map[int64]*sync.Mutex)
+	}
+	lock, ok := h.opLocks[uid]
+	if !ok {
+		lock = &sync.Mutex{}
+		h.opLocks[uid] = lock
+	}
+	return lock
+}
+
+// lockOwnerOperation blocks until this owner's cloud operation gate is free.
+// The returned mutex must be unlocked by the caller.
+func (h *CloudWorkerHandler) lockOwnerOperation(uid int64) *sync.Mutex {
+	lock := h.ownerOperationLock(uid)
+	lock.Lock()
+	return lock
+}
+
+// tryBeginOperation takes this owner's cloud operation gate without waiting.
+// It returns the locked mutex on success; the caller must unlock it.
+func (h *CloudWorkerHandler) tryBeginOperation(w http.ResponseWriter, uid int64) (*sync.Mutex, bool) {
+	lock := h.ownerOperationLock(uid)
+	if lock.TryLock() {
+		return lock, true
 	}
 	w.Header().Set("Retry-After", "15")
 	writeJSON(w, http.StatusConflict, map[string]string{
-		"error": "another cloud worker operation is already running",
+		"error": "another cloud worker operation is already running for this account",
 		"code":  "cloud_worker_operation_busy",
 	})
-	return false
+	return nil, false
 }
 
 // parseWorkerCreateQuota parses "CATSCO_WORKER_CREATE_QUOTA" of the form
@@ -606,6 +708,18 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			"used":      used,
 			"remaining": remaining,
 		},
+	}
+	// A paid credit waiting for a slot is invisible in "workers" (no machine
+	// exists yet), so the console needs its own signal. Without it the buyer
+	// sees an enabled quota with no worker and clicks create again, which only
+	// adds a second queue entry. -1 means nothing is queued; 0 means this buyer
+	// is first in line, which still has to be reported.
+	if position := h.cloudWorkerQueuePosition(uid); position >= 0 {
+		response["queue"] = map[string]interface{}{
+			"queued":              true,
+			"position":            position,
+			"retry_after_seconds": cloudWorkerQueueRetrySeconds,
+		}
 	}
 	if statusLoaded {
 		response["status_cached_at"] = statusUpdatedAt.UTC().Format(time.RFC3339Nano)
@@ -1146,8 +1260,8 @@ func (h *CloudWorkerHandler) RenewForOwner(uid int64) *types.CloudWorkerRenewRep
 	if h == nil || uid <= 0 || h.renewScript == "" || h.credits == nil {
 		return nil
 	}
-	h.opMu.Lock()
-	defer h.opMu.Unlock()
+	opLock := h.lockOwnerOperation(uid)
+	defer opLock.Unlock()
 	lifecycleStore, ok := h.credits.(interface {
 		ListCloudWorkerLifecycles(int64) ([]CloudWorkerLifecycle, error)
 	})
@@ -1414,13 +1528,15 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// All paid-instance operations are serialized so the quota check and the
-	// bot creation stay atomic and no single user can pile up concurrent
-	// script processes.
-	if !h.tryBeginOperation(w) {
+	// All paid-instance operations of one account are serialized so the quota
+	// check and the bot creation stay atomic and no single user can pile up
+	// concurrent script processes. The gate is per owner: a global one meant one
+	// buyer's 25-second provision rejected everybody else at peak.
+	opLock, ok := h.tryBeginOperation(w, uid)
+	if !ok {
 		return
 	}
-	defer h.opMu.Unlock()
+	defer opLock.Unlock()
 
 	// Parse and validate the request before reserving a paid credit. Invalid
 	// requests must never make a user's entitlement appear consumed/reserved.
@@ -1671,6 +1787,43 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
 		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))
+		// A full tier pool is not a failure: the buyer paid for a slot that is
+		// momentarily taken. Placement happens before any container exists, so
+		// there is nothing to clean up — park the credit and let the capacity
+		// sweep retry it. Treating this like any other provision error would
+		// either destroy a paid order or leave the buyer with an error page on
+		// the busiest day of the month.
+		if cloudWorkerCapacityFull(err, provOut) {
+			queued := false
+			if reservedCredit {
+				if queuer, ok := h.credits.(cloudWorkerQueueStore); ok {
+					if ok, queueErr := queuer.QueueCloudWorkerCredit(uid, reservation); queueErr != nil {
+						log.Printf("[cloud-worker] queue credit uid=%d failed: %v", uid, queueErr)
+					} else {
+						queued = ok
+					}
+				}
+				if !queued {
+					// Keep the credit spendable rather than silently losing it; the
+					// buyer can retry manually and the sweep re-evaluates capacity.
+					_ = h.credits.ReleaseCloudWorkerCredit(uid, reservation)
+				}
+			}
+			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+				log.Printf("[cloud-worker] rollback delete for queued uid %d failed: %v", result.UID, rollbackErr)
+			}
+			position := h.cloudWorkerQueuePosition(uid)
+			log.Printf("[cloud-worker] tier capacity full uid=%d tier=%s queued=%v position=%d", uid, runtimePlan, queued, position)
+			writeJSON(w, http.StatusAccepted, map[string]interface{}{
+				"error":               "this package's shared fleet is full right now; your machine is queued and starts automatically",
+				"code":                "cloud_worker_capacity_queued",
+				"queued":              queued,
+				"queue_position":      position,
+				"tier":                runtimePlan,
+				"retry_after_seconds": cloudWorkerQueueRetrySeconds,
+			})
+			return
+		}
 		// The provision script may have created the cloud instance before
 		// failing on a later step. Try to destroy any partially created
 		// instance so we do not leave a still-billed orphan behind (the
@@ -1841,21 +1994,54 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // afterwards: a renewal cannot revive a destroy that is already running, so
 // the credit granted by that payment is spent on a replacement instance.
 func (h *CloudWorkerHandler) SweepExpiredWorkers(now time.Time) {
-	if !h.opMu.TryLock() {
+	if !h.sweepMu.TryLock() {
 		return
 	}
 	rebuildOwners := h.sweepExpiredWorkersLocked(now)
-	h.opMu.Unlock()
+	h.sweepMu.Unlock()
 	// Rebuilding provisions a new worker through HandleCreate, which takes the
 	// same gate: it must run after the sweep has released it.
 	for _, uid := range rebuildOwners {
 		h.restoreCloudWorkerAfterDeletion(uid)
 	}
+	h.retryQueuedCloudWorkers()
+}
+
+// retryQueuedCloudWorkers retries buyers whose paid credit was parked because
+// their package tier had no free slot.
+//
+// Runs after the sweep released the operation gate, because retrying goes
+// through HandleCreate, which takes the same gate. Each credit is flipped back
+// to 'available' first so the normal reserve/create path applies unchanged; if
+// the pool is still full the create parks it again, which is why the claim is
+// safe to repeat every sweep.
+func (h *CloudWorkerHandler) retryQueuedCloudWorkers() {
+	queuer, ok := h.credits.(cloudWorkerQueueStore)
+	if !ok || h.provisionScript == "" {
+		return
+	}
+	queued, err := queuer.ListQueuedCloudWorkerCredits(cloudWorkerQueueMinAge, 10)
+	if err != nil {
+		log.Printf("[cloud-worker] queued credit sweep failed: %v", err)
+		return
+	}
+	for _, item := range queued {
+		claimed, claimErr := queuer.ClaimQueuedCloudWorkerCredit(item.UID)
+		if claimErr != nil {
+			log.Printf("[cloud-worker] queued credit claim uid=%d failed: %v", item.UID, claimErr)
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		log.Printf("[cloud-worker] retrying queued worker uid=%d tier=%s queued_at=%s", item.UID, item.Tier, item.QueuedAt.UTC().Format(time.RFC3339))
+		h.AutoProvisionForOwner(item.UID)
+	}
 }
 
 // sweepExpiredWorkersLocked performs the lifecycle transitions documented on
 // SweepExpiredWorkers and returns the owners that need a replacement worker.
-// The caller owns h.opMu.
+// The caller owns the sweep gate.
 func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 	started := time.Now()
 	store, ok := h.credits.(interface {
@@ -1989,7 +2175,8 @@ func (h *CloudWorkerHandler) sweepExpiredWorkersLocked(now time.Time) []int64 {
 //
 // An available credit is the only ticket accepted here: the shared rollout
 // quota is a one-time grant and must never silently mint a new free instance
-// on every expiry. Runs outside h.opMu because HandleCreate acquires it.
+// on every expiry. Runs outside the sweep gate because HandleCreate acquires the
+// owner's operation lock.
 func (h *CloudWorkerHandler) restoreCloudWorkerAfterDeletion(uid int64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -2194,7 +2381,8 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	if !h.tryBeginOperation(w) {
+	opLock, ok := h.tryBeginOperation(w, uid)
+	if !ok {
 		if cleanupCredentialFile != nil {
 			cleanupCredentialFile()
 		}
@@ -2205,7 +2393,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	// polling contract; the repaired Nginx route gives legacy requests enough
 	// time to finish instead of failing at the generic 60-second timeout.
 	if r.URL.Query().Get("async") != "1" {
-		defer h.opMu.Unlock()
+		defer opLock.Unlock()
 		if cleanupCredentialFile != nil {
 			defer cleanupCredentialFile()
 		}
@@ -2224,7 +2412,7 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	}
 	operationID, idErr := newCloudWorkerOperationID()
 	if idErr != nil {
-		h.opMu.Unlock()
+		opLock.Unlock()
 		if cleanupCredentialFile != nil {
 			cleanupCredentialFile()
 		}
@@ -2261,10 +2449,10 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 			h.requestCloudStatusRefresh(true)
 			h.finishCloudWorkerOperation(operationID, "succeeded", "")
 		}
-		// Publish the terminal state before releasing the global gate. This
+		// Publish the terminal state before releasing the gate. This
 		// avoids a small race where a subsequent action is accepted while the
 		// previous operation is still reported as running by the roster.
-		h.opMu.Unlock()
+		opLock.Unlock()
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "pending", "action": action, "operation_id": operationID,
